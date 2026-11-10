@@ -2,6 +2,7 @@
 
 #include "core/DeviceIdentifier.h"
 #include "core/IProbe.h"
+#include "core/DeviceTreeScanner.h"
 #include "core/JLinkGdbProbe.h"
 #include "core/ProbeRsProbe.h"
 #include "core/SvdLibrary.h"
@@ -39,6 +40,7 @@ public:
     void doExec(const QString &command);
     void doListProbes();
     void doValidateChip(const QString &chipName);
+    void doScanDeviceTree(const QString &svdPath);
 
 signals:
     void opened(bool ok, const QString &error, const mrd::ProbeInfo &info);
@@ -50,6 +52,7 @@ signals:
     void cpuStateChanged(bool halted, bool ok, const QString &error);
     void probesListed(const QStringList &serials, const QString &error);
     void chipValidated(const QString &chipName, bool ok, const QString &message);
+    void deviceTreeScanned(const QVector<mrd::PeripheralStatus> &statuses, const QString &error);
 
 private:
     SvdLibrary &library();
@@ -92,6 +95,8 @@ public slots:
     void requestExec(const QString &command);
     void requestListProbes();
     void requestValidateChip(const QString &chipName);
+    /// Walk every SVD peripheral through the probe to build the real device tree.
+    void requestScanDeviceTree(const QString &svdPath);
 
 signals:
     void opened(bool ok, const QString &error, const mrd::ProbeInfo &info);
@@ -103,6 +108,7 @@ signals:
     void cpuStateChanged(bool halted, bool ok, const QString &error);
     void probesListed(const QStringList &serials, const QString &error);
     void chipValidated(const QString &chipName, bool ok, const QString &message);
+    void deviceTreeScanned(const QVector<mrd::PeripheralStatus> &statuses, const QString &error);
 
 private:
     template <typename Fn>

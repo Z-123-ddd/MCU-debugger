@@ -7,7 +7,9 @@
 #include "core/SvdTypes.h"
 #include "ui/BitFieldStrip.h"
 #include "core/DeviceIdentifier.h"
+#include "core/DeviceTreeScanner.h"
 #include "ui/PackageView.h"
+#include "ui/PeripheralTree.h"
 #include "ui/PortGridView.h"
 #include "ui/RegisterBlockView.h"
 #include "ui/Theme.h"
@@ -17,6 +19,7 @@
 #include <QFileInfo>
 #include <QPainter>
 #include <QImage>
+#include <QTreeWidget>
 #include <QPixmap>
 #include <QWidget>
 
@@ -196,6 +199,106 @@ Status renderSnapshots(const Options &options, const SvdDevice &device)
             return Status::failure(
                 QStringLiteral("渲染封装图失败: %1").arg(renderError.isEmpty() ? packagePath : renderError));
         written << packagePath;
+    }
+
+    // --- peripheral tree with device-tree states ---------------------------
+    // Synthetic-but-realistic statuses so the "missing / clock off / present"
+    // rendering can be eyeballed without a board.
+    {
+        const QHash<QString, DeviceTreeScanner::ClockBit> clocks = DeviceTreeScanner::clockMap(device);
+        QVector<PeripheralStatus> statuses;
+        int index = 0;
+        for (const auto &peripheral : device.peripherals) {
+            const DeviceTreeScanner::ClockBit bit = clocks.value(peripheral.name);
+            // Put the first few peripherals in every state so all three render.
+            const bool readOk = (index % 7) != 3;   // every 7th: bus rejects
+            const bool gateOn = (index % 5) != 2;   // every 5th: clock off
+            const quint32 value = readOk ? 0x00000000u : 0u;
+            PeripheralStatus status = DeviceTreeScanner::classify(
+                peripheral, bit, gateOn, readOk, value,
+                readOk ? QString() : QStringLiteral("总线拒绝访问"));
+            if (index % 7 == 3 && gateOn)
+                status.reachability = PeripheralStatus::Missing;
+            status.probeRegister = QStringLiteral("PROBE");
+            statuses << status;
+            ++index;
+        }
+
+        PeripheralTree tree;
+        tree.setDevice(device);
+        tree.setStatuses(statuses);
+        const QString treePath = dir + QStringLiteral("/peripheral-tree.png");
+        QString treeError;
+        if (!saveWidget(&tree, treePath, &treeError, QSize(380, 560)))
+            return Status::failure(QStringLiteral("渲染外设树失败: %1").arg(treeError));
+        written << treePath;
+
+        int onChip = 0;
+        int clocked = 0;
+        for (const auto &status : statuses) {
+            if (status.onChip())
+                ++onChip;
+            if (status.clockKnown && status.clockEnabled)
+                ++clocked;
+        }
+        Logger::instance()->info(QStringLiteral("外设树快照: %1 项，本芯片存在 %2，时钟已开 %3")
+                                     .arg(statuses.size())
+                                     .arg(onChip)
+                                     .arg(clocked));
+
+        // Structural check of the widget contents (the rendered text is not
+        // machine-readable, the item model is).
+        if (auto *widget = tree.findChild<QTreeWidget *>()) {
+            int markedMissing = 0;
+            int clockOn = 0;
+            int clockOff = 0;
+            int rows = 0;
+            for (int g = 0; g < widget->topLevelItemCount(); ++g) {
+                QTreeWidgetItem *group = widget->topLevelItem(g);
+                for (int c = 0; c < group->childCount(); ++c) {
+                    QTreeWidgetItem *item = group->child(c);
+                    ++rows;
+                    if (item->text(0).contains(QStringLiteral("本芯片未实现")))
+                        ++markedMissing;
+                    if (item->text(2) == QStringLiteral("开"))
+                        ++clockOn;
+                    else if (item->text(2) == QStringLiteral("关"))
+                        ++clockOff;
+                }
+            }
+
+            int expectedMissing = 0;
+            int expectedOn = 0;
+            int expectedOff = 0;
+            for (const auto &status : statuses) {
+                if (status.reachability == PeripheralStatus::Missing)
+                    ++expectedMissing;
+                if (status.clockKnown && status.clockEnabled)
+                    ++expectedOn;
+                if (status.clockKnown && !status.clockEnabled)
+                    ++expectedOff;
+            }
+
+            const bool ok = rows == statuses.size() && markedMissing == expectedMissing
+                            && clockOn == expectedOn && clockOff == expectedOff;
+            if (!ok) {
+                return Status::failure(
+                    QStringLiteral("外设树渲染不一致: 行 %1/%2, 缺失标记 %3/%4, 时钟开 %5/%6, 时钟关 %7/%8")
+                        .arg(rows)
+                        .arg(statuses.size())
+                        .arg(markedMissing)
+                        .arg(expectedMissing)
+                        .arg(clockOn)
+                        .arg(expectedOn)
+                        .arg(clockOff)
+                        .arg(expectedOff));
+            }
+            Logger::instance()->info(QStringLiteral("外设树结构校验通过: %1 行, 缺失标记 %2, 时钟开 %3, 关 %4")
+                                         .arg(rows)
+                                         .arg(markedMissing)
+                                         .arg(clockOn)
+                                         .arg(clockOff));
+        }
     }
 
     // --- port matrix, decoded from a real device snapshot ------------------

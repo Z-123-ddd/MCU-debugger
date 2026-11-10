@@ -72,6 +72,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_probe.get(), &ProbeController::connectFinished, this, &MainWindow::onProbeConnectFinished);
     connect(m_probe.get(), &ProbeController::identifyFinished, this, &MainWindow::onIdentifyFinished);
     connect(m_probe.get(), &ProbeController::cpuStateChanged, this, &MainWindow::onCpuStateChanged);
+    connect(m_probe.get(), &ProbeController::deviceTreeScanned, this, &MainWindow::onDeviceTreeScanned);
     connect(m_probe.get(), &ProbeController::chipValidated, this,
             [](const QString &chip, bool ok, const QString &message) {
                 if (!ok)
@@ -662,6 +663,13 @@ void MainWindow::onIdentifyFinished(bool ok, const QString &error, const Identif
     if (!result.probeSerial.isEmpty() && !result.svdPath.isEmpty())
         AppSettings::setBindingForSn(result.probeSerial, result.svdPath);
 
+    // The SVD only describes the family; ask the target which peripherals it really
+    // has (clock gates + bus decode) so the tree reflects this exact part.
+    if (!m_svdPath.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral("正在读取设备树..."));
+        m_probe->requestScanDeviceTree(m_svdPath);
+    }
+
     startPolling();
 }
 
@@ -868,6 +876,50 @@ void MainWindow::onPinConfigure(const QString &portName, int index, const GpioPi
         const quint32 value = write.value;
         std::memcpy(data.data(), &value, 4);
         m_session->applyRegisterWrite(write.address, data);
+    }
+}
+
+void MainWindow::onDeviceTreeScanned(const QVector<PeripheralStatus> &statuses, const QString &error)
+{
+    if (!error.isEmpty()) {
+        Logger::instance()->warn(QStringLiteral("设备树读取失败: %1").arg(error));
+        statusBar()->showMessage(QStringLiteral("设备树读取失败，外设列表回退为 SVD 全集"), 5000);
+        return;
+    }
+
+    m_tree->setStatuses(statuses);
+
+    int onChip = 0;
+    int clocked = 0;
+    int missing = 0;
+    for (const auto &status : statuses) {
+        if (status.onChip())
+            ++onChip;
+        if (status.clockKnown && status.clockEnabled)
+            ++clocked;
+        if (status.reachability == PeripheralStatus::Missing)
+            ++missing;
+    }
+
+    Logger::instance()->info(QStringLiteral("设备树已更新: 本芯片存在 %1/%2，时钟已开 %3，缺失 %4")
+                                 .arg(onChip)
+                                 .arg(statuses.size())
+                                 .arg(clocked)
+                                 .arg(missing));
+    statusBar()->showMessage(QStringLiteral("设备树: %1/%2 个外设存在，%3 个时钟已开启")
+                                 .arg(onChip)
+                                 .arg(statuses.size())
+                                 .arg(clocked),
+                             6000);
+
+    // Refresh the current peripheral view in case it disappeared from this part.
+    if (!m_currentPeripheral.isEmpty()) {
+        const auto it = std::find_if(statuses.constBegin(), statuses.constEnd(),
+                                     [this](const PeripheralStatus &s) {
+                                         return s.name == m_currentPeripheral;
+                                     });
+        if (it != statuses.constEnd() && !it->onChip())
+            Logger::instance()->warn(QStringLiteral("%1 在当前芯片上不存在").arg(m_currentPeripheral));
     }
 }
 

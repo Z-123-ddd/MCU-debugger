@@ -2,6 +2,10 @@
 
 #include "core/HexUtil.h"
 
+#include "core/HexUtil.h"
+#include "ui/Theme.h"
+
+#include <QComboBox>
 #include <QFont>
 #include <QHeaderView>
 #include <QLineEdit>
@@ -13,6 +17,7 @@ namespace mrd {
 namespace {
 constexpr int kColumnName = 0;
 constexpr int kColumnBase = 1;
+constexpr int kColumnState = 2;
 } // namespace
 
 PeripheralTree::PeripheralTree(QWidget *parent)
@@ -28,11 +33,24 @@ PeripheralTree::PeripheralTree(QWidget *parent)
     layout->addWidget(m_filter);
     connect(m_filter, &QLineEdit::textChanged, this, &PeripheralTree::onFilterChanged);
 
+    // Filters let the user hide peripherals this part does not implement.
+    m_stateFilter = new QComboBox(this);
+    m_stateFilter->addItem(QStringLiteral("显示: 全部"), int(Filter::All));
+    m_stateFilter->addItem(QStringLiteral("显示: 仅本芯片存在"), int(Filter::OnChip));
+    m_stateFilter->addItem(QStringLiteral("显示: 仅时钟已开启"), int(Filter::Clocked));
+    m_stateFilter->setToolTip(QStringLiteral("依据 J-Link 读回的时钟门控与总线访问结果过滤"));
+    layout->addWidget(m_stateFilter);
+    connect(m_stateFilter, &QComboBox::currentIndexChanged, this, [this](int index) {
+        m_filterMode = Filter(m_stateFilter->itemData(index).toInt());
+        rebuild();
+    });
+
     m_tree = new QTreeWidget(this);
-    m_tree->setColumnCount(2);
-    m_tree->setHeaderLabels({QStringLiteral("外设"), QStringLiteral("基地址")});
+    m_tree->setColumnCount(3);
+    m_tree->setHeaderLabels({QStringLiteral("外设"), QStringLiteral("基地址"), QStringLiteral("时钟")});
     m_tree->header()->setSectionResizeMode(kColumnName, QHeaderView::Stretch);
     m_tree->header()->setSectionResizeMode(kColumnBase, QHeaderView::ResizeToContents);
+    m_tree->header()->setSectionResizeMode(kColumnState, QHeaderView::ResizeToContents);
     m_tree->setAlternatingRowColors(true);
     m_tree->setUniformRowHeights(true);
     layout->addWidget(m_tree, 1);
@@ -57,6 +75,21 @@ void PeripheralTree::clear()
     m_tree->clear();
 }
 
+void PeripheralTree::setStatuses(const QVector<PeripheralStatus> &statuses)
+{
+    m_statuses.clear();
+    m_counts = {};
+    for (const auto &status : statuses) {
+        m_statuses.insert(status.name, status);
+        ++m_counts.total;
+        if (status.onChip())
+            ++m_counts.onChip;
+        if (status.clockKnown && status.clockEnabled)
+            ++m_counts.clocked;
+    }
+    rebuild();
+}
+
 void PeripheralTree::rebuild()
 {
     m_updating = true;
@@ -66,17 +99,48 @@ void PeripheralTree::rebuild()
     QFont bold = font();
     bold.setBold(true);
 
+    const bool haveStatus = !m_statuses.isEmpty();
+    const Palette palette = Theme::current();
+
     for (auto it = m_groups.constBegin(); it != m_groups.constEnd(); ++it) {
         QVector<const SvdPeripheral *> visible;
         for (const auto *peripheral : it.value()) {
-            if (filter.isEmpty() || peripheral->name.contains(filter, Qt::CaseInsensitive))
-                visible.append(peripheral);
+            if (!filter.isEmpty() && !peripheral->name.contains(filter, Qt::CaseInsensitive))
+                continue;
+
+            const auto statusIt = m_statuses.constFind(peripheral->name);
+            const bool known = haveStatus && statusIt != m_statuses.constEnd();
+
+            // Apply the state filter (only meaningful once the tree was read back).
+            if (known) {
+                const PeripheralStatus &status = statusIt.value();
+                if (m_filterMode == Filter::OnChip && !status.onChip())
+                    continue;
+                if (m_filterMode == Filter::Clocked && !(status.clockKnown && status.clockEnabled))
+                    continue;
+            } else if (m_filterMode != Filter::All) {
+                // No device-tree data yet: do not hide anything.
+            }
+            visible.append(peripheral);
         }
         if (visible.isEmpty())
             continue;
 
         auto *groupItem = new QTreeWidgetItem(m_tree);
         groupItem->setText(kColumnName, it.key());
+        if (haveStatus) {
+            int onChip = 0;
+            for (const auto *peripheral : visible) {
+                const auto statusIt = m_statuses.constFind(peripheral->name);
+                if (statusIt != m_statuses.constEnd() && statusIt->onChip())
+                    ++onChip;
+            }
+            if (onChip != visible.size())
+                groupItem->setText(kColumnName, QStringLiteral("%1  (%2/%3)")
+                                                     .arg(it.key())
+                                                     .arg(onChip)
+                                                     .arg(visible.size()));
+        }
         groupItem->setFont(kColumnName, bold);
         groupItem->setFlags(Qt::ItemIsEnabled);
         groupItem->setExpanded(!filter.isEmpty() || it.value().size() <= 4);
@@ -94,7 +158,49 @@ void PeripheralTree::rebuild()
             if (!tip.isEmpty())
                 tip += QLatin1Char('\n');
             tip += QStringLiteral("寄存器 %1 个").arg(peripheral->registers.size());
+
+            const auto statusIt = m_statuses.constFind(peripheral->name);
+            if (haveStatus && statusIt != m_statuses.constEnd()) {
+                const PeripheralStatus &status = statusIt.value();
+
+                // Clock column: 开 / 关 / — (no gate bit) / ? (register unreadable).
+                QString clockText = QStringLiteral("—");
+                if (status.clockKnown) {
+                    clockText = status.clockEnabled ? QStringLiteral("开") : QStringLiteral("关");
+                    tip += QStringLiteral("\n时钟门控: %1 = %2")
+                               .arg(status.clockSource,
+                                    status.clockEnabled ? QStringLiteral("已使能")
+                                                        : QStringLiteral("未使能"));
+                } else {
+                    tip += QStringLiteral("\n时钟门控: SVD 未提供");
+                }
+                item->setText(kColumnState, clockText);
+
+                switch (status.reachability) {
+                case PeripheralStatus::Readable:
+                    tip += QStringLiteral("\n访问: 正常 (%1 = %2)")
+                               .arg(status.probeRegister, hex32(status.probeValue));
+                    break;
+                case PeripheralStatus::Missing:
+                    item->setText(kColumnName, QStringLiteral("%1  (本芯片未实现)").arg(peripheral->name));
+                    item->setForeground(kColumnName, palette.textDim);
+                    tip += QStringLiteral("\n访问: 总线拒绝，且时钟已开 -> 该型号不具备此条目的外设");
+                    break;
+                case PeripheralStatus::Unreachable:
+                    item->setText(kColumnName, QStringLiteral("%1  (无法访问)").arg(peripheral->name));
+                    item->setForeground(kColumnName, palette.textDim);
+                    tip += QStringLiteral("\n访问: 总线拒绝%s")
+                               .arg(status.clockKnown && !status.clockEnabled
+                                        ? QStringLiteral("（时钟未开，不代表不存在）")
+                                        : QString());
+                    break;
+                }
+                if (!status.clockKnown || !status.clockEnabled)
+                    item->setForeground(kColumnState, palette.textDim);
+            }
+
             item->setToolTip(kColumnName, tip);
+            item->setToolTip(kColumnState, tip);
         }
     }
     m_updating = false;

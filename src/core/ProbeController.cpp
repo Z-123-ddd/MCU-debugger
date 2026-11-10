@@ -267,6 +267,38 @@ void ProbeWorker::doListProbes()
     emit probesListed(serials, QString());
 }
 
+void ProbeWorker::doScanDeviceTree(const QString &svdPath)
+{
+    if (!m_probe || !m_probe->isConnected()) {
+        emit deviceTreeScanned({}, QStringLiteral("目标未连接，无法读取设备树"));
+        return;
+    }
+    if (svdPath.isEmpty()) {
+        emit deviceTreeScanned({}, QStringLiteral("尚未加载 SVD，无法枚举外设"));
+        return;
+    }
+
+    // Parse on this thread: the file is already in the OS cache and this keeps the
+    // UI thread free (a family SVD takes ~20-50 ms).
+    const auto parsed = library().load(svdPath);
+    if (!parsed) {
+        emit deviceTreeScanned({}, QStringLiteral("SVD 解析失败: %1").arg(parsed.error));
+        return;
+    }
+
+    const QVector<PeripheralStatus> statuses =
+        DeviceTreeScanner::scan(*m_probe, parsed.value,
+                                [](int done, int total, const QString &name) {
+                                    if (done % 20 == 0 || done == total)
+                                        Logger::instance()->debug(
+                                            QStringLiteral("设备树扫描 %1/%2 (%3)")
+                                                .arg(done)
+                                                .arg(total)
+                                                .arg(name));
+                                });
+    emit deviceTreeScanned(statuses, QString());
+}
+
 void ProbeWorker::doValidateChip(const QString &chipName)
 {
     if (!m_probe) {
@@ -287,6 +319,7 @@ ProbeController::ProbeController(QObject *parent)
 {
     qRegisterMetaType<mrd::ProbeInfo>("mrd::ProbeInfo");
     qRegisterMetaType<mrd::IdentificationResult>("mrd::IdentificationResult");
+    qRegisterMetaType<QVector<mrd::PeripheralStatus>>("QVector<mrd::PeripheralStatus>");
 
     m_worker = new ProbeWorker();
     m_worker->moveToThread(&m_thread);
@@ -310,6 +343,7 @@ ProbeController::ProbeController(QObject *parent)
     connect(m_worker, &ProbeWorker::readFinished, this, &ProbeController::readFinished);
     connect(m_worker, &ProbeWorker::writeFinished, this, &ProbeController::writeFinished);
     connect(m_worker, &ProbeWorker::probesListed, this, &ProbeController::probesListed);
+    connect(m_worker, &ProbeWorker::deviceTreeScanned, this, &ProbeController::deviceTreeScanned);
     connect(m_worker, &ProbeWorker::chipValidated, this, &ProbeController::chipValidated);
     connect(m_worker, &ProbeWorker::cpuStateChanged, this, [this](bool halted, bool ok, const QString &error) {
         if (ok)
@@ -400,6 +434,11 @@ void ProbeController::requestExec(const QString &command)
 void ProbeController::requestListProbes()
 {
     dispatch([worker = m_worker] { worker->doListProbes(); });
+}
+
+void ProbeController::requestScanDeviceTree(const QString &svdPath)
+{
+    dispatch([worker = m_worker, svdPath] { worker->doScanDeviceTree(svdPath); });
 }
 
 void ProbeController::requestValidateChip(const QString &chipName)

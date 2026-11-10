@@ -1,6 +1,7 @@
 #include "app/Cli.h"
 
 #include "core/AppSettings.h"
+#include "core/DeviceTreeScanner.h"
 #include "core/GpioCodec.h"
 #include "core/HexUtil.h"
 #include "core/Logger.h"
@@ -368,6 +369,70 @@ int runSelftest(const Options &options)
     for (const auto &root : library.roots())
         out(QStringLiteral("  - %1").arg(root));
     check(indexed > 0, QStringLiteral("SVD 库索引到文件"), QStringLiteral("%1 个").arg(indexed));
+
+    // --- real device tree --------------------------------------------------
+    // Derived from the SVD's RCC gate bits plus a bus-decode test per peripheral;
+    // classification is pure logic, so it is asserted here without hardware.
+    {
+        out(QString());
+        out(QStringLiteral("--- 设备树（真实外设） ---"));
+
+        const QHash<QString, DeviceTreeScanner::ClockBit> clocks = DeviceTreeScanner::clockMap(device);
+        check(!clocks.isEmpty(), QStringLiteral("从 RCC 解析出时钟门控位"),
+              QStringLiteral("%1 个外设可查时钟").arg(clocks.size()));
+        out(QStringLiteral("    可解析时钟的外设: %1 / %2")
+                .arg(DeviceTreeScanner::clockResolvableCount(device))
+                .arg(device.peripherals.size()));
+
+        // Spot-check a few mappings that need naming aliases.
+        const auto gpioA = clocks.constFind(QStringLiteral("GPIOA"));
+        check(gpioA != clocks.constEnd(), QStringLiteral("IOPAEN 正确映射到 GPIOA"),
+              gpioA != clocks.constEnd()
+                  ? QStringLiteral("%1[%2]").arg(gpioA->registerName).arg(gpioA->bit)
+                  : QString());
+        const auto usb = clocks.constFind(QStringLiteral("USB_FS"));
+        check(usb != clocks.constEnd(), QStringLiteral("USBFSEN 正确映射到 USB_FS"),
+              usb != clocks.constEnd()
+                  ? QStringLiteral("%1[%2]").arg(usb->registerName).arg(usb->bit)
+                  : QString());
+
+        // Presence probe register selection must avoid read-sensitive registers.
+        if (const SvdPeripheral *gpio = device.findPeripheral(QStringLiteral("GPIOA"))) {
+            const SvdRegister *probeReg = DeviceTreeScanner::presenceProbeRegister(*gpio);
+            check(probeReg != nullptr, QStringLiteral("GPIOA 找到存在性探测寄存器"),
+                  probeReg ? probeReg->name : QString());
+            if (probeReg)
+                check(!probeReg->name.contains(QLatin1String("POD"))
+                          && !probeReg->name.contains(QLatin1String("PBSC")),
+                      QStringLiteral("探测寄存器避开写侧影响寄存器"), probeReg->name);
+
+            // Classification matrix: gate state x bus response.
+            DeviceTreeScanner::ClockBit gate;
+            gate.registerName = QStringLiteral("RCC_AHB1PCLKEN");
+            gate.bit = 0;
+
+            auto status = DeviceTreeScanner::classify(*gpio, gate, /*gateOn=*/true,
+                                                     /*readOk=*/true, 0x1234, QString());
+            check(status.reachability == PeripheralStatus::Readable && status.clockEnabled,
+                  QStringLiteral("门控开 + 读成功 -> 存在且已使能"),
+                  QStringLiteral("clock=%1").arg(status.clockEnabled ? 1 : 0));
+
+            status = DeviceTreeScanner::classify(*gpio, gate, true, false, 0,
+                                                QStringLiteral("bus fault"));
+            check(status.reachability == PeripheralStatus::Missing,
+                  QStringLiteral("门控开 + 读失败 -> 判定缺失"));
+
+            status = DeviceTreeScanner::classify(*gpio, gate, /*gateOn=*/false, false, 0,
+                                                QStringLiteral("bus fault"));
+            check(status.reachability == PeripheralStatus::Unreachable,
+                  QStringLiteral("门控关 + 读失败 -> 不误判为缺失"));
+
+            const DeviceTreeScanner::ClockBit noGate;
+            status = DeviceTreeScanner::classify(*gpio, noGate, false, true, 0x55, QString());
+            check(status.reachability == PeripheralStatus::Readable && !status.clockKnown,
+                  QStringLiteral("无门控信息 + 读成功 -> 存在但时钟未知"));
+        }
+    }
 
     const QVector<SvdEntry> candidates = library.candidatesFor(device.name);
     check(!candidates.isEmpty(), QStringLiteral("按器件名可匹配 SVD"),

@@ -49,6 +49,8 @@ set(CORE_SOURCES
     src/core/ProbeController.cpp
     src/core/DeviceIdentifier.h
     src/core/DeviceIdentifier.cpp
+    src/core/DeviceTreeScanner.h
+    src/core/DeviceTreeScanner.cpp
     src/core/GpioCodec.h
     src/core/GpioCodec.cpp
     src/core/RegisterSession.h

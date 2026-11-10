@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/DeviceIdentifier.h"
+#include "core/DeviceTreeScanner.h"
 #include "core/GpioCodec.h"
 #include "core/IProbe.h"
 #include "core/SvdTypes.h"
@@ -74,6 +75,7 @@ private slots:
     void onRegisterRead();
     void onPinConfigure(const QString &portName, int index, const GpioPinConfig &config);
     void onPinLevel(const QString &portName, int index, bool high);
+    void onDeviceTreeScanned(const QVector<PeripheralStatus> &statuses, const QString &error);
 
     void onProbeOpened(bool ok, const QString &error, const ProbeInfo &info);
     void onProbeConnectFinished(bool ok, const QString &error, const ProbeInfo &info);

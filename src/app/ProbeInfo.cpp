@@ -2,6 +2,7 @@
 
 #include "core/AppSettings.h"
 #include "core/DeviceIdentifier.h"
+#include "core/DeviceTreeScanner.h"
 #include "core/GpioCodec.h"
 #include "core/HexUtil.h"
 #include "core/JLinkGdbProbe.h"
@@ -271,6 +272,60 @@ int runProbeInfo(const Options &options)
             } else {
                 check(false, QStringLiteral("SVD 已解析"), parsed.error);
             }
+        }
+    }
+
+    // --- real device tree --------------------------------------------------
+    if (!device.peripherals.isEmpty()) {
+        out(QString());
+        out(QStringLiteral("--- 设备树（真实外设，时钟门控 + 总线可访问性） ---"));
+        const QVector<PeripheralStatus> statuses = DeviceTreeScanner::scan(*probe, device);
+
+        int onChip = 0;
+        int clocked = 0;
+        int missing = 0;
+        int unreachable = 0;
+        for (const auto &status : statuses) {
+            if (status.onChip())
+                ++onChip;
+            if (status.clockKnown && status.clockEnabled)
+                ++clocked;
+            if (status.reachability == PeripheralStatus::Missing)
+                ++missing;
+            if (status.reachability == PeripheralStatus::Unreachable)
+                ++unreachable;
+        }
+
+        out(QStringLiteral("  合计 %1: 本芯片存在 %2 / 缺失 %3 / 无法访问 %4 / 时钟已开 %5")
+                .arg(statuses.size())
+                .arg(onChip)
+                .arg(missing)
+                .arg(unreachable)
+                .arg(clocked));
+        check(missing == 0, QStringLiteral("SVD 中的外设均被本芯片实现"),
+              QStringLiteral("缺失 %1 个").arg(missing));
+
+        out(QString());
+        out(QStringLiteral("  外设              时钟  访问"));
+        for (const auto &status : statuses) {
+            QString clock = QStringLiteral(" —  ");
+            if (status.clockKnown)
+                clock = status.clockEnabled ? QStringLiteral("  开") : QStringLiteral("  关");
+            QString access;
+            switch (status.reachability) {
+            case PeripheralStatus::Readable:
+                access = QStringLiteral("%1 = %2").arg(status.probeRegister, hex32(status.probeValue));
+                break;
+            case PeripheralStatus::Missing:
+                access = QStringLiteral("总线拒绝（时钟已开 -> 本芯片未实现）");
+                break;
+            case PeripheralStatus::Unreachable:
+                access = status.clockKnown && !status.clockEnabled
+                             ? QStringLiteral("总线拒绝（时钟未开）")
+                             : QStringLiteral("总线拒绝");
+                break;
+            }
+            out(QStringLiteral("  %1 %2  %3").arg(status.name, -16).arg(clock, access));
         }
     }
 
