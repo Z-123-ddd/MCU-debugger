@@ -1,0 +1,91 @@
+{
+    // ---------------------------------------------------------------------
+    // 构建 / 自检 / 打包任务。Ctrl+Shift+B 执行默认构建任务。
+    //
+    // 为什么全用相对路径：本工程路径含空格（"...\MCU debugger"），
+    // VSCode 的 shell 任务不会自动给 command/args 加引号，绝对路径会被拆成
+    // 多个参数（表现为 ERRORLEVEL=9009 找不到命令）。用 cwd + 相对路径即可。
+    // ---------------------------------------------------------------------
+    "version": "2.0.0",
+    "options": {
+        "cwd": "${workspaceFolder}",
+        // 与 scripts\build.bat 注入的 PATH 相同，任务里直接调 cmake/ninja/g++ 也能找到
+        "env": {
+            "PATH": "D:/Qt/6.8.3/mingw_64/bin;D:/Qt/Tools/mingw1310_64/bin;D:/Qt/Tools/Ninja;D:/Qt/Tools/CMake_64/bin;${env:PATH}"
+        }
+    },
+    "tasks": [
+        {
+            "label": "build",
+            "type": "shell",
+            "command": "scripts\\build.bat",
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": ["$gcc"],
+            "detail": "增量构建 -> build/bin/mcuRegDebugger.exe（Release）"
+        },
+        {
+            "label": "build (clean)",
+            "type": "shell",
+            "command": "scripts\\build.bat --clean",
+            "group": "build",
+            "problemMatcher": ["$gcc"],
+            "detail": "删除 build 目录后全量重建"
+        },
+        {
+            "label": "build (debug)",
+            "type": "shell",
+            // 单条命令行：type=shell 时整串交给 cmd.exe，&& 才会被正确解释。
+            "command": "cmake -S . -B build-debug -G Ninja -DCMAKE_PREFIX_PATH=D:/Qt/6.8.3/mingw_64 -DCMAKE_MAKE_PROGRAM=D:/Qt/Tools/Ninja/ninja.exe -DCMAKE_BUILD_TYPE=Debug && cmake --build build-debug --parallel",
+            "group": "build",
+            "problemMatcher": ["$gcc"],
+            "detail": "Debug 构建 -> build-debug/bin/mcuRegDebugger.exe（可单步源码）"
+        },
+        {
+            "label": "selftest",
+            "type": "shell",
+            "command": "build\\bin\\mcuRegDebugger.exe --selftest --svd svd/N32H47x_DFP.1.2.0/N32H473.svd --device N32H473CE",
+            "dependsOn": ["build"],
+            "problemMatcher": [],
+            "detail": "离线自检；退出码 0 = 全部 PASS（需 svd/，见 scripts\\fetch-n32-svds.py）"
+        },
+        {
+            "label": "selftest + render",
+            "type": "shell",
+            "command": "build\\bin\\mcuRegDebugger.exe --selftest --svd svd/N32H47x_DFP.1.2.0/N32H473.svd --device N32H473CE --render out-render",
+            "dependsOn": ["build"],
+            "problemMatcher": [],
+            "detail": "自检 + 渲染封装图/外设树/位域条/端口矩阵到 out-render/"
+        },
+        {
+            "label": "run",
+            "type": "shell",
+            "command": "build\\bin\\mcuRegDebugger.exe",
+            "dependsOn": ["build"],
+            "problemMatcher": [],
+            "detail": "启动图形界面"
+        },
+        {
+            "label": "probe-info",
+            "type": "shell",
+            "command": "build\\bin\\mcuRegDebugger.exe --probe-info",
+            "problemMatcher": [],
+            "detail": "打印 J-Link DLL/固件/序列号（验证探针可见）"
+        },
+        {
+            "label": "deploy",
+            "type": "shell",
+            "command": "scripts\\deploy.bat",
+            "dependsOn": ["build"],
+            "problemMatcher": [],
+            "detail": "收集 Qt 运行时 -> deploy/（可脱离 Qt 环境直接运行）"
+        },
+        {
+            "label": "pack (installer)",
+            "type": "shell",
+            "command": "packaging\\pack.bat",
+            "dependsOn": ["deploy"],
+            "problemMatcher": [],
+            "detail": "生成 dist/McuRegDebugger-<ver>-setup.exe（需要 NSIS）"
+        }
+    ]
+}

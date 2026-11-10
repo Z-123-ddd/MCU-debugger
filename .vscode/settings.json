@@ -1,0 +1,71 @@
+{
+    // ---------------------------------------------------------------------
+    // MCU Register Debugger —— Qt 6.8.3 / MinGW 13.1 / Ninja
+    // 换机器时改下面这 4 个路径（或设置同名环境变量后重启 VSCode）。
+    // 与 scripts\build.bat 里的 QT / MINGW / CMAKEDIR / NINJA 保持一致。
+    // ---------------------------------------------------------------------
+
+    // --- CMake Tools ------------------------------------------------------
+    "cmake.generator": "Ninja",
+    "cmake.sourceDirectory": "${workspaceFolder}",
+    "cmake.buildDirectory": "${workspaceFolder}/build",
+    "cmake.configureOnOpen": false,
+    "cmake.exportCompileCommandsFile": true,
+    "cmake.configureSettings": {
+        "CMAKE_PREFIX_PATH": "D:/Qt/6.8.3/mingw_64",
+        "CMAKE_MAKE_PROGRAM": "D:/Qt/Tools/Ninja/ninja.exe",
+        "CMAKE_BUILD_TYPE": "Release"
+    },
+
+    // --- IntelliSense（走 compile_commands.json，避免手写 include 路径）---
+    "C_Cpp.default.cppStandard": "c++20",
+    "C_Cpp.default.cStandard": "c11",
+    "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json",
+    "C_Cpp.default.compilerPath": "D:/Qt/Tools/mingw1310_64/bin/g++.exe",
+    "C_Cpp.default.intelliSenseMode": "windows-gcc-x64",
+
+    // --- 编辑约定 ---------------------------------------------------------
+    "files.encoding": "utf8",
+    "files.eol": "\n",
+    "files.trimTrailingWhitespace": true,
+    "files.insertFinalNewline": true,
+    "files.associations": {
+        "*.nsi": "nsis",
+        "*.svd": "xml",
+        "*.pdsc": "xml"
+    },
+    "[cpp]": {
+        "editor.defaultFormatter": "ms-vscode.cpptools",
+        "editor.formatOnSave": false
+    },
+
+    // --- 排除噪音 ---------------------------------------------------------
+    // svd/ 是 29MB 的厂商包（已 gitignore），build/deploy/dist 是产物。
+    // 不排除的话全局搜索和文件监视会明显变慢。
+    "search.exclude": {
+        "**/build": true,
+        "**/deploy": true,
+        "**/dist": true,
+        "**/svd": true,
+        "**/tools": true,
+        "**/.codegraph": true
+    },
+    "files.watcherExclude": {
+        "**/build/**": true,
+        "**/deploy/**": true,
+        "**/dist/**": true,
+        "**/svd/**": true,
+        "**/tools/**": true
+    },
+    "files.exclude": {
+        "**/.codegraph": true,
+        "**/__pycache__": true
+    },
+
+    // --- 集成终端 ---------------------------------------------------------
+    // 让终端里能直接跑 cmake/ninja/g++，不必每次手动 set PATH。
+    "terminal.integrated.defaultProfile.windows": "Command Prompt",
+    "terminal.integrated.env.windows": {
+        "PATH": "D:/Qt/6.8.3/mingw_64/bin;D:/Qt/Tools/mingw1310_64/bin;D:/Qt/Tools/Ninja;D:/Qt/Tools/CMake_64/bin;${env:PATH}"
+    }
+}

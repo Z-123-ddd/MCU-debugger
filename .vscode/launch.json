@@ -1,0 +1,60 @@
+{
+    // ---------------------------------------------------------------------
+    // 调试配置。构建产物是 Release + 无 PDB 的 MinGW 可执行文件，
+    // 想单步源码请先用 "build (debug)" 任务（见下）或把 CMakeLists 的
+    // CMAKE_BUILD_TYPE 改成 Debug。
+    // ---------------------------------------------------------------------
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "GUI (gdb)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/bin/mcuRegDebugger.exe",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "environment": [
+                {
+                    "name": "PATH",
+                    "value": "D:/Qt/6.8.3/mingw_64/bin;D:/Qt/Tools/mingw1310_64/bin;${env:PATH}"
+                }
+            ],
+            "stopAtEntry": false,
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "miDebuggerPath": "D:/Qt/Tools/mingw1310_64/bin/gdb.exe",
+            "setupCommands": [
+                { "description": "为 gdb 启用整齐打印", "text": "-enable-pretty-printing", "ignoreFailures": true }
+            ],
+            "preLaunchTask": "build"
+        },
+        {
+            "name": "自检 (selftest, 无窗口)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/bin/mcuRegDebugger.exe",
+            "args": [
+                "--selftest",
+                "--svd",
+                "${workspaceFolder}/svd/N32H47x_DFP.1.2.0/N32H473.svd",
+                "--device",
+                "N32H473CE"
+            ],
+            "cwd": "${workspaceFolder}",
+            "environment": [
+                {
+                    "name": "PATH",
+                    "value": "D:/Qt/6.8.3/mingw_64/bin;D:/Qt/Tools/mingw1310_64/bin;${env:PATH}"
+                }
+            ],
+            "stopAtEntry": false,
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "miDebuggerPath": "D:/Qt/Tools/mingw1310_64/bin/gdb.exe",
+            "setupCommands": [
+                { "description": "为 gdb 启用整齐打印", "text": "-enable-pretty-printing", "ignoreFailures": true }
+            ],
+            "preLaunchTask": "build"
+        }
+    ]
+}

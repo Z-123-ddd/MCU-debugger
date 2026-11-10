@@ -94,6 +94,35 @@ build\bin\mcuRegDebugger.exe --probe-info
 输出包含：Commander/DLL/固件/硬件/SN、`CPUID`、`IDCODE`（DEV_ID/REV_ID）、
 识别出的 MCU 与 SVD、逐引脚 GPIO 解码、SRAM 写入回环校验。
 
+### 用 VSCode 开发
+
+仓库自带 `.vscode/` 工程配置（已取消对 `.vscode/` 的忽略，机器本地文件仍排除）。
+装好 **CMake Tools** + **C/C++** 两个扩展后直接打开仓库根目录即可。
+
+| 文件 | 作用 |
+|---|---|
+| `settings.json` | Qt / MinGW / Ninja 路径、CMake 预设、IntelliSense 数据源、搜索排除 |
+| `c_cpp_properties.json` | 走 `build/compile_commands.json`；CMake Tools 未启用时用内置 include 兜底 |
+| `tasks.json` | `build` / `build (clean)` / `build (debug)` / `selftest` / `selftest + render` / `run` / `probe-info` / `deploy` / `pack (installer)` |
+| `launch.json` | gdb 调试 GUI 与自检两种入口 |
+| `cmake-kits.json` | Qt 6.8.3 MinGW 64-bit kit |
+| `extensions.json` | 扩展推荐 |
+
+常用：`Ctrl+Shift+B` 默认构建；`Ctrl+Shift+P → Tasks: Run Task` 选 `selftest`。
+
+两条注意：
+
+1. **路径含空格**（`...\MCU debugger`）。VSCode 的 shell 任务不会自动给
+   `command`/`args` 加引号，所以任务里一律用 `options.cwd` + 相对路径，
+   不要改成 `${workspaceFolder}/build/bin/...` 这种绝对路径，否则会得到
+   `ERRORLEVEL=9009`（找不到命令）。
+2. **换机器**要改 4 个路径：`settings.json` 里的 `CMAKE_PREFIX_PATH`、
+   `CMAKE_MAKE_PROGRAM`、`compilerPath`、`miDebuggerPath`，
+   与 `scripts\build.bat` 头部的 `QT` / `MINGW` / `CMAKEDIR` / `NINJA` 一一对应。
+
+`build (debug)` 任务单独产出 `build-debug/`（已 gitignore），供断点单步；
+默认的 `build/` 是 Release，无调试符号。
+
 ## 5. 界面说明
 
 | 区域 | 作用 |

@@ -1,7 +1,9 @@
 # ---- build outputs -------------------------------------------------------
 build/
+build-debug/
 deploy/
 dist/
+out-render/
 *.exe
 *.dll
 *.a
@@ -24,6 +26,11 @@ qrc_*.cpp
 ui_*.h
 *_autogen/
 
+# ---- vendor SVD packs (fetched by scripts/fetch-n32-svds.py) --------------
+# Binary vendor assets: run the script once per machine instead of committing.
+svd/
+data/datasheets/
+
 # ---- vendored tools (fetched by scripts/fetch-probe-rs.ps1) --------------
 tools/
 
@@ -38,8 +45,12 @@ out*/
 .codegraph/
 .reasonix/
 .tmpocr/
-.vscode/
 .idea/
+# .vscode/ is committed on purpose (shared build/debug config, see README §10).
+# Only machine-specific files stay out of git:
+.vscode/*.local.json
+.vscode/ipch/
+.vscode/*.code-workspace
 .cache/
 __pycache__/
 *.pyc

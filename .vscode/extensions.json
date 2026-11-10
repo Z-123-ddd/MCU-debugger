@@ -1,0 +1,12 @@
+{
+    // 推荐扩展：装了 CMake Tools + C/C++ 就能构建/智能提示/断点调试。
+    // 其余为可选增强。
+    "recommendations": [
+        "ms-vscode.cmake-tools",
+        "ms-vscode.cpptools",
+        "twxs.cmake",
+        "ms-python.python",
+        "editorconfig.editorconfig"
+    ],
+    "unwantedRecommendations": []
+}

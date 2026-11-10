@@ -1,0 +1,22 @@
+[
+    {
+        "name": "Qt 6.8.3 MinGW 64-bit",
+        "compilers": {
+            "C": "D:/Qt/Tools/mingw1310_64/bin/gcc.exe",
+            "CXX": "D:/Qt/Tools/mingw1310_64/bin/g++.exe"
+        },
+        "toolchainFile": "",
+        "preferredGenerator": {
+            "name": "Ninja",
+            "platform": "x64"
+        },
+        "environmentVariables": {
+            "PATH": "D:/Qt/6.8.3/mingw_64/bin;D:/Qt/Tools/mingw1310_64/bin;D:/Qt/Tools/Ninja;D:/Qt/Tools/CMake_64/bin;${env:PATH}"
+        },
+        "cmakeSettings": {
+            "CMAKE_PREFIX_PATH": "D:/Qt/6.8.3/mingw_64",
+            "CMAKE_MAKE_PROGRAM": "D:/Qt/Tools/Ninja/ninja.exe",
+            "CMAKE_BUILD_TYPE": "Release"
+        }
+    }
+]
