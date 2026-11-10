@@ -8,6 +8,7 @@
 
 #include <QMainWindow>
 
+#include <QHash>
 #include <QSet>
 
 #include <memory>
@@ -140,6 +141,10 @@ private:
     /// Pins this session configured itself; keeps them from being reported as
     /// "uninitialised" once their bits happen to equal the reset value again.
     QSet<QString> m_configuredPins;
+    /// Port ("PA") -> the bit numbers this package bonds out. Empty when no
+    /// package description is available.
+    QHash<QString, QVector<int>> m_bondedBits;
+    QVector<PeripheralStatus> m_statuses;
     QStringList m_pinned;
 };
 

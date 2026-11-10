@@ -45,9 +45,24 @@ struct PeripheralStatus
     quint32 probeValue = 0;
     QString error;
 
+    /// GPIO pins this *package* bonds out; -1 when not known (non-GPIO peripheral,
+    /// or no package table). A GPIO port whose registers answer on the bus but
+    /// which has zero bonded pins is not usable on this part even though the bus
+    /// decodes it, so bonding has to override the read result.
+    int bondedPins = -1;
+
     bool accessible() const { return reachability == Readable; }
-    /// True when this part really has the peripheral.
-    bool onChip() const { return reachability == Readable || reachability == Missing; }
+    /// False only when we know the package brings no pin out for this peripheral.
+    bool bonded() const { return bondedPins != 0; }
+    /// True when this part really offers the peripheral: the die implements it and
+    /// the package exposes it.
+    bool onChip() const
+    {
+        return (reachability == Readable || reachability == Missing) && bonded();
+    }
+    /// Registers respond but no pin is bonded out (typical for larger packages
+    /// being cut down to a smaller one).
+    bool unbonded() const { return bondedPins == 0; }
 };
 
 /// Derives the *real* peripheral tree of the attached part.

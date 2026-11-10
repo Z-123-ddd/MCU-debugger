@@ -101,10 +101,10 @@ QHash<QString, DeviceTreeScanner::ClockBit> DeviceTreeScanner::clockMap(const Sv
     for (const auto &peripheral : device.peripherals)
         byNormalized.insert(normalize(peripheral.name), peripheral.name);
 
+    // Scan every RCC register, not just the *CLKEN ones: this family also gates
+    // peripherals from RCC_BDCTRL (LPTIM1EN at 0x34), which a name filter would
+    // miss and the peripheral would then look clock-less.
     for (const auto &reg : rcc->registers) {
-        if (!reg.name.contains(QLatin1String("CLKEN"), Qt::CaseInsensitive)
-            && !reg.name.contains(QLatin1String("EN"), Qt::CaseInsensitive))
-            continue;
         if (reg.fields.isEmpty())
             continue;
 

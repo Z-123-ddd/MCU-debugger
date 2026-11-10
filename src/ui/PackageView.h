@@ -20,6 +20,11 @@ struct PackagePin
     QString portName;   ///< "PA" when the pin is a GPIO
     int portBit = -1;
     QStringList functions;
+    /// Text to draw on the package body when it differs from `name`.
+    ///
+    /// Dedicated pins (OSC_IN / OSC_OUT / NRST ...) are labelled by what they
+    /// actually do, so a 48-pin part never advertises a "PH" port it cannot use.
+    QString displayName;
     /// Live state from the port decoder (colours the pin).
     QString liveMode;
     bool liveHigh = false;
@@ -39,6 +44,24 @@ struct PackageDescription
     bool isValid() const { return !pins.isEmpty(); }
     const PackagePin *pinByNumber(int number) const;
     const PackagePin *pinForPort(const QString &portName, int bit) const;
+
+    /// Port letter ("PA") -> bonded bit indices, from this package's pin table.
+    ///
+    /// This is the only authoritative source for "does this *package* actually
+    /// bring the pin out": the SVD describes the die/family, and a peripheral's
+    /// registers can still respond on the bus even when the pins are unbonded.
+    QHash<QString, QVector<int>> bondedPorts() const;
+    /// Ports that expose at least one ordinary GPIO pin, with their bonded bits.
+    ///
+    /// A port whose every bonded pin is a dedicated function (PH0=OSC_IN,
+    /// PH1=OSC_OUT, PH6=NRST) is not a GPIO port: it must not show up as a
+    /// group in the tree or as a 16-cell matrix, otherwise a 48-pin part looks
+    /// like it has a PH port it can never use.
+    QHash<QString, QVector<int>> gpioPorts() const;
+    /// Pins bonded to a dedicated function only (no ordinary GPIO use).
+    QVector<PackagePin> dedicatedPins() const;
+    /// How many pins of  portName this package bonds out (0 = not available).
+    int bondedPinCount(const QString &portName) const;
     static PackageDescription loadFromFile(const QString &path, QString *error = nullptr);
 
     /// Build a structure-only pinout from counts alone (no per-pin names).
@@ -79,6 +102,8 @@ public:
     bool hasPackage() const { return !m_current.isEmpty(); }
 
     QString currentPackage() const;
+    /// Description of the package currently shown (nullptr before identification).
+    const PackageDescription *currentDescription() const;
     QStringList packages() const { return m_packages.keys(); }
     QVector<PackageDescription> descriptions() const { return m_packages.values().toVector(); }
 
@@ -146,6 +171,7 @@ private:
     void updateHint(const QString &packageName);
 
     QComboBox *m_box = nullptr;
+    QLabel *m_packageLabel = nullptr;
     QLabel *m_hint = nullptr;
     PackageView *m_view = nullptr;
 };

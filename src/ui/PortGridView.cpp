@@ -67,14 +67,32 @@ void PortGridWidget::setSelectedPin(int index)
 
 QSize PortGridWidget::sizeHint() const
 {
+    const int count = visibleBits().size();
+    const int rows = qMax(1, (count + kColumns - 1) / kColumns);
     return QSize(kColumns * (kCellWidth + kSpacing) + kSpacing,
-                 kRows * (kCellHeight + kSpacing) + kSpacing + 24);
+                 rows * (kCellHeight + kSpacing) + kSpacing + 24);
+}
+
+QVector<int> PortGridWidget::visibleBits() const
+{
+    QVector<int> bits;
+    for (const auto &pin : m_pins) {
+        if (pin.bonded)
+            bits << pin.index;
+    }
+    return bits;
 }
 
 QRect PortGridWidget::pinRect(int index) const
 {
-    const int row = index / kColumns;
-    const int column = index % kColumns;
+    // Lay out only the bonded pins: a 48-pin part brings out 3 of GPIOH's 16 bits,
+    // so reserving 16 cells would draw 13 phantom pins.
+    const QVector<int> bits = visibleBits();
+    const int slot = bits.indexOf(index);
+    if (slot < 0)
+        return QRect();
+    const int row = slot / kColumns;
+    const int column = slot % kColumns;
     return QRect(kSpacing + column * (kCellWidth + kSpacing), kSpacing + row * (kCellHeight + kSpacing), kCellWidth,
                  kCellHeight);
 }
@@ -82,7 +100,8 @@ QRect PortGridWidget::pinRect(int index) const
 int PortGridWidget::pinAt(const QPoint &pos) const
 {
     for (int i = 0; i < m_pins.size(); ++i) {
-        if (pinRect(i).contains(pos))
+        const QRect rect = pinRect(i);
+        if (rect.isValid() && rect.contains(pos))
             return i;
     }
     return -1;
@@ -109,7 +128,11 @@ void PortGridWidget::paintEvent(QPaintEvent *)
 
     for (int i = 0; i < m_pins.size(); ++i) {
         const GpioPin &pin = m_pins.at(i);
+        if (!pin.bonded)
+            continue;
         const QRect r = pinRect(i);
+        if (!r.isValid())
+            continue;
         const QColor base = colorForPin(pin);
         QColor fill = base;
         fill.setAlpha(m_valid ? 235 : 140);

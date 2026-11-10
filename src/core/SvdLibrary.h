@@ -10,6 +10,22 @@
 
 namespace mrd {
 
+/// Vendor fact sheet for one exact part number, from `svd/manifest.json`.
+///
+/// A DFP pack ships one SVD per *sub-series* (N32H473.svd covers ten packages),
+/// so the manifest is the only place that ties a part number to the SVD the
+/// vendor assigned *and* to that particular package's pin/IO counts.
+struct SvdManifestEntry
+{
+    QString part;
+    QString svdPath;      ///< absolute path to the .svd
+    QString series;
+    QString package;      ///< empty when the vendor lists several packages
+    QStringList packages; ///< every package the part is offered in
+    int pinCount = 0;     ///< 0 when ambiguous (e.g. LQFP100/LQFP128)
+    int ioCount = 0;
+};
+
 /// Lightweight metadata for one `.svd` file in the library.
 struct SvdEntry
 {
@@ -59,9 +75,19 @@ public:
     Result<SvdDevice> load(const QString &path) const;
     Result<SvdDevice> load(const SvdEntry &entry) const { return load(entry.path); }
 
+    // --- vendor manifest ---------------------------------------------------
+    /// Read `<root>/manifest.json` (written by scripts/extract-svd-packs.py).
+    int loadManifest();
+    int manifestCount() const { return m_manifest.size(); }
+    /// Exact match first, then a unique prefix match ("N32G452CB" against the
+    /// manifest's "N32G452CBL7").
+    bool lookupPart(const QString &part, SvdManifestEntry *out = nullptr,
+                    QStringList *ambiguous = nullptr) const;
+
 private:
     QStringList m_roots;
     QVector<SvdEntry> m_entries;
+    QHash<QString, SvdManifestEntry> m_manifest;
     QHash<QString, SvdEntry> m_cached;
 };
 

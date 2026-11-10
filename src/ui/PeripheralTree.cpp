@@ -137,6 +137,13 @@ void PeripheralTree::rebuild()
             // Apply the state filter (only meaningful once the tree was read back).
             if (known) {
                 const PeripheralStatus &status = statusIt.value();
+
+                // Never list a peripheral this package brings no pin out for: a
+                // 48-pin part must not advertise GPIOD..GPIOG just because the die
+                // decodes their registers.
+                if (status.unbonded())
+                    continue;
+
                 if (m_filterMode == Filter::OnChip && !status.onChip())
                     continue;
                 if (m_filterMode == Filter::Clocked && !(status.clockKnown && status.clockEnabled))

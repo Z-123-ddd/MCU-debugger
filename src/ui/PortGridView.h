@@ -48,6 +48,8 @@ protected:
 private:
     QRect pinRect(int index) const;
     int pinAt(const QPoint &pos) const;
+    /// Bits this package actually bonds out, in ascending order.
+    QVector<int> visibleBits() const;
 
     void showPinMenu(int index, const QPoint &globalPos);
 

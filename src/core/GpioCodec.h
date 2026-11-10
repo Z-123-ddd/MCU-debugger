@@ -16,6 +16,10 @@ struct GpioPin
 {
     int index = 0;              ///< 0..15
     bool present = true;
+    /// False when the port exists on the die but this package bonds no pin for
+    /// this bit. Such bits must not be drawn: a 48-pin part bringing out only
+    /// PH0/PH1/PH6 must not show a 16-cell GPIOH matrix.
+    bool bonded = true;
     QString portName;           ///< "PA"
     QString name() const { return portName + QString::number(index); }
 
@@ -77,7 +81,8 @@ public:
     static QVector<GpioPin> decode(const SvdPeripheral &peripheral,
                                    const QHash<quint32, quint32> &values,
                                    bool *valuesValid = nullptr,
-                                   const QSet<QString> &explicitlyConfigured = {});
+                                   const QSet<QString> &explicitlyConfigured = {},
+                                   const QVector<int> &bondedBits = {});
 
     /// Register writes that turn bit into config, read-modify-writing from
     /// current. Returns an empty list when the port layout is not recognised.

@@ -8,6 +8,7 @@
 #include "ui/BitFieldStrip.h"
 #include "core/DeviceIdentifier.h"
 #include "core/DeviceTreeScanner.h"
+#include "ui/InspectorPanel.h"
 #include "ui/PackageView.h"
 #include "ui/PeripheralTree.h"
 #include "ui/PortGridView.h"
@@ -16,6 +17,8 @@
 
 #include <QApplication>
 #include <QDir>
+#include <QEvent>
+#include <QLayout>
 #include <QFileInfo>
 #include <QPainter>
 #include <QImage>
@@ -29,9 +32,13 @@ namespace {
 
 bool saveWidget(QWidget *widget, const QString &path, QString *error = nullptr,
                 const QSize &minimum = QSize(900, 500), double minRatio = 0.02,
-                double *outRatio = nullptr)
+                double *outRatio = nullptr, bool exactSize = false)
 {
-    const QSize size = widget->sizeHint().expandedTo(widget->minimumSizeHint()).expandedTo(minimum);
+    // exactSize lets a snapshot prove a *narrow* layout: without it the widget's
+    // own sizeHint wins and the image would silently be 904 px wide again.
+    const QSize size = exactSize ? minimum
+                                 : widget->sizeHint().expandedTo(widget->minimumSizeHint())
+                                       .expandedTo(minimum);
     widget->resize(size);
     QPixmap pixmap(size);
     pixmap.fill(Theme::current().background);
@@ -132,9 +139,104 @@ Status renderSnapshots(const Options &options, const SvdDevice &device)
     strip.setValue(reg->resetValue, true);
     strip.setSelectedField(0);
     const QString stripPath = dir + QStringLiteral("/bitfields-%1-%2.png").arg(peripheral->name, reg->name);
-    if (!saveWidget(&strip, stripPath, &renderError, QSize(904, 120)))
-        return Status::failure(QStringLiteral("渲染位域条失败: %1").arg(renderError.isEmpty() ? stripPath : renderError));
+    strip.resize(904, BitFieldStrip::preferredHeight());
+    if (!saveWidget(&strip, stripPath, &renderError,
+                    QSize(904, BitFieldStrip::preferredHeight()), 0.02, nullptr, true))
+        return Status::failure(
+            QStringLiteral("渲染位域条失败: %1").arg(renderError.isEmpty() ? stripPath : renderError));
     written << stripPath;
+
+    // The bit strip must never clip: all 32 bit states stay visible at any dock
+    // width -- the cells shrink, nothing is dropped. Regression for the bug where
+    // the value row sat 12 px below the widget edge, so the "0/1" states of the
+    // upper half were cut off, and for a narrow dock losing the high bits.
+    {
+        QStringList fails;
+        for (const int probeWidth : {904, 520, 380, 300, 240, 160, 120, 96}) {
+            strip.resize(probeWidth, BitFieldStrip::preferredHeight());
+            const QRect painted = strip.paintedBitsRect();
+            const int cell = strip.bitWidth();
+            const int height = strip.height();
+
+            const bool wideEnough = painted.right() < probeWidth;
+            const bool tallEnough = painted.bottom() < height;
+            const bool coversAll = cell * 32 <= probeWidth - 8;
+            if (!wideEnough || !tallEnough || !coversAll)
+                fails << QStringLiteral("%1px: 格宽 %2, 绘制区 %3x%4 / 控件 %5x%6")
+                             .arg(probeWidth)
+                             .arg(cell)
+                             .arg(painted.width())
+                             .arg(painted.height())
+                             .arg(probeWidth)
+                             .arg(height);
+
+            Logger::instance()->info(
+                QStringLiteral("位域条 %1px: 32 位 x %2px = %3px, 绘制高 %4, 控件高 %5")
+                    .arg(probeWidth)
+                    .arg(cell)
+                    .arg(cell * 32)
+                    .arg(painted.height())
+                    .arg(height));
+        }
+        if (!fails.isEmpty())
+            return Status::failure(
+                QStringLiteral("位域条显示不全: %1").arg(fails.join(QStringLiteral("; "))));
+
+        // Narrow snapshot: shows the scaled-down layout is still complete.
+        strip.resize(340, BitFieldStrip::preferredHeight());
+        strip.setSelectedField(0);
+        const QString narrowPath = dir + QStringLiteral("/bitfields-narrow.png");
+        if (!saveWidget(&strip, narrowPath, &renderError,
+                        QSize(340, BitFieldStrip::preferredHeight()), 0.02, nullptr, true))
+            return Status::failure(QStringLiteral("渲染窄宽度位域条失败: %1").arg(narrowPath));
+        written << narrowPath;
+    }
+
+    // --- whole inspector panel at a narrow dock width ------------------------
+    // The reported bug lived one level up: the dock may be dragged narrow
+    // (setMinimumWidth(200)), so the panel -- not just the bare strip -- has to
+    // keep the bit states visible. This drives the real widget tree.
+    {
+        InspectorPanel panel;
+        panel.setRegister(reg, peripheral->baseAddress + reg->addressOffset, reg->resetValue, true);
+        panel.resize(300, 620);
+        // Hidden widgets lay out lazily: flush the layout requests the same way a
+        // running event loop would, otherwise we measure a half-laid-out panel.
+        for (int round = 0; round < 4; ++round) {
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+            if (QLayout *lay = panel.layout())
+                lay->activate();
+        }
+        BitFieldStrip *inner = panel.bitStrip();
+        const QRect painted = inner->paintedBitsRect();
+        const int needed = BitFieldStrip::preferredHeight();
+        const bool fits = QRect(0, 0, inner->width(), inner->height())
+                              .contains(QRect(0, 0, painted.right() + 1, painted.bottom() + 1));
+        Logger::instance()->info(
+            QStringLiteral("检查器面板 300px: 位域条 %1x%2 (需要高 %3), 每格 %4px, 绘制区 %5x%6")
+                .arg(inner->width())
+                .arg(inner->height())
+                .arg(needed)
+                .arg(inner->bitWidth())
+                .arg(painted.width())
+                .arg(painted.height()));
+        const int panelMin = panel.minimumSizeHint().width();
+        if (panelMin > 320)
+            return Status::failure(
+                QStringLiteral("检查器面板最小宽度 %1px，dock 无法拖窄").arg(panelMin));
+        if (!fits || inner->height() < needed)
+            return Status::failure(
+                QStringLiteral("检查器面板在窄栏下位状态被裁: 条高 %1 / 需要 %2, 绘制区 %3x%4")
+                    .arg(inner->height())
+                    .arg(needed)
+                    .arg(painted.width())
+                    .arg(painted.height()));
+
+        const QString panelPath = dir + QStringLiteral("/inspector-narrow.png");
+        if (!saveWidget(&panel, panelPath, &renderError, QSize(300, 620), 0.02, nullptr, true))
+            return Status::failure(QStringLiteral("渲染检查器面板失败: %1").arg(panelPath));
+        written << panelPath;
+    }
 
     // --- package view: pre-identification state (nothing rendered yet) ---
     PackageView package;
@@ -255,6 +357,39 @@ Status renderSnapshots(const Options &options, const SvdDevice &device)
             ++index;
         }
 
+        // Apply the same bonding annotation the GUI does: a GPIO port whose
+        // registers answer on the bus but which this package does not bring out
+        // must not be reported as usable.
+        QString packagePath;
+        for (const QString &candidate : QDir(ResourcePaths::packageDirectory())
+                                            .entryList({QStringLiteral("*.json")}, QDir::Files)) {
+            QString error;
+            const PackageDescription description = PackageDescription::loadFromFile(
+                ResourcePaths::packageDirectory() + QLatin1Char('/') + candidate, &error);
+            if (!description.isValid() || description.chip.isEmpty())
+                continue;
+            if (description.chip.startsWith(device.name, Qt::CaseInsensitive)
+                || device.name.startsWith(description.chip, Qt::CaseInsensitive)) {
+                packagePath = candidate;
+                const QHash<QString, QVector<int>> bonded = description.bondedPorts();
+                for (auto &status : statuses) {
+                    if (!status.name.startsWith(QLatin1String("GPIO")))
+                        continue;
+                    const QString port = QStringLiteral("P") + status.name.mid(4, 1);
+                    status.bondedPins = bonded.contains(port) ? bonded.value(port).size() : 0;
+                }
+                        Logger::instance()->info(QStringLiteral("外设树按封装 %1 键合数据标注")
+                                             .arg(description.packageName));
+                QStringList bondedList;
+                for (const QString &port : bonded.keys())
+                    bondedList << QStringLiteral("%1(%2)").arg(port).arg(bonded.value(port).size());
+                bondedList.sort();
+                Logger::instance()->info(QStringLiteral("封装键合端口: %1")
+                                             .arg(bondedList.join(QStringLiteral(", "))));
+                break;
+            }
+        }
+
         PeripheralTree tree;
         tree.setDevice(device);
         tree.setStatuses(statuses);
@@ -298,10 +433,15 @@ Status renderSnapshots(const Options &options, const SvdDevice &device)
                 }
             }
 
+            int expectedRows = 0;
             int expectedMissing = 0;
             int expectedOn = 0;
             int expectedOff = 0;
             for (const auto &status : statuses) {
+                // Unbonded ports are not listed at all any more.
+                if (status.unbonded())
+                    continue;
+                ++expectedRows;
                 if (status.reachability == PeripheralStatus::Missing)
                     ++expectedMissing;
                 if (status.clockKnown && status.clockEnabled)
@@ -310,13 +450,14 @@ Status renderSnapshots(const Options &options, const SvdDevice &device)
                     ++expectedOff;
             }
 
-            const bool ok = rows == statuses.size() && markedMissing == expectedMissing
+            const bool ok = rows == expectedRows && markedMissing == expectedMissing
                             && clockOn == expectedOn && clockOff == expectedOff;
             if (!ok) {
                 return Status::failure(
-                    QStringLiteral("外设树渲染不一致: 行 %1/%2, 缺失标记 %3/%4, 时钟开 %5/%6, 时钟关 %7/%8")
+                    QStringLiteral("外设树渲染不一致: 行 %1/%2, 未实现 %3/%4, "
+                                   "时钟开 %5/%6, 时钟关 %7/%8")
                         .arg(rows)
-                        .arg(statuses.size())
+                        .arg(expectedRows)
                         .arg(markedMissing)
                         .arg(expectedMissing)
                         .arg(clockOn)
@@ -324,11 +465,39 @@ Status renderSnapshots(const Options &options, const SvdDevice &device)
                         .arg(clockOff)
                         .arg(expectedOff));
             }
-            Logger::instance()->info(QStringLiteral("外设树结构校验通过: %1 行, 缺失标记 %2, 时钟开 %3, 关 %4")
-                                         .arg(rows)
-                                         .arg(markedMissing)
-                                         .arg(clockOn)
-                                         .arg(clockOff));
+            // Explicit: no port the package does not bond may appear at all.
+            {
+                QStringList forbidden;
+                for (const auto &status : statuses) {
+                    if (status.unbonded())
+                        forbidden << status.name;
+                }
+                QStringList leaked;
+                for (int g = 0; g < widget->topLevelItemCount(); ++g) {
+                    QTreeWidgetItem *group = widget->topLevelItem(g);
+                    for (int c = 0; c < group->childCount(); ++c) {
+                        const QString text = group->child(c)->text(0);
+                        for (const QString &name : forbidden) {
+                            if (text.startsWith(name))
+                                leaked << name;
+                        }
+                    }
+                }
+                if (!leaked.isEmpty())
+                    return Status::failure(
+                        QStringLiteral("未引出的外设仍出现在树里: %1").arg(leaked.join(QStringLiteral(", "))));
+                Logger::instance()->info(
+                    QStringLiteral("已确认未引出的 %1 个外设未出现在树中: %2")
+                        .arg(forbidden.size())
+                        .arg(forbidden.join(QStringLiteral(", "))));
+            }
+
+            Logger::instance()->info(
+                QStringLiteral("外设树结构校验通过: %1 行（已隐藏未引出端口）, 未实现 %2, 时钟开 %3, 关 %4")
+                    .arg(rows)
+                    .arg(markedMissing)
+                    .arg(clockOn)
+                    .arg(clockOff));
         }
     }
 
@@ -374,6 +543,46 @@ Status renderSnapshots(const Options &options, const SvdDevice &device)
             Logger::instance()->info(QStringLiteral("端口矩阵: %1 个引脚, 其中 %2 个未初始化")
                                          .arg(pins.size())
                                          .arg(uninit));
+        }
+
+        // Dedicated-only ports must not exist: this package bonds PH0/PH1/PH6,
+        // but those are OSC_IN/OSC_OUT/NRST, so PH is not a GPIO port and gets
+        // neither a matrix nor a tree group. They are drawn by their own names.
+        {
+            for (const QString &name : QDir(ResourcePaths::packageDirectory())
+                                          .entryList({QStringLiteral("*.json")}, QDir::Files)) {
+                const PackageDescription description = PackageDescription::loadFromFile(
+                    ResourcePaths::packageDirectory() + QLatin1Char('/') + name);
+                if (!description.isValid() || description.chip.isEmpty())
+                    continue;
+                if (!description.chip.startsWith(device.name, Qt::CaseInsensitive)
+                    && !device.name.startsWith(description.chip, Qt::CaseInsensitive))
+                    continue;
+
+                const QHash<QString, QVector<int>> gpio = description.gpioPorts();
+                if (!description.bondedPorts().contains(QStringLiteral("PH")))
+                    break;
+                if (gpio.contains(QStringLiteral("PH")))
+                    return Status::failure(
+                        QStringLiteral("%1 仍有 PH 端口矩阵（应为专用脚 OSC_IN/OSC_OUT/NRST）")
+                            .arg(description.packageName));
+
+                QStringList labels;
+                for (const auto &pin : description.dedicatedPins()) {
+                    if (pin.portName.compare(QStringLiteral("PH"), Qt::CaseInsensitive) == 0)
+                        labels << pin.displayName;
+                }
+                labels.sort();
+                const QStringList expected = {QStringLiteral("NRST"), QStringLiteral("OSC_IN"),
+                                              QStringLiteral("OSC_OUT")};
+                if (labels != expected)
+                    return Status::failure(
+                        QStringLiteral("专用引脚标签不正确: %1").arg(labels.join(QStringLiteral(", "))));
+                Logger::instance()->info(
+                    QStringLiteral("%1: PH 键合 3 脚但全部为专用功能，按名称显示为 %2（无 PH 端口矩阵）")
+                        .arg(description.packageName, labels.join(QStringLiteral(" / "))));
+                break;
+            }
         }
     }
 

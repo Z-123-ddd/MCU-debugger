@@ -2,13 +2,20 @@
 
 #include "core/AppSettings.h"
 #include "core/DeviceTreeScanner.h"
+#include "core/ResourcePaths.h"
+#include "ui/PackageView.h"
+#include "core/DeviceIdentifier.h"
 #include "core/GpioCodec.h"
 #include "core/HexUtil.h"
 #include "core/Logger.h"
 #include "core/SvdLibrary.h"
 #include "core/SvdParser.h"
 
+#include <algorithm>
+
 #include <QCoreApplication>
+#include <QDir>
+#include <QFileInfo>
 #include <QElapsedTimer>
 #include <QString>
 
@@ -370,6 +377,137 @@ int runSelftest(const Options &options)
         out(QStringLiteral("  - %1").arg(root));
     check(indexed > 0, QStringLiteral("SVD 库索引到文件"), QStringLiteral("%1 个").arg(indexed));
 
+    // --- package bonding (datasheet table 3-1) -----------------------------
+    // The SVD lists GPIOA..GPIOH for the whole family; only the package table can
+    // say which ports this part actually brings out.
+    {
+        out(QString());
+        out(QStringLiteral("--- 封装键合 ---"));
+        QString packagePath;
+        for (const QString &name : QDir(ResourcePaths::packageDirectory())
+                                      .entryList({QStringLiteral("*.json")}, QDir::Files)) {
+            const PackageDescription description = PackageDescription::loadFromFile(
+                ResourcePaths::packageDirectory() + QLatin1Char('/') + name);
+            if (!description.isValid() || description.chip.isEmpty())
+                continue;
+            if (description.chip.startsWith(device.name, Qt::CaseInsensitive)
+                || device.name.startsWith(description.chip, Qt::CaseInsensitive)) {
+                packagePath = name;
+                const QHash<QString, QVector<int>> bonded = description.bondedPorts();
+                QStringList parts;
+                QStringList sortedPorts = bonded.keys();
+                sortedPorts.sort();
+                for (const QString &port : sortedPorts) {
+                    const QVector<int> bits = bonded.value(port);
+                    parts << QStringLiteral("%1=%2").arg(port).arg(bits.size());
+                }
+                out(QStringLiteral("  %1 (%2, 引脚号已核实=%3): %4")
+                        .arg(description.packageName, name,
+                             description.numberVerified ? QStringLiteral("是") : QStringLiteral("否"),
+                             parts.join(QStringLiteral("  "))));
+
+                // Every SVD GPIO port that the package does not bond out must be
+                // reported, so a D/E/F/G register window is never mistaken for IO.
+                QStringList unbonded;
+                for (const auto &peripheral : device.peripherals) {
+                    if (!GpioCodec::isGpioPort(peripheral))
+                        continue;
+                    const QString port = GpioCodec::portName(peripheral);
+                    if (!port.isEmpty() && !bonded.contains(port))
+                        unbonded << peripheral.name;
+                }
+                if (!unbonded.isEmpty())
+                    out(QStringLiteral("    未引出（寄存器存在但无引脚）: %1")
+                            .arg(unbonded.join(QStringLiteral(", "))));
+
+                // Dedicated-only ports: physically bonded, but every pin is a
+                // special function, so they are not GPIO ports and must not get
+                // a group / matrix of their own.
+                const QHash<QString, QVector<int>> gpio = description.gpioPorts();
+                QStringList dedicated;
+                for (const QString &port : bonded.keys()) {
+                    if (!gpio.contains(port))
+                        dedicated << port;
+                }
+                dedicated.sort();
+                if (!dedicated.isEmpty())
+                    out(QStringLiteral("    仅专用功能（不显示为 GPIO 组）: %1")
+                            .arg(dedicated.join(QStringLiteral(", "))));
+                check(true, QStringLiteral("封装键合表已应用"), description.packageName);
+
+                // The 48-pin part must not expose a PH port: its only bonded PH
+                // pins are the crystal and NRST. They surface by their own names.
+                if (bonded.contains(QStringLiteral("PH"))) {
+                    check(!gpio.contains(QStringLiteral("PH")),
+                          QStringLiteral("PH 不作为 GPIO 组出现"),
+                          QStringLiteral("PH 全部为专用脚"));
+                    QStringList names;
+                    for (const auto &pin : description.dedicatedPins()) {
+                        if (pin.portName.compare(QStringLiteral("PH"), Qt::CaseInsensitive) == 0)
+                            names << QStringLiteral("%1(脚%2)").arg(pin.displayName).arg(pin.number);
+                    }
+                    names.sort();
+                    out(QStringLiteral("    专用引脚按功能名显示: %1").arg(names.join(QStringLiteral(", "))));
+                    check(names.size() == bonded.value(QStringLiteral("PH")).size(),
+                          QStringLiteral("专用引脚都有功能名"), names.join(QStringLiteral(", ")));
+
+                    // A pin that merely *doubles* as a dedicated function must
+                    // keep its GPIO name: PB8 is still PB8, not BOOT0.
+                    QStringList mislabelled;
+                    for (const auto &pin : description.dedicatedPins()) {
+                        if (pin.portName.isEmpty() || gpio.contains(pin.portName))
+                            mislabelled << QStringLiteral("%1→%2").arg(pin.name, pin.displayName);
+                    }
+                    check(mislabelled.isEmpty(), QStringLiteral("GPIO 端口内的引脚不改名"),
+                          mislabelled.join(QStringLiteral(", ")));
+                }
+
+                // The port matrix must only offer ports with an ordinary GPIO pin.
+                QStringList offered;
+                for (const auto &peripheral : device.peripherals) {
+                    if (!GpioCodec::isGpioPort(peripheral))
+                        continue;
+                    const QString port = GpioCodec::portName(peripheral);
+                    if (port.isEmpty() || offered.contains(port))
+                        continue;
+                    if (gpio.contains(port))
+                        offered << port;
+                }
+                offered.sort();
+                QStringList expectedPorts = gpio.keys();
+                expectedPorts.sort();
+                check(offered == expectedPorts, QStringLiteral("端口矩阵只列出已引出的端口"),
+                      offered.join(QStringLiteral("/")));
+
+                // Bits, not just ports: GPIOH exposes 16 bits on the die but this
+                // package bonds only 0/1/6, so the matrix must draw 3 cells.
+                for (const auto &peripheral : device.peripherals) {
+                    const QString port = GpioCodec::portName(peripheral);
+                    if (port.isEmpty() || !gpio.contains(port))
+                        continue;
+                    bool valid = false;
+                    QHash<quint32, quint32> zero;
+                    for (const auto &reg : peripheral.registers)
+                        zero.insert(peripheral.baseAddress + reg.addressOffset, 0u);
+                    const QVector<GpioPin> pins =
+                        GpioCodec::decode(peripheral, zero, &valid, QSet<QString>(), gpio.value(port));
+                    const int drawn = int(std::count_if(pins.begin(), pins.end(),
+                                                        [](const GpioPin &pin) { return pin.bonded; }));
+                    out(QStringLiteral("    %1: 键合 %2 / 芯片 %3 位")
+                            .arg(peripheral.name)
+                            .arg(drawn)
+                            .arg(pins.size()));
+                    check(drawn == gpio.value(port).size(),
+                          QStringLiteral("%1 只绘制已键合位").arg(peripheral.name),
+                          QStringLiteral("%1 个").arg(drawn));
+                }
+                break;
+            }
+        }
+        if (packagePath.isEmpty())
+            out(QStringLiteral("  （未找到本器件的封装表，端口清单回退为 SVD 全集）"));
+    }
+
     // --- real device tree --------------------------------------------------
     // Derived from the SVD's RCC gate bits plus a bus-decode test per peripheral;
     // classification is pure logic, so it is asserted here without hardware.
@@ -431,6 +569,133 @@ int runSelftest(const Options &options)
             status = DeviceTreeScanner::classify(*gpio, noGate, false, true, 0x55, QString());
             check(status.reachability == PeripheralStatus::Readable && !status.clockKnown,
                   QStringLiteral("无门控信息 + 读成功 -> 存在但时钟未知"));
+        }
+    }
+
+    // --- timers must reach the tree ----------------------------------------
+    // The SVD declares advanced (ATIM1-3) and basic (BTIM1-2) timers; if the
+    // scanner or the tree filter ever dropped them the user would see an MCU with
+    // no timers at all, so assert they survive with registers and a clock gate.
+    {
+        out(QString());
+        out(QStringLiteral("--- 定时器 ---"));
+        const QHash<QString, DeviceTreeScanner::ClockBit> clocks = DeviceTreeScanner::clockMap(device);
+        for (const char *timer : {"ATIM1", "ATIM2", "ATIM3", "BTIM1", "BTIM2", "GTIM1", "LPTIM1"}) {
+            const QString name = QString::fromLatin1(timer);
+            const SvdPeripheral *peripheral = device.findPeripheral(name);
+            const bool found = peripheral != nullptr && !peripheral->registers.isEmpty();
+            const DeviceTreeScanner::ClockBit bit = clocks.value(name);
+            const QString detail =
+                found ? QStringLiteral("%1 个寄存器, 时钟位 %2")
+                            .arg(peripheral->registers.size())
+                            .arg(bit.valid() ? QStringLiteral("%1[%2]").arg(bit.registerName).arg(bit.bit)
+                                             : QStringLiteral("—"))
+                      : QStringLiteral("未找到");
+            check(found, QStringLiteral("%1 在 SVD 中且有寄存器").arg(name), detail);
+            if (found)
+                check(bit.valid(), QStringLiteral("%1 有 RCC 时钟门控位").arg(name), detail);
+        }
+    }
+
+    // --- identification table: built-in scope + pluggable supplements -------
+    // STM32 is intentionally not a supported target right now (no SVD, no pin
+    // tables); its rows live in data/unsupported/. The loader must still merge
+    // any data/device_ids.d/*.json, so enabling a vendor later is a data-only
+    // change -- this test proves that hook keeps working.
+    {
+        out(QString());
+        out(QStringLiteral("--- 器件识别表 ---"));
+        QString error;
+        const bool loaded = DeviceIdentifier::loadDatabase(&error);
+        check(loaded, QStringLiteral("加载 data/device_ids.json"),
+              loaded ? QStringLiteral("%1 条").arg(DeviceIdentifier::database().size()) : error);
+        out(QStringLiteral("    主表: %1").arg(DeviceIdentifier::databasePath()));
+
+        if (loaded) {
+            const auto &database = DeviceIdentifier::database();
+            int stm32 = 0;
+            QStringList vendors;
+            for (const auto &entry : database) {
+                // Vendor is data, not code: the table must stay vendor-agnostic.
+                if (!entry.vendor.isEmpty() && !vendors.contains(entry.vendor))
+                    vendors << entry.vendor;
+                if (entry.mcu.startsWith(QLatin1String("STM32"), Qt::CaseInsensitive)
+                    || entry.vendor.compare(QLatin1String("ST"), Qt::CaseInsensitive) == 0)
+                    ++stm32;
+            }
+            vendors.sort();
+            out(QStringLiteral("    厂商: %1").arg(vendors.join(QStringLiteral(", "))));
+            check(stm32 == 0, QStringLiteral("主表不含未支持的 STM32 条目"),
+                  QStringLiteral("%1 条").arg(stm32));
+
+            // The archived table must remain loadable as a supplement.
+            const QString archived = ResourcePaths::find(QStringLiteral("unsupported/device_ids_stm32.json"));
+            check(!archived.isEmpty(), QStringLiteral("STM32 条目归档在 data/unsupported/"),
+                  archived.isEmpty() ? QStringLiteral("未找到归档") : archived);
+            if (!archived.isEmpty()) {
+                const QString supplementDir = QFileInfo(DeviceIdentifier::databasePath()).absolutePath()
+                                              + QStringLiteral("/device_ids.d");
+                QDir().mkpath(supplementDir);
+                const QString probe =
+                    supplementDir + QStringLiteral("/00-selftest-supplement.json");
+                if (QFile::exists(probe))
+                    QFile::remove(probe);
+                const bool copied = QFile::copy(archived, probe);
+                const int before = DeviceIdentifier::database().size();
+                const bool reloaded = copied && DeviceIdentifier::loadDatabase(&error);
+                const int after = DeviceIdentifier::database().size();
+                check(reloaded && after > before, QStringLiteral("data/device_ids.d 补充表被合并"),
+                      QStringLiteral("%1 -> %2 条").arg(before).arg(after));
+                if (reloaded && after > before) {
+                    int stm32Back = 0;
+                    for (const auto &entry : DeviceIdentifier::database()) {
+                        if (entry.mcu.startsWith(QLatin1String("STM32"), Qt::CaseInsensitive))
+                            ++stm32Back;
+                    }
+                    check(stm32Back > 0, QStringLiteral("归档表放回即可恢复 STM32 识别"),
+                          QStringLiteral("%1 条").arg(stm32Back));
+                }
+                // Restore the shipped state: no supplement left behind.
+                if (QFile::exists(probe))
+                    QFile::remove(probe);
+                DeviceIdentifier::loadDatabase(&error);
+                check(DeviceIdentifier::database().size() == before,
+                      QStringLiteral("移除补充表后回到主表条目数"),
+                      QStringLiteral("%1 条").arg(DeviceIdentifier::database().size()));
+            }
+        }
+    }
+
+    // --- vendor manifest (exact part -> svd) --------------------------------
+    {
+        out(QString());
+        out(QStringLiteral("--- 厂商 SVD 清单 ---"));
+        const int count = library.loadManifest();
+        check(count > 0, QStringLiteral("加载 svd/manifest.json"), QStringLiteral("%1 条").arg(count));
+
+        if (count > 0) {
+            struct Probe { const char *part; bool expect; };
+            const QVector<Probe> probes = {
+                {"N32H473CE", true},   // exact match in the pack
+                {"N32H473KE", true},   // same SVD, different package
+                {"N32G452CB", true},   // shorter than the pack's "N32G452CBL7"
+                {"N32H999ZZ", false},  // not a real part
+            };
+            for (const auto &probe : probes) {
+                SvdManifestEntry entry;
+                QStringList ambiguous;
+                const bool found = library.lookupPart(QString::fromLatin1(probe.part), &entry, &ambiguous);
+                check(found == probe.expect,
+                      QStringLiteral("清单查询 %1").arg(QString::fromLatin1(probe.part)),
+                      found ? QStringLiteral("%1 (IO %2 / 脚 %3)").arg(entry.svdPath).arg(entry.ioCount).arg(entry.pinCount)
+                            : (ambiguous.isEmpty() ? QStringLiteral("未命中") 
+                                                   : QStringLiteral("多义: %1").arg(ambiguous.join(QLatin1Char('/')))));
+                if (found)
+                    out(QStringLiteral("    %1 -> %2  IO=%3 脚=%4 封装=%5")
+                            .arg(QString::fromLatin1(probe.part), entry.svdPath)
+                            .arg(entry.ioCount).arg(entry.pinCount)
+                            .arg(entry.packages.isEmpty() ? entry.package : entry.packages.join(QLatin1Char('/'))));
+            }
         }
     }
 

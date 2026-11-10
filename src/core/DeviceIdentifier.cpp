@@ -6,7 +6,9 @@
 #include "core/ResourcePaths.h"
 #include "core/SvdLibrary.h"
 
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -27,6 +29,40 @@ quint32 parseHexOrDec(const QJsonValue &value)
     if (parseHex(value.toString(), &parsed))
         return parsed;
     return 0;
+}
+
+/// Parse one identification row and append it, skipping duplicates.
+///
+/// A row is considered present when both MCU name and DEV_ID match, so the same
+/// DEV_ID under a different part (N32H473CE vs N32H473KE) still loads.
+void appendEntry(const QJsonObject &o, QVector<DeviceIdEntry> *database)
+{
+    DeviceIdEntry entry;
+    entry.mcu = o.value(QStringLiteral("mcu")).toString();
+    entry.family = o.value(QStringLiteral("family")).toString();
+    entry.vendor = o.value(QStringLiteral("vendor")).toString();
+    entry.svdHint = o.value(QStringLiteral("svdHint")).toString();
+    entry.probeRsChip = o.value(QStringLiteral("probeRsChip")).toString();
+    if (entry.probeRsChip.isEmpty())
+        entry.probeRsChip = o.value(QStringLiteral("jlinkDevice")).toString(); // legacy key
+    entry.devId = parseHexOrDec(o.value(QStringLiteral("devId")));
+    entry.ioCount = o.value(QStringLiteral("ioCount")).toInt();
+    entry.pinCount = o.value(QStringLiteral("pinCount")).toInt();
+    entry.packageName = o.value(QStringLiteral("packageName")).toString();
+    entry.verified = o.value(QStringLiteral("verified")).toBool(true);
+    const quint32 idcodeAddress = parseHexOrDec(o.value(QStringLiteral("idcodeAddress")));
+    if (idcodeAddress != 0)
+        entry.idcodeAddress = idcodeAddress;
+    if (entry.mcu.isEmpty())
+        return;
+    if (entry.probeRsChip.isEmpty())
+        entry.probeRsChip = entry.mcu;
+    for (const auto &existing : *database) {
+        if (existing.devId == entry.devId
+            && existing.mcu.compare(entry.mcu, Qt::CaseInsensitive) == 0)
+            return;
+    }
+    database->append(entry);
 }
 
 /// DEV_ID/REV_ID candidates: 0x00000000 and 0xFFFFFFFF mean "nothing there".
@@ -79,33 +115,37 @@ bool DeviceIdentifier::loadDatabase(QString *error)
         }
     }
 
-    const QJsonArray devices = root.value(QStringLiteral("devices")).toArray();
-    for (const auto &value : devices) {
-        const QJsonObject o = value.toObject();
-        DeviceIdEntry entry;
-        entry.mcu = o.value(QStringLiteral("mcu")).toString();
-        entry.family = o.value(QStringLiteral("family")).toString();
-        entry.vendor = o.value(QStringLiteral("vendor")).toString();
-        entry.svdHint = o.value(QStringLiteral("svdHint")).toString();
-        entry.probeRsChip = o.value(QStringLiteral("probeRsChip")).toString();
-        if (entry.probeRsChip.isEmpty())
-            entry.probeRsChip = o.value(QStringLiteral("jlinkDevice")).toString(); // legacy key
-        entry.devId = parseHexOrDec(o.value(QStringLiteral("devId")));
-        entry.ioCount = o.value(QStringLiteral("ioCount")).toInt();
-        entry.pinCount = o.value(QStringLiteral("pinCount")).toInt();
-        entry.packageName = o.value(QStringLiteral("packageName")).toString();
-        entry.verified = o.value(QStringLiteral("verified")).toBool(true);
-        const quint32 idcodeAddress = parseHexOrDec(o.value(QStringLiteral("idcodeAddress")));
-        if (idcodeAddress != 0)
-            entry.idcodeAddress = idcodeAddress;
-        if (entry.mcu.isEmpty())
+    for (const auto &value : root.value(QStringLiteral("devices")).toArray())
+        appendEntry(value.toObject(), &g_database);
+
+    // Supplementary tables (data/device_ids.d/*.json). The built-in table wins,
+    // so a supplement can never silently redefine a measured entry.
+    const QStringList supplements = ResourcePaths::deviceIdSupplements();
+    for (const QString &path : supplements) {
+        QFile extra(path);
+        if (!extra.open(QIODevice::ReadOnly)) {
+            Logger::instance()->warn(QStringLiteral("无法打开补充识别表 %1: %2")
+                                         .arg(path, extra.errorString()));
             continue;
-        if (entry.probeRsChip.isEmpty())
-            entry.probeRsChip = entry.mcu;
-        g_database << entry;
+        }
+        QJsonParseError extraError{};
+        const QJsonDocument extraDoc = QJsonDocument::fromJson(extra.readAll(), &extraError);
+        if (extraDoc.isNull()) {
+            Logger::instance()->warn(QStringLiteral("补充识别表 %1 解析失败: %2")
+                                         .arg(path, extraError.errorString()));
+            continue;
+        }
+        const int before = g_database.size();
+        for (const auto &value : extraDoc.object().value(QStringLiteral("devices")).toArray())
+            appendEntry(value.toObject(), &g_database);
+        Logger::instance()->info(QStringLiteral("补充识别表 %1: +%2 条")
+                                     .arg(QFileInfo(path).fileName())
+                                     .arg(g_database.size() - before));
     }
 
-    Logger::instance()->info(QStringLiteral("器件识别库: %1 条 (%2)").arg(g_database.size()).arg(g_databasePath));
+    Logger::instance()->info(QStringLiteral("器件识别库: %1 条 (%2)")
+                                 .arg(g_database.size())
+                                 .arg(g_databasePath));
     return !g_database.isEmpty();
 }
 
@@ -248,7 +288,38 @@ Result<IdentificationResult> DeviceIdentifier::identify(IProbe &probe, SvdLibrar
         result.packageName = matchedEntry.packageName;
     }
 
-    // 3. SVD matching - prefer the hint from the table, then the MCU name.
+    // 3. SVD matching.
+    //    The vendor manifest is authoritative: it maps the exact part number to
+    //    the SVD the pack assigned, plus that package's pin/IO counts. Only when
+    //    the part is not in the manifest do we fall back to name scoring.
+    library.loadManifest();
+    if (!result.mcuName.isEmpty()) {
+        SvdManifestEntry entry;
+        QStringList ambiguous;
+        if (library.lookupPart(result.mcuName, &entry, &ambiguous)) {
+            result.svdPath = entry.svdPath;
+            if (entry.ioCount > 0)
+                result.ioCount = entry.ioCount;
+            if (entry.pinCount > 0)
+                result.pinCount = entry.pinCount;
+            if (!entry.package.isEmpty())
+                result.packageName = entry.package;
+            else if (!entry.packages.isEmpty())
+                result.packageName = entry.packages.first();
+            result.note = QStringLiteral("SVD 由厂商清单按型号 %1 指定（%2）")
+                              .arg(entry.part,
+                                   entry.packages.isEmpty() ? entry.package : entry.packages.join(QLatin1Char('/')));
+            Logger::instance()->info(QStringLiteral("厂商清单: %1 -> %2 (IO %3 / 脚 %4)")
+                                         .arg(result.mcuName, entry.svdPath)
+                                         .arg(result.ioCount)
+                                         .arg(result.pinCount));
+        } else if (!ambiguous.isEmpty()) {
+            result.note = QStringLiteral("型号 %1 在厂商清单中有多个匹配: %2")
+                              .arg(result.mcuName, ambiguous.join(QStringLiteral(", ")));
+            Logger::instance()->warn(result.note);
+        }
+    }
+
     QStringList hints;
     if (haveEntry && !matchedEntry.svdHint.isEmpty())
         hints << matchedEntry.svdHint;

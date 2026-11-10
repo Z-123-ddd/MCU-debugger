@@ -72,6 +72,68 @@ const PackagePin *PackageDescription::pinByNumber(int number) const
     return nullptr;
 }
 
+QHash<QString, QVector<int>> PackageDescription::bondedPorts() const
+{
+    QHash<QString, QVector<int>> ports;
+    for (const auto &pin : pins) {
+        if (pin.portName.isEmpty() || pin.portBit < 0)
+            continue;
+        ports[pin.portName].append(pin.portBit);
+    }
+    for (auto it = ports.begin(); it != ports.end(); ++it)
+        std::sort(it.value().begin(), it.value().end());
+    return ports;
+}
+
+QHash<QString, QVector<int>> PackageDescription::gpioPorts() const
+{
+    // A port qualifies only when at least one of its bonded pins is an ordinary
+    // GPIO. PH on a 48-pin N32H473 is bound through OSC_IN/OSC_OUT/NRST alone,
+    // so it never becomes a group; PB stays a port because PB9..PB15 are GPIO
+    // even though PB8 doubles as BOOT0.
+    QSet<QString> gpioCapable;
+    for (const auto &pin : pins) {
+        if (pin.portName.isEmpty() || pin.portBit < 0)
+            continue;
+        if (pin.type.isEmpty() || pin.type == QLatin1String("io"))
+            gpioCapable.insert(pin.portName);
+    }
+
+    QHash<QString, QVector<int>> ports;
+    for (const auto &pin : pins) {
+        if (pin.portName.isEmpty() || pin.portBit < 0)
+            continue;
+        if (!gpioCapable.contains(pin.portName))
+            continue;
+        ports[pin.portName].append(pin.portBit);
+    }
+    for (auto it = ports.begin(); it != ports.end(); ++it)
+        std::sort(it.value().begin(), it.value().end());
+    return ports;
+}
+
+QVector<PackagePin> PackageDescription::dedicatedPins() const
+{
+    QVector<PackagePin> dedicated;
+    for (const auto &pin : pins) {
+        const bool ordinaryGpio = pin.type.isEmpty() || pin.type == QLatin1String("io");
+        if (ordinaryGpio || pin.displayName.isEmpty())
+            continue;
+        dedicated << pin;
+    }
+    return dedicated;
+}
+
+int PackageDescription::bondedPinCount(const QString &portName) const
+{
+    int count = 0;
+    for (const auto &pin : pins) {
+        if (pin.portName.compare(portName, Qt::CaseInsensitive) == 0 && pin.portBit >= 0)
+            ++count;
+    }
+    return count;
+}
+
 const PackagePin *PackageDescription::pinForPort(const QString &portName, int bit) const
 {
     for (const auto &pin : pins) {
@@ -160,8 +222,38 @@ PackageDescription PackageDescription::loadFromFile(const QString &path, QString
         pin.portBit = o.contains(QStringLiteral("pin")) ? o.value(QStringLiteral("pin")).toInt() : -1;
         for (const auto &f : o.value(QStringLiteral("functions")).toArray())
             pin.functions << f.toString();
+
         if (pin.number > 0)
             description.pins << pin;
+    }
+
+    // Dedicated pins are what they do, not a GPIO bit: "PH0-OSC_IN" is drawn as
+    // "OSC_IN". Only ports that have no ordinary GPIO pin at all are relabelled
+    // -- PB8-BOOT0 stays PB8, because PB is a real GPIO port that merely
+    // doubles as BOOT0.
+    QSet<QString> gpioCapable;
+    for (const auto &pin : description.pins) {
+        if (pin.portName.isEmpty() || pin.portBit < 0)
+            continue;
+        if (pin.type.isEmpty() || pin.type == QLatin1String("io"))
+            gpioCapable.insert(pin.portName);
+    }
+    for (auto &pin : description.pins) {
+        if (pin.portName.isEmpty() || gpioCapable.contains(pin.portName))
+            continue;
+        const int dash = pin.name.lastIndexOf(QLatin1Char('-'));
+        if (dash >= 0 && dash + 1 < pin.name.size()) {
+            pin.displayName = pin.name.mid(dash + 1);
+        } else {
+            // STM32 writes plain "PD0"/"PD1"; the function list carries OSC_IN.
+            for (const QString &function : pin.functions) {
+                const bool gpioLike = function.size() >= 2 && function.at(0) == QLatin1Char('P')
+                                      && function.at(1).isLetter();
+                if (!gpioLike)
+                    pin.displayName = function;
+            }
+        }
+        pin.displayName = pin.displayName.trimmed();
     }
     return description;
 }
@@ -230,6 +322,12 @@ void PackageView::showWaiting(const QString &message)
 QString PackageView::currentPackage() const
 {
     return m_current;
+}
+
+const PackageDescription *PackageView::currentDescription() const
+{
+    const auto it = m_packages.constFind(m_current);
+    return it == m_packages.constEnd() ? nullptr : &it.value();
 }
 
 void PackageView::setChipLabel(const QString &chip)
@@ -392,7 +490,9 @@ void PackageView::paintPin(QPainter &painter, const PackagePin &pin, const PinRe
     const QFontMetricsF metrics(painter.font());
 
     // Pin name runs along the pin axis, clipped to the pin length.
-    const QString name = metrics.elidedText(pin.name, Qt::ElideRight, (vertical ? r.height() : r.width()) - 4);
+    // Dedicated pins show what they do ("OSC_IN"), not a GPIO bit they lack.
+    const QString label = pin.displayName.isEmpty() ? pin.name : pin.displayName;
+    const QString name = metrics.elidedText(label, Qt::ElideRight, (vertical ? r.height() : r.width()) - 4);
     painter.setPen(textColour);
     if (!vertical) {
         painter.drawText(r.adjusted(2, 0, -2, 0), Qt::AlignCenter, name);
@@ -514,7 +614,10 @@ void PackageView::mouseMoveEvent(QMouseEvent *event)
         if (i == hit) {
             hovered = it.value().pins.at(i).number;
             const PackagePin &pin = it.value().pins.at(i);
-            QString text = QStringLiteral("<b>%1</b>  (引脚 %2)<br/>类型: %3").arg(pin.name).arg(pin.number).arg(pin.type);
+            QString shown = pin.displayName.isEmpty() ? pin.name : pin.displayName;
+            QString text = QStringLiteral("<b>%1</b>  (引脚 %2)<br/>类型: %3").arg(shown).arg(pin.number).arg(pin.type);
+            if (!pin.displayName.isEmpty() && pin.displayName != pin.name)
+                text += QStringLiteral("<br/>数据手册引脚名: %1").arg(pin.name);
             if (pin.liveKnown)
                 text += QStringLiteral("<br/>当前: %1 %2").arg(pin.liveMode,
                                                                pin.liveHigh ? QStringLiteral("高") : QStringLiteral("低"));
@@ -556,10 +659,15 @@ PackagePage::PackagePage(QWidget *parent)
     layout->setContentsMargins(8, 8, 8, 8);
 
     auto *top = new QHBoxLayout();
-    top->addWidget(new QLabel(QStringLiteral("封装"), this));
+    m_packageLabel = new QLabel(QStringLiteral("封装"), this);
+    top->addWidget(m_packageLabel);
     m_box = new QComboBox(this);
     m_box->setMinimumWidth(160);
     top->addWidget(m_box);
+    // Nothing to choose before identification: the selector stays hidden until a
+    // package has to be picked by hand.
+    m_packageLabel->setVisible(false);
+    m_box->setVisible(false);
     m_hint = new QLabel(QStringLiteral("引脚布局将在识别到 MCU 型号后生成"), this);
     m_hint->setStyleSheet(QStringLiteral("color: palette(mid);"));
     top->addWidget(m_hint, 1);
@@ -595,6 +703,8 @@ void PackagePage::setPackages(const QStringList &names)
 bool PackagePage::renderForChip(const QString &chip, int ioCount, int pinCount, const QString &packageHint)
 {
     PackageView *view = m_view;
+    // The package follows from the identified part, so there is no choice to offer.
+    const bool autoSelected = true;
 
     // 1) Prefer a real per-pin description whose chip matches the identified part.
     QString chosen;
@@ -635,8 +745,11 @@ bool PackagePage::renderForChip(const QString &chip, int ioCount, int pinCount, 
         chosen = synthesized.packageName;
     }
 
-    // Reflect the choice in the combo (blocked: the render already happened).
-    {
+    // When the package follows from the identified part there is nothing to pick,
+    // so the selector is hidden instead of offering options that would contradict
+    // the silicon. Manual switching stays available through
+    // "文件 -> 打开封装目录" only when no package could be determined.
+    if (!autoSelected) {
         QSignalBlocker blocker(m_box);
         int index = m_box->findData(chosen);
         if (index < 0) {
@@ -644,6 +757,11 @@ bool PackagePage::renderForChip(const QString &chip, int ioCount, int pinCount, 
             index = m_box->count() - 1;
         }
         m_box->setCurrentIndex(index);
+        m_packageLabel->setVisible(true);
+        m_box->setVisible(true);
+    } else {
+        m_packageLabel->setVisible(false);
+        m_box->setVisible(false);
     }
     updateHint(chosen);
     return true;
@@ -652,6 +770,8 @@ bool PackagePage::renderForChip(const QString &chip, int ioCount, int pinCount, 
 void PackagePage::showWaiting(const QString &reason)
 {
     m_view->showWaiting(reason);
+    m_packageLabel->setVisible(false);
+    m_box->setVisible(false);
     QSignalBlocker blocker(m_box);
     m_box->setCurrentIndex(0);
     m_hint->setStyleSheet(QStringLiteral("color: palette(mid);"));

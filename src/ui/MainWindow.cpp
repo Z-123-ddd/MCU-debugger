@@ -241,7 +241,9 @@ void MainWindow::createDocks()
     auto *inspectorDock = new QDockWidget(QStringLiteral("寄存器检查器"), this);
     inspectorDock->setObjectName(QStringLiteral("InspectorDock"));
     inspectorDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
-    inspectorDock->setMinimumWidth(160);
+    // 200 px keeps the bit-field strip at two 16-bit rows instead of four 8-bit
+    // ones when the dock is dragged narrow (the strip wraps, it never clips).
+    inspectorDock->setMinimumWidth(200);
     m_inspector = new InspectorPanel(inspectorDock);
     inspectorDock->setWidget(m_inspector);
     addDockWidget(Qt::RightDockWidgetArea, inspectorDock);
@@ -409,14 +411,18 @@ void MainWindow::populateDeviceUi()
 {
     m_tree->setDevice(m_device);
 
-    // Port matrix: every GPIO-like peripheral.
+    // Port matrix: only ports this package actually bonds out. Without a package
+    // table we fall back to the SVD list (nothing better is known).
     QStringList ports;
     for (const auto &peripheral : m_device.peripherals) {
         if (!GpioCodec::isGpioPort(peripheral))
             continue;
         const QString port = GpioCodec::portName(peripheral);
-        if (!port.isEmpty() && !ports.contains(port))
-            ports << port;
+        if (port.isEmpty() || ports.contains(port))
+            continue;
+        if (!m_bondedBits.isEmpty() && m_bondedBits.value(port).isEmpty())
+            continue;
+        ports << port;
     }
     ports.sort();
     m_portGrid->setPorts(ports);
@@ -767,8 +773,11 @@ void MainWindow::refreshPortGrid()
         return;
 
     bool valid = false;
-    const QVector<GpioPin> pins =
-        GpioCodec::decode(*peripheral, m_session->snapshot(*peripheral), &valid, m_configuredPins);
+    // Pass the bonded bit list so the grid only draws pins that really exist on
+    // this package (GPIOH has 16 bits on the die but only 0/1/6 are brought out).
+    const QVector<int> bonded = m_bondedBits.value(port);
+    const QVector<GpioPin> pins = GpioCodec::decode(*peripheral, m_session->snapshot(*peripheral), &valid,
+                                                   m_configuredPins, bonded);
     m_portGrid->setPins(port, pins, valid && m_session->connected());
 
     // Feed the package view so pins are coloured by their live mode.
@@ -912,7 +921,43 @@ void MainWindow::onDeviceTreeScanned(const QVector<PeripheralStatus> &statuses, 
         return;
     }
 
-    m_tree->setStatuses(statuses);
+    // Annotate with package bonding: bus-readable GPIO ports D/E/F/G still answer
+    // on the die even when a 48-pin package bonds none of their pins, so the pin
+    // table has to override the read result.
+    QVector<PeripheralStatus> annotated = statuses;
+    if (const PackageDescription *package = m_packagePage
+                                                ? m_packagePage->view()->currentDescription()
+                                                : nullptr;
+        package && package->isValid()) {
+        m_bondedBits.clear();
+        int overridden = 0;
+        // gpioPorts(), not bondedPorts(): a port bonded only through dedicated
+        // pins (PH0=OSC_IN/PH1=OSC_OUT/PH6=NRST) is not a GPIO port, so it must
+        // neither appear in the tree nor get a 16-cell matrix.
+        const QHash<QString, QVector<int>> bondedPorts = package->gpioPorts();
+        for (auto &status : annotated) {
+            const QString gpioName = status.name;
+            if (!gpioName.startsWith(QLatin1String("GPIO")))
+                continue;
+            const QString port = QStringLiteral("P") + gpioName.mid(4, 1);
+            const int bonded = bondedPorts.value(port).size();
+            status.bondedPins = bonded;
+            m_bondedBits.insert(port, bondedPorts.value(port));
+            if (bonded == 0 && status.reachability == PeripheralStatus::Readable) {
+                ++overridden;
+                Logger::instance()->info(
+                    QStringLiteral("%1 的寄存器可读，但 %2 封装未引出该端口 -> 视为不可用")
+                        .arg(gpioName, package->packageName));
+            }
+        }
+        if (overridden > 0) {
+            Logger::instance()->info(QStringLiteral("按封装键合数据修正了 %1 个 GPIO 端口")
+                                         .arg(overridden));
+        }
+    }
+
+    m_tree->setStatuses(annotated);
+    m_statuses = annotated;
 
     // First moment we know what this part really has: fill the tree and views.
     if (m_tree->isWaiting())

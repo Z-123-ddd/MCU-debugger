@@ -104,10 +104,11 @@ build\bin\mcuRegDebugger.exe --probe-info
 | 「端口矩阵 (IO)」 | 选中端口 PA0..PA15 的 4×4 矩阵，颜色=输入/输出/复用/模拟 |
 | 「寄存器全景」 | 选中外设的**分块寄存器图**（名称/偏移/当前值/位域带/RO-RW），下方位域条 |
 | 右侧「寄存器检查器」 | 位域表、枚举下拉、字段 hex 编辑与置 1/清 0/写入（读改写）、整寄存器写、重读 |
-
-左/右/下三个停靠面板的宽度与高度都可自由拖动（分隔条无锁定）；位域条会随宽度自适应缩放，
-不会用它撑出一个不可缩小的最小宽度。
 | 底部「日志」 | 解析与探针日志，同时写入 `%APPDATA%\MCUTools\McuRegDebugger\logs\` |
+
+左/右/下三个停靠面板的宽度与高度都可自由拖动（分隔条无锁定）。位域条**始终画满 32 位**：
+面板变窄时位格按 `可用宽度/32` 缩小（小于 14px 时隐藏 0/1 数字、小于 22px 时隐藏字段名），
+高度固定，永不裁切；`--selftest` 会在 96…904px 七档宽度上断言绘制区不越界。
 
 GDB 后端的运行控制：`暂停` = `monitor halt`，`运行` = `monitor go`，`复位` = `monitor reset`；
 CPU 是否停机由 GDB 停止应答（`S05`/`T05`）与 `DHCSR` 判定。读写寄存器**不会**改变 CPU 运行状态。
@@ -145,8 +146,11 @@ DEV_ID 0x712 -> data/device_ids.json -> N32H473CE (Nationstech / N32H47x)
 - `svdHint`：SVD 的 `<name>` 前缀（如 `N32H473`）。
 - 未实测的器件（`devId: "0x0"`, `verified:false`）需手动选择。
 
-已实测：**N32H473CE**（DEV_ID 0x712）、STM32F1/F4 系列 DEV_ID 取自 ST 手册；
-其余条目为手册值，首次使用建议核对。
+已实测：**N32H473CE**（DEV_ID 0x712）；其余条目为手册值，首次使用建议核对。
+
+> **支持范围（v1.1.1.0）**：只收录 Nationstech **N32** 系列（11 条，随包附带 SVD 与封装表）。
+> STM32 已**归档**到 `data/unsupported/`，暂不做验证与支持；代码本身不写死厂商，
+> 恢复方式见 `data/unsupported/README.md`。
 
 ### data/packages/*.json
 
@@ -267,6 +271,112 @@ INFO  引脚布局已按识别结果渲染: N32H473CE (IO 42 / 脚 48)
 
 `metricsFor()` 会把 `body + 2×length` 一起算进可用宽度反解 `pitch`，并有二次收缩保护，
 保证任何窗口尺寸下都不会溢出。
+
+### 引脚数据：从厂商数据手册提取（numberVerified=true）
+
+`data/packages/N32H473CEU7_UQFN48.json` 不再依赖原理图符号，而是从数据手册
+`N32H473.pdf` 的 **表 3-1 管脚定义** 直接提取：
+
+```bat
+python scripts\parse-datasheet-pins.py                       :: 默认 UQFN48 / N32H473CE
+python scripts\parse-datasheet-pins.py --package LQFP48       :: 换封装（10 种可选）
+python scripts\parse-datasheet-pins.py --pdf <路径> --part N32H473KE --package QFN32
+```
+
+该表每种封装一列（QFN32 / QFN48 / UQFN48 / UQFN48-1 / LQFP48 / QFN60 / LQFP64 /
+LQFP80 / LQFP100 / LQFP128），脚本按列取出 **引脚号 + 引脚名 + 类型 + 复用功能**，
+并做三重校验（任一不符直接失败退出）：
+
+| 校验 | 结果 |
+|---|---|
+| 引脚号连续 1..N | 48 |
+| GPIO 数 == `.pdsc` 的 `<feature type="IOs">` | 42 == 42 |
+| 引脚数 == `.pdsc` 的 `<feature type="QFN" count>` | 48 == 48 |
+
+**UQFN48 实测结果**（这正是之前 GPIO 组错误的根源）：
+
+```
+PA=16  PB=16  PC=7  PH=3          共 42 个 IO
+PC 实际引出位: 4, 6, 10, 11, 13, 14, 15
+PH 实际引出位: 0(OSC_IN), 1(OSC_OUT), 6(NRST)
+未引出（SVD 有寄存器但无引脚）: GPIOD, GPIOE, GPIOF, GPIOG
+```
+
+所以 `--probe-info` 现在会打印：
+
+```
+--- 封装键合 ---
+  UQFN48 (N32H473CEU7_UQFN48.json, 引脚号已核实=是): PA=16  PB=16  PC=7  PH=3
+    未引出（寄存器存在但无引脚）: GPIOD, GPIOE, GPIOF, GPIOG
+[PASS] 封装键合表已应用   (UQFN48)
+[PASS] 端口矩阵只列出已引出的端口   (PA/PB/PC/PH)
+```
+
+外设树里 `GPIOD/E/F/G` 显示为灰字 **(本封装未引出)**，端口矩阵的下拉框只剩
+`PA / PB / PC / PH`。即便这些端口的寄存器在总线上仍能读（die 上确实有），也不会再被
+当成可用 IO。
+
+`functions` 字段是手册的复用功能列表，带 `板级/` 前缀的条目来自本板固件，不是手册内容。
+信号名的上划线在文本提取时会丢失，脚本已去掉。
+
+> `scripts/gen-package-json.py` 不会覆盖这份文件（检测到 `source: datasheet` 就跳过）。
+
+### 下载 / 解压全系列 N32 SVD
+
+N32 的 DFP 是**每个系列一个包**，不是一个大包；包内 SVD 又按**子系列**给
+（`N32H47x_DFP` 里只有 `N32H473/474/475.svd`，其中 N32H473 的 13 个封装型号共用一份）。
+
+```bat
+python scripts\fetch-n32-svds.py --list           :: 列出全部系列的下载链接
+python scripts\fetch-n32-svds.py                  :: 全部下载并解出 SVD
+python scripts\extract-svd-packs.py               :: 解压已放进 svd\ 的 .pack
+python scripts\extract-svd-packs.py --clean       :: 先清掉旧 .svd 再解压
+```
+
+下载地址取自每个包自带 `.pdsc` 里的 `<url>`（Keil 在 `PACK\.Web\NSING.N32*_DFP.pdsc`
+留有索引），版本号取 `<release version>`。也可以像现在这样手动把 `.pack` 放进 `svd\`
+再跑 `extract-svd-packs.py`。
+
+**解压后的目录**：
+
+```
+svd/
+  N32H47x_DFP.1.2.0/
+    N32H473.svd  N32H474.svd  N32H475.svd
+    package.pdsc
+  N32G45x_DFP.1.3.0/  N32H48x_DFP.1.2.0/  ...   共 10 个系列 20 份 SVD
+  manifest.json        型号 → SVD 精确映射（157 条）
+```
+
+`svd/` 已被 `.gitignore` 排除（二进制资产不入库），脚本按机器跑一次即可；
+程序启动时会扫描仓库的 `svd/` 目录并加载 `manifest.json`。
+
+#### manifest 解决的是「型号 → 该用哪份 SVD」
+
+厂商清单是**唯一**能把精确料号绑到 SVD 的地方，程序优先用它，只有查不到才退回
+按名字模糊评分：
+
+```
+[PASS] 加载 svd/manifest.json   (157 条)
+    N32H473CE   -> svd/N32H47x_DFP.1.2.0/N32H473.svd  IO=42  脚=48  封装=UQFN48/LQFP48
+    N32H473KE   -> svd/N32H47x_DFP.1.2.0/N32H473.svd  IO=26  脚=32  封装=QFN32
+    N32G452CB   -> svd/N32G45x_DFP.1.3.0/N32G452.svd  IO=37  脚=48  封装=LQFP48
+[PASS] 清单查询 N32H999ZZ   (未命中)
+```
+
+几个细节：
+
+- **两种 pdsc 格式都支持**：老版用结构化 `<feature type="QFN" count="48"/>` +
+  `<feature type="IOs" n="42"/>`，新版只写进 `<description>` 散文
+  （`- Package:UQFN48/LQFP48` / `- I/O: 42`），脚本两种都解析。
+- **多封装不猜**：`- Package:UQFN48/LQFP48` 两个名字都是 48 脚 → 引脚数确定为 48；
+  `LQFP100/LQFP128` 引脚数不一致 → 置空而不是取第一个（否则会出现「100 脚配 107 IO」
+  这种自相矛盾的记录）。
+- **短料号可前缀匹配**：J-Link 报 `N32G452CB`，包里写的是完整订货号 `N32G452CBL7`，
+  manifest 查询会先精确匹配、再唯一前缀匹配，多义时明确报出来而不瞎选。
+
+识别流程因此变成：`CPUID/IDCODE → 型号 → manifest 查 SVD 与封装事实 → 加载该 SVD`。
+`ioCount` / `pinCount` 改用 manifest 的值（比 `data/device_ids.json` 更贴近具体料号）。
 
 ### 左侧外设树也只在连接后更新
 
@@ -474,9 +584,12 @@ packaging\pack.bat
 2. GDB Server 由本工具作为子进程管理；进程被强杀留下的孤儿会在**下次启动时自动回收**
    （PID 记录在 `%APPDATA%\MCUTools\McuRegDebugger\jlink-gdb.pid`，回收前校验映像名）。
 3. 轮询会周期性读整个外设窗口（默认 200 ms，可在设置中调整）；目标处于低功耗模式时读取可能失败并记录日志。
-4. 封装引脚图：STM32F103C8 LQFP48 与 **N32H473CEU7 UQFN48（引脚号已逐脚核实）** 两份。
+4. 当前随包只带一份封装引脚图：**N32H473CEU7 UQFN48（引脚号已逐脚核实，取自数据手册表 3-1 + 第 37 页封装图）**；
+   STM32F103C8 LQFP48 已归档到 `data/unsupported/packages/`。
    若数据手册的 Pin definition 与 LCEDA 符号不一致，以数据手册为准并改
    `scripts/gen-package-json.py` 的 `PINS`。
+   注：48 脚 N32H473CE 的 PH0/PH1/PH6 分别是 `OSC_IN`/`OSC_OUT`/`NRST`，
+   整组 PH 因此不显示为 GPIO 端口，只按功能名出现在封装图上。
 5. N32H47x 的厂商 SVD 把 GPIOB..GPIOH 的 `PMODE` 只声明了 0..6 位（GPIOA 才是 0..15），
    属于 SVD 缺陷；寄存器解码按整字提取，不受影响，但位域列表只显示 7 个脚。
 6. N32H47x 的 `PMODE` 枚举语义按参考手册（0 输入 / 1 输出 / 2 复用 / 3 模拟）解释；

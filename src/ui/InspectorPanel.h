@@ -29,6 +29,9 @@ public:
     void clear();
 
     const SvdRegister *reg() const { return m_register; }
+    /// The bit-field strip (exposed so the self-test can verify it never clips).
+    const BitFieldStrip *bitStrip() const { return m_strip; }
+    BitFieldStrip *bitStrip() { return m_strip; }
     int selectedField() const { return m_selectedField; }
     void selectField(int index);
 

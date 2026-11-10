@@ -47,6 +47,22 @@ QString ResourcePaths::deviceIdDatabase()
     return find(QStringLiteral("device_ids.json"));
 }
 
+QStringList ResourcePaths::deviceIdSupplements()
+{
+    QStringList files;
+    for (const auto &root : dataRoots()) {
+        const QDir dir(QDir::cleanPath(root + QStringLiteral("/device_ids.d")));
+        if (!dir.exists())
+            continue;
+        for (const QString &name : dir.entryList({QStringLiteral("*.json")}, QDir::Files, QDir::Name)) {
+            const QString path = dir.absoluteFilePath(name);
+            if (!files.contains(path))
+                files << path;
+        }
+    }
+    return files;
+}
+
 QString ResourcePaths::packageDirectory()
 {
     const QString configured = AppSettings::packageDir();

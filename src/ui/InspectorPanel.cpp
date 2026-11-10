@@ -29,10 +29,19 @@ InspectorPanel::InspectorPanel(QWidget *parent)
     titleFont.setBold(true);
     titleFont.setPointSizeF(titleFont.pointSizeF() + 1.0);
     m_title->setFont(titleFont);
+    // Long register labels ("FDCAN_NDAT1  (FDCAN_NDAT1)") must not dictate the
+    // panel width, otherwise the dock can never be dragged narrow.
+    m_title->setWordWrap(true);
+    m_title->setMinimumWidth(0);
     layout->addWidget(m_title);
 
     m_addressLabel = new QLabel(this);
     m_addressLabel->setStyleSheet(QStringLiteral("color: palette(mid);"));
+    // Single-line labels like "地址 0x4002C000 大小 32 bit 复位 0x… 访问 读/写"
+    // otherwise report a ~340 px minimum and a long value line ~680 px, which
+    // pins the whole dock wide and keeps the bit strip from ever wrapping.
+    m_addressLabel->setWordWrap(true);
+    m_addressLabel->setMinimumWidth(0);
     layout->addWidget(m_addressLabel);
 
     m_strip = new BitFieldStrip(this);
@@ -55,6 +64,12 @@ InspectorPanel::InspectorPanel(QWidget *parent)
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setAlternatingRowColors(true);
+    // A table of four columns otherwise pins the whole dock to ~680 px, which
+    // both blocks dragging the panel narrow and made the bit strip think it had
+    // room for all 32 bits. Let the columns shrink and scroll instead.
+    m_table->horizontalHeader()->setMinimumSectionSize(32);
+    m_table->setMinimumWidth(180);
+    m_table->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     layout->addWidget(m_table, 1);
     connect(m_table, &QTableWidget::cellClicked, this, &InspectorPanel::onTableRowChanged);
 
@@ -101,6 +116,8 @@ InspectorPanel::InspectorPanel(QWidget *parent)
     layout->addWidget(editorBox);
 
     m_valueLabel = new QLabel(this);
+    m_valueLabel->setWordWrap(true);
+    m_valueLabel->setMinimumWidth(0);
     layout->addWidget(m_valueLabel);
 
     setConnected(false);

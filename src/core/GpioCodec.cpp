@@ -154,7 +154,8 @@ QString GpioCodec::portName(const SvdPeripheral &peripheral)
 }
 
 QVector<GpioPin> GpioCodec::decode(const SvdPeripheral &peripheral, const QHash<quint32, quint32> &values,
-                                   bool *valuesValid, const QSet<QString> &explicitlyConfigured)
+                                   bool *valuesValid, const QSet<QString> &explicitlyConfigured,
+                                   const QVector<int> &bondedBits)
 {
     QVector<GpioPin> pins;
     const QString port = portName(peripheral);
@@ -243,6 +244,13 @@ QVector<GpioPin> GpioCodec::decode(const SvdPeripheral &peripheral, const QHash<
             pin.speed = QStringLiteral("DS%1").arg(drive);
             pin.outputHigh = ((pod >> i) & 1u) != 0;
             pin.inputHigh = ((pid >> i) & 1u) != 0;
+            if (!bondedBits.isEmpty() && !bondedBits.contains(i)) {
+                pin.bonded = false;
+                pin.kind = GpioPin::Unknown;
+                pin.mode = QStringLiteral("未引出");
+                pin.subMode = QString();
+                pin.function.clear();
+            }
             pins << pin;
         }
 
@@ -293,6 +301,13 @@ QVector<GpioPin> GpioCodec::decode(const SvdPeripheral &peripheral, const QHash<
             }
             pin.outputHigh = ((odr >> i) & 1u) != 0;
             pin.inputHigh = ((idr >> i) & 1u) != 0;
+            if (!bondedBits.isEmpty() && !bondedBits.contains(i)) {
+                pin.bonded = false;
+                pin.kind = GpioPin::Unknown;
+                pin.mode = QStringLiteral("未引出");
+                pin.subMode = QString();
+                pin.function.clear();
+            }
             pins << pin;
         }
     } else {
@@ -360,6 +375,13 @@ QVector<GpioPin> GpioCodec::decode(const SvdPeripheral &peripheral, const QHash<
             pin.speed = speedForModern(speed);
             pin.outputHigh = ((odr >> i) & 1u) != 0;
             pin.inputHigh = ((idr >> i) & 1u) != 0;
+            if (!bondedBits.isEmpty() && !bondedBits.contains(i)) {
+                pin.bonded = false;
+                pin.kind = GpioPin::Unknown;
+                pin.mode = QStringLiteral("未引出");
+                pin.subMode = QString();
+                pin.function.clear();
+            }
             pins << pin;
         }
     }

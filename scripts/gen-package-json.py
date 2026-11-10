@@ -234,6 +234,17 @@ def main() -> int:
 
     out = pathlib.Path(__file__).resolve().parent.parent / "data" / "packages" / f"{CHIP}_{doc['name']}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
+
+    # Never clobber a table derived from the vendor datasheet: that one is
+    # authoritative (numberVerified=true, real pin numbers from table 3-1).
+    if out.is_file():
+        try:
+            existing = json.loads(out.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            existing = {}
+        if existing.get("numberVerified") and str(existing.get("source", "")).startswith("datasheet"):
+            print(f"[SKIP] {out.name} 来自数据手册，保留它")
+            return 0
     out.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"[OK  ] {out}  ({len(pins)} 项: GPIO {len(gpio)} + 电源/地 {len(non_gpio)})")
     return 0

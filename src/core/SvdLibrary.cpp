@@ -85,7 +85,20 @@ QStringList SvdLibrary::defaultRoots()
 {
     QStringList roots;
     const QString exeDir = QCoreApplication::applicationDirPath();
-    roots << exeDir + QStringLiteral("/svd");
+
+    // <exe>/svd plus the development/deploy layouts: scripts/fetch-n32-svds.py
+    // writes to <repo>/svd, which sits two levels above build/bin.
+    const QStringList relativeSvd = {
+        QStringLiteral("/svd"),
+        QStringLiteral("/../svd"),
+        QStringLiteral("/../../svd"),
+        QStringLiteral("/../../../svd"),
+    };
+    for (const QString &rel : relativeSvd) {
+        const QString candidate = QDir::cleanPath(exeDir + rel);
+        if (QFileInfo::exists(candidate) && !roots.contains(candidate))
+            roots << candidate;
+    }
 
     const QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     roots << appData + QStringLiteral("/svd");
@@ -285,6 +298,95 @@ QVector<SvdEntry> SvdLibrary::candidatesFor(const QString &deviceName) const
     for (const auto &item : scored)
         out << item.entry;
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// Vendor manifest (scripts/extract-svd-packs.py writes svd/manifest.json)
+// ---------------------------------------------------------------------------
+
+int SvdLibrary::loadManifest()
+{
+    m_manifest.clear();
+    if (m_roots.isEmpty())
+        return 0;
+
+    for (const QString &root : m_roots) {
+        const QString path = QDir::cleanPath(root + QStringLiteral("/manifest.json"));
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly))
+            continue;
+
+        QJsonParseError parseError{};
+        const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
+        if (doc.isNull()) {
+            Logger::instance()->warn(QStringLiteral("%1 解析失败: %2").arg(path, parseError.errorString()));
+            continue;
+        }
+
+        const QJsonObject devices = doc.object().value(QStringLiteral("devices")).toObject();
+        for (auto it = devices.constBegin(); it != devices.constEnd(); ++it) {
+            const QJsonObject o = it.value().toObject();
+            SvdManifestEntry entry;
+            entry.part = o.value(QStringLiteral("part")).toString(it.key());
+            entry.series = o.value(QStringLiteral("pack")).toString();
+            entry.package = o.value(QStringLiteral("package")).toString();
+            entry.pinCount = o.value(QStringLiteral("pinCount")).toInt();
+            entry.ioCount = o.value(QStringLiteral("ioCount")).toInt();
+            for (const auto &pkg : o.value(QStringLiteral("packages")).toArray())
+                entry.packages << pkg.toString();
+
+            // The manifest path is relative to the repository root; resolve it
+            // against every ancestor of the svd/ directory that contains it.
+            const QString relative = o.value(QStringLiteral("svdPath")).toString();
+            if (relative.isEmpty())
+                continue;
+            entry.svdPath = QDir::cleanPath(root + QStringLiteral("/../") + relative);
+            if (!QFileInfo::exists(entry.svdPath))
+                entry.svdPath = QDir::cleanPath(root + QLatin1Char('/') + QFileInfo(relative).fileName());
+
+            m_manifest.insert(entry.part, entry);
+        }
+        Logger::instance()->info(QStringLiteral("SVD 厂商清单: %1 条 (%2)")
+                                     .arg(m_manifest.size())
+                                     .arg(path));
+        return m_manifest.size();
+    }
+    return 0;
+}
+
+bool SvdLibrary::lookupPart(const QString &part, SvdManifestEntry *out, QStringList *ambiguous) const
+{
+    if (ambiguous)
+        ambiguous->clear();
+    const QString target = normalize(part);
+    if (target.isEmpty() || m_manifest.isEmpty())
+        return false;
+
+    // 1) exact part number
+    for (auto it = m_manifest.constBegin(); it != m_manifest.constEnd(); ++it) {
+        if (normalize(it.key()) == target) {
+            if (out)
+                *out = it.value();
+            return true;
+        }
+    }
+
+    // 2) unique prefix match: J-Link may report "N32G452CB" while the pack spells
+    //    the full ordering code "N32G452CBL7".
+    QStringList hits;
+    for (auto it = m_manifest.constBegin(); it != m_manifest.constEnd(); ++it) {
+        const QString key = normalize(it.key());
+        if (key.startsWith(target) || target.startsWith(key))
+            hits << it.key();
+    }
+    if (hits.size() == 1) {
+        if (out)
+            *out = m_manifest.value(hits.first());
+        return true;
+    }
+    if (hits.size() > 1 && ambiguous)
+        *ambiguous = hits;
+    return false;
 }
 
 Result<SvdDevice> SvdLibrary::load(const QString &path) const

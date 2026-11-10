@@ -11,6 +11,12 @@ namespace mrd {
 /// * colours: read-write fields, read-only fields, reserved (hatched)
 /// * shows the current value bit by bit below the field map
 /// * hover shows the field description, click selects a field
+///
+/// All 32 bits are always drawn side by side; the cell width shrinks with the
+/// dock (labels and the "0/1" digits are dropped below 14/18 px per cell instead
+/// of losing bits). Nothing is ever clipped, at any panel width, and the height
+/// does not depend on the width. `paintedBitsRect()` exposes that invariant so
+/// the self-test can catch a regression.
 class BitFieldStrip : public QWidget
 {
     Q_OBJECT
@@ -29,12 +35,21 @@ public:
     int selectedField() const { return m_selectedField; }
 
     /// Width of one bit cell actually used (adapts to the widget width).
-    int bitWidth() const { return effectiveBitWidth(); }
+    int bitWidth() const { return cellWidth(); }
+
+    /// Total height the strip needs for its bands (independent of the width).
+    static int preferredHeight();
 
     QSize sizeHint() const override;
-    /// Small, so the surrounding dock can be resized freely; the strip scales
-    /// itself down instead of forcing a ~900 px minimum width.
+    /// Deliberately small: the dock must stay draggable, so the strip scales its
+    /// cells down instead of demanding a ~900 px minimum width.
     QSize minimumSizeHint() const override;
+
+    /// Union of every painted bit cell / field / value box.
+    ///
+    /// Must stay inside `rect()`; a regression here means the register view is
+    /// silently cut off (the bug this widget guards against).
+    QRect paintedBitsRect() const;
 
 signals:
     void fieldSelected(int fieldIndex);
@@ -49,8 +64,8 @@ protected:
 
 private:
     int fieldAt(const QPoint &pos) const;
-    /// Cell width derived from the current widget width (clamped for legibility).
-    int effectiveBitWidth() const;
+    /// Cell width that fits all 32 bits into the current widget width.
+    int cellWidth() const;
     QRect fieldRect(const SvdField &field) const;
     int bitAt(const QPoint &pos) const;
 
