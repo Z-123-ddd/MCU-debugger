@@ -1,0 +1,415 @@
+{
+  "name": "UQFN48",
+  "chip": "N32H473CEU7",
+  "numberVerified": true,
+  "expectedPinCount": 48,
+  "expectedIoCount": 42,
+  "pinCountNote": "共 48 项 = GPIO 42 + 电源/地 6，与 pdsc 声明的 48 脚 / 42 IO 一致。QFN48 物理顺序：每边 12 脚，pin1 左上角起逆时针。",
+  "comment": "引脚名与板级用途来自 CANable2-N32 固件（src/can.c、src/usbd_cdc_if.c、PORTING_PLAN.md）与板级原理图；封装与引脚总数取自 CMSIS-Pack 的 pdsc （<feature type=\"QFN\" count=...> / <feature type=\"IOs\">）。引脚号与引脚名逐脚来自 LCEDA 的原理图符号（符号体内标注 N32H473CEU7），并用 8x 放大 OCR 读回、与 pdsc 声明的 48 脚 / 42 IO 交叉校验一致（42 IO = 16 PA + 16 PB + 7 PC + 3 PH；6 电源 = VBAT/VREF+/VDDA/VDD×3）。",
+  "pins": [
+    {
+      "number": 1,
+      "name": "VBAT",
+      "type": "power",
+      "functions": [
+        "VBAT"
+      ]
+    },
+    {
+      "number": 2,
+      "name": "PC13",
+      "type": "io",
+      "port": "PC",
+      "pin": 13,
+      "functions": [
+        "CAN_PWR"
+      ]
+    },
+    {
+      "number": 3,
+      "name": "PC14",
+      "type": "io",
+      "port": "PC",
+      "pin": 14,
+      "functions": [
+        "OSC32_IN",
+        "LSE"
+      ]
+    },
+    {
+      "number": 4,
+      "name": "PC15",
+      "type": "io",
+      "port": "PC",
+      "pin": 15,
+      "functions": [
+        "OSC32_OUT",
+        "LSE"
+      ]
+    },
+    {
+      "number": 5,
+      "name": "PH0",
+      "type": "clock",
+      "port": "PH",
+      "pin": 0,
+      "functions": [
+        "OSC_IN",
+        "HSE 24MHz"
+      ]
+    },
+    {
+      "number": 6,
+      "name": "PH1",
+      "type": "clock",
+      "port": "PH",
+      "pin": 1,
+      "functions": [
+        "OSC_OUT",
+        "HSE 24MHz"
+      ]
+    },
+    {
+      "number": 7,
+      "name": "PH6",
+      "type": "reset",
+      "port": "PH",
+      "pin": 6,
+      "functions": [
+        "NRST"
+      ]
+    },
+    {
+      "number": 8,
+      "name": "PA0",
+      "type": "io",
+      "port": "PA",
+      "pin": 0,
+      "functions": [
+        "CAN_STB"
+      ]
+    },
+    {
+      "number": 9,
+      "name": "PA1",
+      "type": "io",
+      "port": "PA",
+      "pin": 1
+    },
+    {
+      "number": 10,
+      "name": "PA2",
+      "type": "io",
+      "port": "PA",
+      "pin": 2
+    },
+    {
+      "number": 11,
+      "name": "PA3",
+      "type": "io",
+      "port": "PA",
+      "pin": 3
+    },
+    {
+      "number": 12,
+      "name": "PA4",
+      "type": "io",
+      "port": "PA",
+      "pin": 4
+    },
+    {
+      "number": 13,
+      "name": "PA5",
+      "type": "io",
+      "port": "PA",
+      "pin": 5
+    },
+    {
+      "number": 14,
+      "name": "PA6",
+      "type": "io",
+      "port": "PA",
+      "pin": 6
+    },
+    {
+      "number": 15,
+      "name": "PA7",
+      "type": "io",
+      "port": "PA",
+      "pin": 7
+    },
+    {
+      "number": 16,
+      "name": "PC4",
+      "type": "io",
+      "port": "PC",
+      "pin": 4
+    },
+    {
+      "number": 17,
+      "name": "PB0",
+      "type": "io",
+      "port": "PB",
+      "pin": 0
+    },
+    {
+      "number": 18,
+      "name": "PB1",
+      "type": "io",
+      "port": "PB",
+      "pin": 1
+    },
+    {
+      "number": 19,
+      "name": "PB2",
+      "type": "io",
+      "port": "PB",
+      "pin": 2
+    },
+    {
+      "number": 20,
+      "name": "VREF+",
+      "type": "power",
+      "functions": [
+        "VREF+"
+      ]
+    },
+    {
+      "number": 21,
+      "name": "VDDA",
+      "type": "power",
+      "functions": [
+        "VDDA"
+      ]
+    },
+    {
+      "number": 22,
+      "name": "PB10",
+      "type": "io",
+      "port": "PB",
+      "pin": 10
+    },
+    {
+      "number": 23,
+      "name": "VDD",
+      "type": "power",
+      "functions": [
+        "VDD"
+      ]
+    },
+    {
+      "number": 24,
+      "name": "PB11",
+      "type": "io",
+      "port": "PB",
+      "pin": 11,
+      "functions": [
+        "LED_GREEN"
+      ]
+    },
+    {
+      "number": 25,
+      "name": "PB12",
+      "type": "io",
+      "port": "PB",
+      "pin": 12,
+      "functions": [
+        "FDCAN1_RX",
+        "AF26"
+      ]
+    },
+    {
+      "number": 26,
+      "name": "PB13",
+      "type": "io",
+      "port": "PB",
+      "pin": 13,
+      "functions": [
+        "FDCAN1_TX",
+        "AF25"
+      ]
+    },
+    {
+      "number": 27,
+      "name": "PB14",
+      "type": "io",
+      "port": "PB",
+      "pin": 14
+    },
+    {
+      "number": 28,
+      "name": "PB15",
+      "type": "io",
+      "port": "PB",
+      "pin": 15
+    },
+    {
+      "number": 29,
+      "name": "PC6",
+      "type": "io",
+      "port": "PC",
+      "pin": 6
+    },
+    {
+      "number": 30,
+      "name": "PA8",
+      "type": "io",
+      "port": "PA",
+      "pin": 8
+    },
+    {
+      "number": 31,
+      "name": "PA9",
+      "type": "io",
+      "port": "PA",
+      "pin": 9,
+      "functions": [
+        "USART1_TX (optional)"
+      ]
+    },
+    {
+      "number": 32,
+      "name": "PA10",
+      "type": "io",
+      "port": "PA",
+      "pin": 10,
+      "functions": [
+        "USART1_RX (optional)"
+      ]
+    },
+    {
+      "number": 33,
+      "name": "PA11",
+      "type": "io",
+      "port": "PA",
+      "pin": 11,
+      "functions": [
+        "USB_DM",
+        "AF10"
+      ]
+    },
+    {
+      "number": 34,
+      "name": "PA12",
+      "type": "io",
+      "port": "PA",
+      "pin": 12,
+      "functions": [
+        "USB_DP",
+        "AF10"
+      ]
+    },
+    {
+      "number": 35,
+      "name": "VDD",
+      "type": "power",
+      "functions": [
+        "VDD"
+      ]
+    },
+    {
+      "number": 36,
+      "name": "PA13",
+      "type": "io",
+      "port": "PA",
+      "pin": 13,
+      "functions": [
+        "SWDIO"
+      ]
+    },
+    {
+      "number": 37,
+      "name": "PA14",
+      "type": "io",
+      "port": "PA",
+      "pin": 14,
+      "functions": [
+        "SWCLK"
+      ]
+    },
+    {
+      "number": 38,
+      "name": "PA15",
+      "type": "io",
+      "port": "PA",
+      "pin": 15,
+      "functions": [
+        "LED_BLUE"
+      ]
+    },
+    {
+      "number": 39,
+      "name": "PC10",
+      "type": "io",
+      "port": "PC",
+      "pin": 10
+    },
+    {
+      "number": 40,
+      "name": "PC11",
+      "type": "io",
+      "port": "PC",
+      "pin": 11
+    },
+    {
+      "number": 41,
+      "name": "PB3",
+      "type": "io",
+      "port": "PB",
+      "pin": 3
+    },
+    {
+      "number": 42,
+      "name": "PB4",
+      "type": "io",
+      "port": "PB",
+      "pin": 4
+    },
+    {
+      "number": 43,
+      "name": "PB5",
+      "type": "io",
+      "port": "PB",
+      "pin": 5
+    },
+    {
+      "number": 44,
+      "name": "PB6",
+      "type": "io",
+      "port": "PB",
+      "pin": 6
+    },
+    {
+      "number": 45,
+      "name": "PB7",
+      "type": "io",
+      "port": "PB",
+      "pin": 7
+    },
+    {
+      "number": 46,
+      "name": "PB8",
+      "type": "boot",
+      "port": "PB",
+      "pin": 8,
+      "functions": [
+        "BOOT0"
+      ]
+    },
+    {
+      "number": 47,
+      "name": "PB9",
+      "type": "io",
+      "port": "PB",
+      "pin": 9
+    },
+    {
+      "number": 48,
+      "name": "VDD",
+      "type": "power",
+      "functions": [
+        "VDD"
+      ]
+    }
+  ]
+}

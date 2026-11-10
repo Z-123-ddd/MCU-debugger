@@ -1,0 +1,317 @@
+#include "app/Cli.h"
+
+#include "core/AppSettings.h"
+#include "core/DeviceIdentifier.h"
+#include "core/GpioCodec.h"
+#include "core/HexUtil.h"
+#include "core/JLinkGdbProbe.h"
+#include "core/JLinkRunner.h"
+#include "core/Logger.h"
+#include "core/ProbeRsProbe.h"
+#include "core/ProbeRsRunner.h"
+#include "core/SvdLibrary.h"
+
+#include <memory>
+
+#include <cstdio>
+
+namespace mrd::cli {
+
+namespace {
+
+int g_failures = 0;
+
+void out(const QString &line)
+{
+    std::fprintf(stdout, "%s\n", qPrintable(line));
+    std::fflush(stdout);
+}
+
+void check(bool condition, const QString &what, const QString &detail = QString())
+{
+    const QString mark = condition ? QStringLiteral("[PASS]") : QStringLiteral("[FAIL]");
+    if (!condition)
+        ++g_failures;
+    QString line = QStringLiteral("%1 %2").arg(mark, what);
+    if (!detail.isEmpty())
+        line += QStringLiteral("   (%1)").arg(detail);
+    out(line);
+}
+
+/// Restart the core after a diagnostic read (J-Link leaves it in whatever state
+/// the connect sequence produced).
+void dumpGpioPorts(IProbe &probe, const SvdDevice &device, const QString &onlyPort)
+{
+    int dumped = 0;
+    for (const auto &peripheral : device.peripherals) {
+        if (!GpioCodec::isGpioPort(peripheral))
+            continue;
+        const QString port = GpioCodec::portName(peripheral);
+        if (port.isEmpty())
+            continue;
+        if (!onlyPort.isEmpty() && port.compare(onlyPort, Qt::CaseInsensitive) != 0)
+            continue;
+
+        QHash<quint32, quint32> values;
+        for (const auto &reg : peripheral.registers) {
+            quint32 value = 0;
+            if (probe.readU32(peripheral.baseAddress + reg.addressOffset, &value))
+                values.insert(peripheral.baseAddress + reg.addressOffset, value);
+        }
+
+        bool valid = false;
+        const QVector<GpioPin> pins = GpioCodec::decode(peripheral, values, &valid);
+        if (pins.isEmpty())
+            continue;
+
+        out(QStringLiteral("  %1 @ %2%3").arg(peripheral.name, hexAddr(peripheral.baseAddress),
+                                              valid ? QString() : QStringLiteral("  (无有效读数)")));
+        for (const auto &pin : pins) {
+            const QString level = (pin.kind == GpioPin::Output)
+                                      ? (pin.outputHigh ? QStringLiteral("ODR=1") : QStringLiteral("ODR=0"))
+                                      : (pin.inputHigh ? QStringLiteral("IDR=1") : QStringLiteral("IDR=0"));
+            out(QStringLiteral("    %1  %2 %3  速度/DS=%4  %5")
+                    .arg(pin.name().leftJustified(5, QLatin1Char(' ')), pin.mode, pin.subMode, pin.speed, level));
+        }
+        ++dumped;
+        if (dumped >= 1 && !onlyPort.isEmpty())
+            break;
+    }
+    if (dumped == 0)
+        out(QStringLiteral("  （没有找到 GPIO 端口）"));
+}
+
+} // namespace
+
+int runProbeInfo(const Options &options)
+{
+    Logger::instance()->setMinimumLevel(Logger::Warn);
+    g_failures = 0;
+
+    const QString backend = !options.backend.isEmpty()
+                                ? options.backend
+                                : AppSettings::probeBackend();
+
+    out(QStringLiteral("=== 探针后端: %1 ===").arg(backend));
+    if (!Logger::instance()->logFile().isEmpty())
+        out(QStringLiteral("日志文件: %1").arg(Logger::instance()->logFile()));
+
+    std::unique_ptr<IProbe> probe;
+    QString serial;
+
+    if (backend == QLatin1String("probe-rs")) {
+        ProbeRsRunner runner;
+        const QStringList candidates = ProbeRsRunner::candidatePaths(AppSettings::probeRsPath());
+        out(QStringLiteral("候选 probe-rs (%1 个):").arg(candidates.size()));
+        for (const QString &path : candidates)
+            out(QStringLiteral("  - %1").arg(path));
+
+        runner.setBinary(ProbeRsRunner::locate(AppSettings::probeRsPath()));
+        if (runner.binary().isEmpty()) {
+            out(QString());
+            out(QStringLiteral("[ERROR] 未找到 probe-rs 可执行文件。"));
+            out(QStringLiteral("        请运行: powershell -ExecutionPolicy Bypass -File scripts\\fetch-probe-rs.ps1"));
+            return 4;
+        }
+        out(QStringLiteral("[OK] %1 | %2").arg(runner.binary(), runner.version()));
+
+        auto rsProbe = std::make_unique<ProbeRsProbe>();
+        rsProbe->runner()->setBinary(runner.binary());
+        probe = std::move(rsProbe);
+    } else {
+        const QStringList candidates = JLinkRunner::candidatePaths(AppSettings::jlinkPath());
+        out(QStringLiteral("候选 JLink.exe (%1 个):").arg(candidates.size()));
+        for (const QString &path : candidates)
+            out(QStringLiteral("  - %1").arg(path));
+
+        const QString executable = JLinkRunner::locate(AppSettings::jlinkPath());
+        if (executable.isEmpty()) {
+            out(QString());
+            out(QStringLiteral("[ERROR] 未找到 JLink.exe（SEGGER J-Link 软件未安装？）"));
+            return 4;
+        }
+
+        const auto info = JLinkRunner::query(executable,
+                                            options.deviceName.isEmpty() ? QStringLiteral("Cortex-M4")
+                                                                          : options.deviceName);
+        if (!info) {
+            out(QString());
+            out(QStringLiteral("[ERROR] %1").arg(info.error));
+            return 4;
+        }
+        out(QStringLiteral("[OK] %1").arg(executable));
+        out(QStringLiteral("     Commander %1 | DLL %2 | 固件 %3 | 硬件 %4 | S/N %5 | %6")
+                .arg(info.value.commander, info.value.dllVersion, info.value.firmware, info.value.hardware,
+                     info.value.serial.isEmpty() ? QStringLiteral("?") : info.value.serial, info.value.product));
+        check(info.value.probeFound, QStringLiteral("发现 J-Link 硬件"),
+              info.value.probeFound ? info.value.serial : QStringLiteral("请检查 USB 连接"));
+
+        auto jlink = std::make_unique<JLinkGdbProbe>();
+        jlink->setExecutable(executable);
+        serial = info.value.serial;
+        probe = std::move(jlink);
+    }
+
+    // --- library / database ------------------------------------------------
+    QString dbError;
+    const bool dbLoaded = DeviceIdentifier::loadDatabase(&dbError);
+    out(QString());
+    check(dbLoaded, QStringLiteral("器件识别库"),
+          dbLoaded ? QStringLiteral("%1 条 @ %2")
+                         .arg(DeviceIdentifier::database().size())
+                         .arg(DeviceIdentifier::databasePath())
+                   : dbError);
+
+    // --- connect -----------------------------------------------------------
+    probe->setInterface(options.interfaceName.isEmpty() ? AppSettings::interfaceName() : options.interfaceName);
+    probe->setSpeed(options.speedKHz > 0 ? options.speedKHz : AppSettings::speedKHz());
+    // Without an explicit chip we attach with a generic core first and let the
+    // DEV_ID lookup decide; that keeps a wrong guess from breaking connect.
+    const QString requestedChip = options.deviceName.isEmpty() ? QStringLiteral("Cortex-M4")
+                                                               : options.deviceName;
+    probe->setDevice(requestedChip);
+
+    out(QString());
+    out(QStringLiteral("--- 连接目标 ---"));
+    const Status connected = probe->connectTarget();
+    check(static_cast<bool>(connected), QStringLiteral("连接目标"),
+          connected ? QString() : connected.error);
+    if (!connected) {
+        probe->close();
+        out(QString());
+        out(QStringLiteral("=== 连接失败，退出码 3 ==="));
+        return 3;
+    }
+
+    const ProbeInfo probeInfo = probe->info();
+    out(QStringLiteral("接口 %1 @ %2 kHz | 器件 %3 | CPU 状态 %4")
+            .arg(probeInfo.interfaceName)
+            .arg(probeInfo.speedKHz)
+            .arg(probeInfo.detectedChip.isEmpty() ? probeInfo.chipName : probeInfo.detectedChip,
+                 probeInfo.halted ? QStringLiteral("halted") : QStringLiteral("running")));
+
+    // --- core / idcode -----------------------------------------------------
+    quint32 cpuid = 0;
+    if (probe->readU32(0xE000ED00u, &cpuid))
+        out(QStringLiteral("CPUID     : %1  (%2)").arg(hex32(cpuid), DeviceIdentifier::coreNameFromCpuid(cpuid)));
+    else
+        out(QStringLiteral("[WARN] CPUID 读取失败"));
+
+    bool haveIdCode = false;
+    for (const quint32 address : DeviceIdentifier::idcodeAddresses()) {
+        quint32 value = 0;
+        // Ignore neighbours in the CoreSight block: a real IDCODE has a
+        // non-zero revision field in bits[31:16].
+        if (!probe->readU32(address, &value) || value == 0u || value == 0xFFFFFFFFu || (value >> 16) == 0u)
+            continue;
+        out(QStringLiteral("IDCODE    : %1 = %2  (DEV_ID=0x%3, REV_ID=0x%4)")
+                .arg(hexAddr(address), hex32(value))
+                .arg(value & 0xFFFu, 3, 16, QLatin1Char('0'))
+                .arg((value >> 16) & 0xFFFFu, 4, 16, QLatin1Char('0')));
+        haveIdCode = true;
+    }
+    if (!haveIdCode)
+        out(QStringLiteral("[WARN] 未读到有效 IDCODE（DBGMCU 可能未使能）"));
+
+    // --- identification ----------------------------------------------------
+    SvdLibrary library;
+    library.setRoots(AppSettings::svdRoots());
+    library.scan(false);
+
+    auto identified = DeviceIdentifier::identify(*probe, library, options.deviceName, serial);
+
+    // Two-phase: re-attach with the resolved part number so J-Link applies the
+    // right flash/AP settings (also proves the name is valid).
+    if (identified && options.deviceName.isEmpty() && !identified.value.probeRsChip.isEmpty()
+        && identified.value.probeRsChip.compare(requestedChip, Qt::CaseInsensitive) != 0) {
+        out(QString());
+        out(QStringLiteral("按识别结果重新以 %1 连接...").arg(identified.value.probeRsChip));
+        probe->setDevice(identified.value.probeRsChip);
+        const Status reconnect = probe->connectTarget();
+        check(static_cast<bool>(reconnect), QStringLiteral("以识别出的器件名重连"),
+              reconnect ? identified.value.probeRsChip : reconnect.error);
+        if (reconnect) {
+            const ProbeInfo again = probe->info();
+            out(QStringLiteral("J-Link 解析器件: %1").arg(again.detectedChip.isEmpty()
+                                                             ? QStringLiteral("-")
+                                                             : again.detectedChip));
+            // Re-resolve against the now-known part number (no second IDCODE probe:
+            // the manual path is deterministic and avoids a fresh-attach race).
+            identified = DeviceIdentifier::identify(*probe, library, identified.value.probeRsChip, serial);
+        }
+    }
+
+    out(QString());
+    SvdDevice device;
+    if (!identified) {
+        check(false, QStringLiteral("MCU 型号识别"), identified.error);
+    } else {
+        const IdentificationResult &r = identified.value;
+        out(QStringLiteral("识别结果  : %1  家族=%2  厂商=%3  核=%4%5")
+                .arg(r.mcuName.isEmpty() ? QStringLiteral("-") : r.mcuName,
+                     r.family.isEmpty() ? QStringLiteral("-") : r.family,
+                     r.vendor.isEmpty() ? QStringLiteral("-") : r.vendor,
+                     r.coreName.isEmpty() ? QStringLiteral("-") : r.coreName,
+                     r.manuallySelected ? QStringLiteral(" (手动)") : QString()));
+        out(QStringLiteral("后端器件名: %1").arg(r.probeRsChip));
+        out(QStringLiteral("SVD       : %1").arg(r.svdPath.isEmpty() ? QStringLiteral("<未匹配>") : r.svdPath));
+        if (!r.note.isEmpty())
+            out(QStringLiteral("备注      : %1").arg(r.note));
+        check(!r.svdPath.isEmpty(), QStringLiteral("匹配到 SVD 描述文件"), r.svdPath);
+
+        if (!r.svdPath.isEmpty()) {
+            const auto parsed = library.load(r.svdPath);
+            if (parsed) {
+                device = parsed.value;
+                check(true, QStringLiteral("SVD 已解析"),
+                      QStringLiteral("%1 外设 / %2 寄存器 / %3 字段")
+                          .arg(device.peripherals.size())
+                          .arg(device.totalRegisters())
+                          .arg(device.totalFields()));
+            } else {
+                check(false, QStringLiteral("SVD 已解析"), parsed.error);
+            }
+        }
+    }
+
+    // --- live register dump ------------------------------------------------
+    if (!device.peripherals.isEmpty()) {
+        out(QString());
+        out(QStringLiteral("--- GPIO 实时读取（验证寄存器级访问） ---"));
+        dumpGpioPorts(*probe, device, options.portName);
+    }
+
+    // --- write path --------------------------------------------------------
+    // Round-trip through SRAM: reads the original value first and restores it, so
+    // the check is non-destructive while still exercising the write path.
+    {
+        out(QString());
+        out(QStringLiteral("--- 写入验证（SRAM 回环，非破坏性） ---"));
+        constexpr quint32 kScratch = 0x20000000u;
+        quint32 original = 0;
+        if (!probe->readU32(kScratch, &original)) {
+            out(QStringLiteral("[WARN] 无法读取 %1，跳过写入验证").arg(hexAddr(kScratch)));
+        } else {
+            const quint32 pattern = 0xA5C30000u | (original & 0x0000FFFFu);
+            const Status wroteStatus = probe->writeU32(kScratch, pattern);
+            const bool wrote = static_cast<bool>(wroteStatus);
+            quint32 readBack = 0;
+            const bool readOk = static_cast<bool>(probe->readU32(kScratch, &readBack));
+            const Status restored = probe->writeU32(kScratch, original);
+
+            out(QStringLiteral("原始值 %1 -> 写入 %2 -> 读回 %3 -> 恢复 %4")
+                    .arg(hex32(original), hex32(pattern), readOk ? hex32(readBack) : QStringLiteral("-"),
+                         static_cast<bool>(restored) ? QStringLiteral("OK") : restored.error));
+            check(wrote && readOk && readBack == pattern, QStringLiteral("寄存器写入/回读一致"),
+                  wrote ? QString() : wroteStatus.error);
+        }
+    }
+
+    probe->close();
+    out(QString());
+    out(g_failures == 0 ? QStringLiteral("=== probe-info 通过 ===")
+                        : QStringLiteral("=== probe-info 有 %1 项未通过 ===").arg(g_failures));
+    return g_failures == 0 ? 0 : 1;
+}
+
+} // namespace mrd::cli

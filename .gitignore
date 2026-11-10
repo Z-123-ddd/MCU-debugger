@@ -1,0 +1,50 @@
+# ---- build outputs -------------------------------------------------------
+build/
+deploy/
+dist/
+*.exe
+*.dll
+*.a
+*.o
+*.obj
+*.ilk
+*.pdb
+
+# ---- generated / intermediate -------------------------------------------
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CMakeUserPresets.json
+build.ninja
+.ninja_deps
+.ninja_log
+compile_commands.json
+moc_*.cpp
+qrc_*.cpp
+ui_*.h
+*_autogen/
+
+# ---- vendored tools (fetched by scripts/fetch-probe-rs.ps1) --------------
+tools/
+
+# ---- runtime output ------------------------------------------------------
+out/
+out-*/
+out*/
+*.log
+*.pid
+
+# ---- agent / editor / local state ---------------------------------------
+.codegraph/
+.reasonix/
+.tmpocr/
+.vscode/
+.idea/
+.cache/
+__pycache__/
+*.pyc
+
+# ---- OS ------------------------------------------------------------------
+Thumbs.db
+desktop.ini
+.DS_Store

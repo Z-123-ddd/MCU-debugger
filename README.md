@@ -1,1 +1,402 @@
-# MCU-debugger
+# MCU Register Debugger
+
+MCU 寄存器级 UI 调试器：通过 **J-Link** 连接调试器（保留 SEGGER 官方 USB 驱动，**无需换 WinUSB**），
+读取 `DBGMCU_IDCODE` / `CPUID` 自动识别 MCU 型号，再用 **CMSIS-SVD** 描述文件图形化重建芯片的
+寄存器布局与 IO 布局。寄存器视图参考 CubeMX 的配置页面，但内部以 **分块寄存器图** 展示。
+
+- UI：Qt 6 Widgets + QGraphicsView 自绘（分块寄存器图、位域条、封装引脚图、端口矩阵）
+- 描述文件：CMSIS-SVD 1.0 / 1.1 / 1.3
+- 主后端：**JLinkGDBServerCL.exe + GDB Remote Serial Protocol**（持久 TCP 会话，毫秒级读写）
+- 备选后端：**probe-rs CLI**（需 WinUSB 驱动，可切换）
+
+---
+
+## 1. 为什么是 GDB Server 而不是 J-Link DLL / Commander
+
+实测结论（本机 SEGGER J-Link V8.26 + N32H473CE）：
+
+| 方案 | 结果 |
+|---|---|
+| 直接调 `JLink_x64.dll` | `JLINKARM_GetDLLVersion` 等符号的返回类型/缓冲区语义与自带头文件不匹配，未连接时部分调用直接崩溃 → 放弃 |
+| `JLink.exe`（Commander）持久会话 | 管道下 **stdout 被完全缓冲**（只有进程退出才 flush），无法交互 → 放弃 |
+| `JLinkGDBServerCL.exe` + GDB RSP | 持久 TCP、无缓冲、官方驱动；`m/M` 读写、`monitor halt/go/reset` 全部可用 → **采用** |
+
+每次读写都是一个 GDB 包，轮询 200 ms 全外设刷新实测无压力。
+
+## 2. 目录结构
+
+```
+CMakeLists.txt               构建定义（Qt6 Widgets + Network，C++20）
+src/core/                    SVD 解析、寄存器会话、J-Link GDB 后端、GPIO 解码
+  GdbRspClient.*             GDB RSP 最小客户端（$..#xx 帧、转义、分包读写）
+  JLinkGdbProbe.*            IProbe 实现：拉起 JLinkGDBServerCL 并驱动 GDB RSP
+  JLinkRunner.*              JLink.exe 定位 + 一次性脚本（版本/仿真器信息/器件名校验）
+  ProbeRsRunner/ProbeRsProbe 备选 probe-rs 后端
+  ProbeController.*          探针线程隔离（所有阻塞调用在 worker 线程）
+  DeviceIdentifier.*         CPUID/IDCODE → MCU → SVD 识别
+  GpioCodec.*                GPIO 端口解码（F1 / F4-G4 / N32 三种布局）
+  RegisterSession.*          寄存器快照、读改写、撤销、轮询
+src/ui/                      主窗口、寄存器分块图、位域条、检查器、封装图、端口矩阵、主题
+src/app/                     main、命令行、离屏渲染自检
+data/device_ids.json         器件识别表（DEV_ID → MCU → 器件名 → SVD）
+data/packages/*.json         封装引脚图数据
+scripts/build.bat            编译
+scripts/deploy.bat           windeployqt 打包到 deploy/
+scripts/fetch-probe-rs.ps1   下载官方 probe-rs（仅在使用 probe-rs 后端时需要）
+packaging/installer.nsi      NSIS 安装包脚本
+packaging/pack.bat           调用 makensis 生成 dist\McuRegDebugger-<ver>-setup.exe
+```
+
+## 3. 依赖
+
+| 组件 | 版本 | 说明 |
+|---|---|---|
+| Qt | 6.5+（本机 6.8.3 mingw_64） | Core / Gui / Widgets / Network |
+| CMake + Ninja | 3.21+ | |
+| MinGW | GCC 13（`D:\Qt\Tools\mingw1310_64`） | |
+| SEGGER J-Link 软件 | V7.96 / V8.26 | 提供 `JLink.exe` 与 `JLinkGDBServerCL.exe` |
+| NSIS | 3.x（`D:\NSIS`） | 仅打包时需要 |
+
+J-Link 软件按以下顺序自动发现（设置项可覆盖）：注册表 `HKLM\SOFTWARE\SEGGER\J-Link`
+→ `%ProgramFiles%\SEGGER\JLink_V*`（版本号降序）→ `<exe>/tools/jlink` → `PATH`。
+
+## 4. 编译与运行
+
+```bat
+scripts\build.bat            :: 增量编译
+scripts\build.bat --clean    :: 全量重建
+build\bin\mcuRegDebugger.exe
+```
+
+### 命令行
+
+```
+mcuRegDebugger                      启动图形界面
+  --backend <jlink|probe-rs>        探针后端（默认 jlink）
+  --interface <swd|jtag>            连接协议（默认 swd）
+  --speed <kHz>                     时钟（默认 4000）
+  --device <chip>                   指定器件名（默认自动识别）
+  --svd <path>                      启动时加载 SVD
+  --autoconnect                     GUI 启动后自动连接
+  --probe-info                      探针信息 + 连接 + 识别 + 实时寄存器读取 + 写入回环
+  --selftest --svd <path>           SVD 解析自检（退出码 0 = 通过）
+  --render <dir>                    自检时离屏渲染 PNG 快照
+  --port <PA|PB|...>                指定端口（配合 --probe-info / --render）
+  --log <path>                      日志文件位置
+```
+
+真机验证示例（本机实测通过）：
+
+```bat
+build\bin\mcuRegDebugger.exe --probe-info
+```
+
+输出包含：Commander/DLL/固件/硬件/SN、`CPUID`、`IDCODE`（DEV_ID/REV_ID）、
+识别出的 MCU 与 SVD、逐引脚 GPIO 解码、SRAM 写入回环校验。
+
+## 5. 界面说明
+
+| 区域 | 作用 |
+|---|---|
+| 工具栏 | 后端/接口/速度/芯片名、连接与断开、暂停/运行/复位、撤销写入 |
+| 左侧「外设」 | 按 `groupName` 分组；勾选 = 加入轮询集合 |
+| 「封装 / 引脚」 | 芯片体 + 四边引脚，颜色=引脚类型/实时 GPIO 模式，点 GPIO 跳到端口 |
+| 「端口矩阵 (IO)」 | 选中端口 PA0..PA15 的 4×4 矩阵，颜色=输入/输出/复用/模拟 |
+| 「寄存器全景」 | 选中外设的**分块寄存器图**（名称/偏移/当前值/位域带/RO-RW），下方位域条 |
+| 右侧「寄存器检查器」 | 位域表、枚举下拉、字段 hex 编辑与置 1/清 0/写入（读改写）、整寄存器写、重读 |
+
+左/右/下三个停靠面板的宽度与高度都可自由拖动（分隔条无锁定）；位域条会随宽度自适应缩放，
+不会用它撑出一个不可缩小的最小宽度。
+| 底部「日志」 | 解析与探针日志，同时写入 `%APPDATA%\MCUTools\McuRegDebugger\logs\` |
+
+GDB 后端的运行控制：`暂停` = `monitor halt`，`运行` = `monitor go`，`复位` = `monitor reset`；
+CPU 是否停机由 GDB 停止应答（`S05`/`T05`）与 `DHCSR` 判定。读写寄存器**不会**改变 CPU 运行状态。
+
+## 6. 自动识别流程（本机实测）
+
+```
+CPUID  0xE000ED00 = 0x410FC241  -> Cortex-M4
+IDCODE 0xE0042000 = 0xA5384712  -> DEV_ID=0x712 REV_ID=0xA538
+DEV_ID 0x712 -> data/device_ids.json -> N32H473CE (Nationstech / N32H47x)
+器件名 N32H473CE -> SVD 库评分匹配 -> N32H473.svd（75 外设 / 1454 寄存器 / 9153 字段）
+```
+
+- 未指定 `--device` 时：先用通用核名 `Cortex-M4` 连接 → 读 IDCODE → 识别 → **以识别出的器件名重连**。
+- 识别失败可手动指定：界面下拉框、`--device`，或 SVD 库搜索（文件 → 在 SVD 库中搜索）。
+- SVD 库根目录：`<exe>/svd`、`%APPDATA%/MCUTools/McuRegDebugger/svd`、`C:\Keil_v5\ARM\PACK`。
+
+## 7. 数据文件格式
+
+### data/device_ids.json
+
+```json
+{
+  "idcodeAddresses": ["0xE0042000", "0x5C001000", "0x40015800"],
+  "devices": [
+    { "mcu": "N32H473CE", "family": "N32H47x", "vendor": "Nationstech",
+      "devId": "0x712", "svdHint": "N32H473", "probeRsChip": "N32H473CE",
+      "verified": true, "idcodeAddress": "0xE0042000" }
+  ]
+}
+```
+
+- `devId`：`DBGMCU_IDCODE` 低 12 位；`verified:true` 表示已在真实硬件上实测。
+- `probeRsChip`：传给 J-Link / probe-rs 的器件名（J-Link 用精确料号，如 `N32H473CE`）。
+- `svdHint`：SVD 的 `<name>` 前缀（如 `N32H473`）。
+- 未实测的器件（`devId: "0x0"`, `verified:false`）需手动选择。
+
+已实测：**N32H473CE**（DEV_ID 0x712）、STM32F1/F4 系列 DEV_ID 取自 ST 手册；
+其余条目为手册值，首次使用建议核对。
+
+### data/packages/*.json
+
+```json
+{
+  "name": "LQFP48",
+  "chip": "STM32F103C8",
+  "pins": [
+    { "number": 10, "name": "PA0", "type": "io", "port": "PA", "pin": 0,
+      "functions": ["PA0", "ADC12_IN0", "TIM2_CH1"] }
+  ]
+}
+```
+
+`type` 取 `power/ground/clock/reset/boot/io`（决定颜色）；`port`+`pin` 关联 GPIO 位。
+SVD 不含封装与引脚复用信息，这一层必须由本文件提供（文件 → 打开封装目录可切换目录）。
+
+**`numberVerified`**：引脚号是否已按厂商数据手册核对过。
+
+- `true` / 缺省 → 正常显示。
+- `false` → `number` 是**占位编号**。封装页顶部会用橙字提示原因（读 `pinCountNote`，
+  缺省读 `comment`），每个引脚的 tooltip 也标注"待数据手册核对"——界面不会假装权威。
+
+#### 引脚数据能从哪来
+
+| 来源 | 给什么 | 结论 |
+|---|---|---|
+| **CMSIS-Pack `.pdsc`**（本机已有） | `<feature type="QFN" count="48" name="UQFN48"/>` + `<feature type="IOs" n="42"/>` | ✅ **封装类型、引脚总数、IO 数**（权威、可机读） |
+| `*.svd` | GPIOA..GPIOH 的寄存器地址空间 | ❌ 不含引脚号，也不告知哪些 IO 被键合出来 |
+| 板级原理图 | 引脚名与板级连接 | ⚠️ 可用，但符号 Value 残留 `STM32G431CBU6`，**引脚号不可沿用** |
+| 固件源码 | 每个引脚的**实际用途** | ✅ 最可靠（实现代码 ≠ 移植文档） |
+| 数据手册 / N32Cube | 逐脚 `number → 复用功能` 表 | ✅ 唯一能给出真实引脚号 |
+
+`scripts/gen-package-json.py` 会把 `.pdsc` 与 SVD 当作**校验器**：GPIO 数必须等于
+`<feature type="IOs">`，总脚数必须等于 `<feature type="QFN" count>`，任一不符直接 `[FAIL]` 退出。
+
+#### N32H473CEU7 引脚数据提取过程（已完成，numberVerified=true）
+
+从**嘉立创（LCEDA）该料号的原理图符号**逐脚读出，方法可复现：
+
+1. 符号体内标注了 `N32H473CEU7` → 确认是这颗料而不是移植前的 STM32G431 符号；
+2. 把左侧/右侧引脚列按 8 倍放大后做 OCR（Windows `Windows.Media.Ocr`），
+   读出「引脚号 + 引脚名」；对可疑字符（`C→3`、`C→I`）用局部放大复核；
+3. 与 CMSIS-Pack 的 `pdsc` 声明交叉校验：
+
+   | 校验项 | pdsc | 提取结果 | 结论 |
+   |---|---|---|---|
+   | 封装 | `QFN count=48 name=UQFN48` | 48 项 | ✅ |
+   | IO 数 | `IOs n=42` | 16×PA + 16×PB + 7×PC(4,6,10,11,13,14,15) + 3×PH(0,1,6) = **42** | ✅ |
+   | 电源数 | 48 − 42 = 6 | VBAT、VREF+、VDDA、VDD×3 = **6** | ✅ |
+
+4. 用渲染结果做**像素级回验**：把 6 个电源脚（应为主题红 `#C03A3A`）、
+   `PH0/PH1`（时钟蓝）、`PH6`（复位紫）按编号算出坐标取样，颜色全部落在预期位置。
+
+> 注意两个与直觉不同的点：**OSC 是 `PH0/PH1`（不是 PF0/PF1）**，**NRST 是 `PH6`（不是 PG10）**，
+> `PB8 = BOOT0`。这也解释了为什么 `pdsc` 的 42 个 IO 里包含 PH6 —— NRST 引脚在 N32 上同时是 GPIOH6。
+
+QFN48 物理排列：**每边 12 脚，pin 1 在左上角，逆时针** ——
+左侧 1..12（上→下）、下侧 13..24（左→右）、右侧 25..36（下→上）、上侧 37..48（右→左）。
+
+#### 引脚布局是"连接后实时生成"的
+
+封装图**不预渲染**。启动时该页只显示一句提示：
+
+```
+连接目标后自动识别并渲染引脚布局
+```
+
+判定顺序（`PackagePage::renderForChip()`）：
+
+1. J-Link 连接成功 → 读 `DBGMCU_IDCODE` → 识别出料号；
+2. 从 `data/device_ids.json` 取得该料号的 `ioCount` / `pinCount` / `packageName`
+   （数值源自 CMSIS-Pack `.pdsc`，不是猜的）；
+3. 若 `data/packages/` 里有 chip 名匹配的 JSON → **用真实逐脚定义**渲染；
+4. 否则 → **按 IO 数与封装脚数实时合成**网格：`pinCount − ioCount` 个电源/地 +
+   `ioCount` 个 IO，引脚名用通用编号 `PWR1..PWRm` / `IO1..IOn`，
+   并在页面顶部橙字标注"尚无该器件的逐脚定义"，**不会编造引脚名**；
+5. 两者都拿不到（无 IO/脚数）→ 保持等待态并说明原因。
+
+断开连接后回到等待态。
+
+回归验证（离屏，`--device` 触发与 GUI 完全相同的代码路径）：
+
+```bat
+:: 识别前：覆盖率必须 < 2%（证明没有预渲染）
+mcuRegDebugger.exe --selftest --svd <svd> --render out
+::   -> out\package-waiting.png  非背景像素 0.15%
+
+:: 有 JSON：按逐脚定义渲染
+mcuRegDebugger.exe --selftest --svd <n32h473.svd> --device N32H473CE --render out
+::   -> out\package-live-N32H473CE.png   48 脚 / 每边 12 / 覆盖率 40.5%
+
+:: 无 JSON：按 IO 数合成
+mcuRegDebugger.exe --selftest --svd <stm32f407.svd> --device STM32F407VE --render out
+::   -> out\package-live-STM32F407VE.png  100 脚 / 每边 25 / 覆盖率 41.5%
+```
+
+真机日志对照：
+
+```
+INFO  J-Link GDB Server 就绪: port=52007, device=N32H473CE
+INFO  识别到 N32H473CE (Cortex-M4), SVD=N32H473.svd
+INFO  引脚布局已按识别结果渲染: N32H473CE (IO 42 / 脚 48)
+```
+
+#### 封装图几何（按 LCEDA 实测比例复现）
+
+从 LCEDA 引脚图量得三组比例，代码里以**比例**而非固定像素实现，随窗口自适应缩放：
+
+| 特征 | LCEDA 实测 | 本项目 |
+|---|---|---|
+| 间距 / 芯片体 | 476 px 体 / 39.4 px 间距 → 体 = 12.08 × 间距 | `body = (slotCount + 1) × pitch` |
+| 引脚厚度 / 间距 | 22 / 39.4 = **0.56** | `thickness = 0.56 × pitch` |
+| 引脚长度 / 间距 | 62 / 39.4 = **1.57** | `length = 1.57 × pitch` |
+| 引脚名 | 沿引脚轴向排布（竖引脚旋转 90°） | 同 |
+| 引脚号 | 引脚外侧、灰色小字 | 同 |
+| 引脚 1 标记 | 体内左上角圆点 | 同 |
+
+`metricsFor()` 会把 `body + 2×length` 一起算进可用宽度反解 `pitch`，并有二次收缩保护，
+保证任何窗口尺寸下都不会溢出。
+
+### 改变输出电平：写哪个寄存器、写多少
+
+以 **PA1 = 数字推挽 + 上拉输出** 为例（`PMODE[PA1]=01`、`POTYPE[PA1]=0`、`PUPD[PA1]=01`），
+电平由**输出数据**决定，与上面三个配置寄存器无关：
+
+| 目的 | 寄存器 | 偏移 | 绝对地址 | 写入值 |
+|---|---|---|---|---|
+| **置高** | `GPIOA_PBSC` | `0x24` | `0x4002C024` | `0x00000002` |
+| **置低** | `GPIOA_PBSC` | `0x24` | `0x4002C024` | `0x00020000` |
+
+`PBSC`（Port Bit Set/Clear）是**原子双半字寄存器**，一次写只影响目标脚：
+
+```
+bits[15:0]  = PBS0..PBS15   写 1 → 该脚输出高
+bits[31:16] = PBC0..PBC15   写 1 → 该脚输出低
+```
+
+所以 PA1 置高 = `bit1 = 1` → `0x00000002`；置低 = `bit(16+1) = bit17 = 1` → `0x00020000`。
+**不要**写 `0` 去"置低"——写 0 是"无动作"。
+
+等价写法（都可，但不推荐做读改写）：
+
+| 写法 | 置高 | 置低 |
+|---|---|---|
+| `GPIOA_PBC` (0x28) | — | `0x00000002` |
+| `GPIOA_POD` (0x30, R/W, 复位 `0x0000A000`) | `0x0000A002` | `0x0000A000` |
+
+（`POD` 是纯输出数据寄存器，需读改写，多脚操作时有竞争风险，故实现里优先用 `PBSC`。）
+
+对应到 STM32 家族：`BSRR` 同样是低半字置高 / 高半字置低；F1 另有 `BRR` 只做置低。
+
+界面上：端口矩阵里对**输出模式**的脚右键 → `输出电平 ▸ 置高 / 置低 / 翻转`，
+每次只发一个写操作并进写历史；日志会打出完整寄存器与数值，例如
+
+```
+INFO  PA1 -> 高电平: GPIOA.GPIOx_PBSC = 0x00000002
+```
+
+### 端口矩阵：未初始化引脚与右键重配
+
+**未初始化是怎么判定的。** N32H47x 的 `PMODE` 复位值是 `0xFFFFFFFF`，即每脚都是 `11`（模拟）——
+所以"固件没碰过"和"固件配成模拟"在寄存器上完全同值。判定规则因此是：
+**PMODE 位 = `11` 且 `PUPD`/`POTYPE`/`AFSEL` 对应位都是复位值** → 显示 `未初始化`（灰色），
+不再冒充"模拟量"。本会话通过右键显式配置过的引脚会记入白名单，仍按所选模式显示。
+
+实测快照 `PMODE=0x028BFFFD, PUPD=0x64100002` 的解码结果：
+
+| 引脚 | PMODE | 显示 | 颜色 |
+|---|---|---|---|
+| PA0 | `01` | 输出 推挽 | 橙 |
+| PA1..PA8 | `11` 全复位 | **未初始化** | 灰 |
+| PA9/PA11/PA12 | `10` | 复用 AF8 / AF10 | 紫 |
+| PA10 | `00` + 上拉 | 输入 上拉 | 绿 |
+| PA13..PA15 | `00` | 输入 | 绿 |
+
+**右键重配。** 在端口矩阵任意引脚上右键，可切换该脚配置，写入走 GDB RSP 读改写：
+
+```
+模拟量输入
+数字输入  ▸ 浮空 / 上拉 / 下拉
+数字输出  ▸ 推挽 / 开漏 / 推挽+上拉 / 推挽+下拉
+```
+
+编码按端口实际布局自动选路径（`GpioCodec::encodePinConfig`）：
+
+| 布局 | 涉及的寄存器 |
+|---|---|
+| N32H47x | `PMODE`（2 bit/脚）、`PUPD`（2 bit/脚）、`POTYPE`（1 bit/脚）、`AFSEL0-3`（5 bit/脚） |
+| STM32F4/G4/L4 | `MODER`、`OTYPER`、`PUPDR`、`AFRL/AFRH` |
+| STM32F1 | `CRL`/`CRH`（4 bit/脚：CNF+MODE） |
+
+每次只写真正变化的寄存器，并进写历史（可撤销）。全部为离线可回归的确定性断言：
+
+```bat
+mcuRegDebugger.exe --selftest --svd <n32h473.svd> --device N32H473CE --render out
+::  [PASS] 复位值端口全部显示为未初始化 (16/16 个)
+::  [PASS] PA0(PMODE=01) 识别为输出 / PA9(PMODE=10) 识别为复用
+::  [PASS] PA1(PMODE=11 且无上下拉/类型/AF) 识别为未初始化
+::  [PASS] 已显式配置的 PA1 显示为模拟而非未初始化
+::  [PASS] PMODE[PA1] 被编码为 01(输出)  /  PUPD[PA1] 被编码为 01(上拉)
+::  -> out\port-matrix-PA.png（可肉眼核对颜色与文字）
+```
+
+## 8. GPIO 解码支持的三种寄存器布局
+
+| 家族 | 寄存器 |
+|---|---|
+| STM32F1 | `CRL`/`CRH` + `IDR`/`ODR`/`BSRR`/`BRR` |
+| STM32F4/G4/L4 | `MODER`/`OTYPER`/`OSPEEDR`/`PUPDR`/`IDR`/`ODR`/`AFRL`/`AFRH` |
+| 国民技术 N32H47x | `PMODE`/`PUPD`/`POTYPE`/`AFSEL0-3`/`DS`/`PID`/`POD` |
+
+布局按外设实际声明的寄存器自动判定，不需要按家族维护表。实测 N32H473CE：
+`PMODE=0x028BFFFD` → PA0 输出推挽、PA1..PA8 模拟、PA9 AF8、PA10 上拉输入、PA11/PA12 AF10。
+
+## 9. 自检与回归
+
+```bat
+:: SVD 解析 + 一致性断言 + 离屏渲染（无硬件也可跑）
+build\bin\mcuRegDebugger.exe --selftest ^
+  --svd "C:\Keil_v5\ARM\PACK\NSING\N32H47x_DFP\1.0.1\svd\N32H473.svd" --render out
+```
+
+断言包括：SVD 可解析、外设/寄存器/字段数量 > 0、字段位区间在宽度内、
+`derivedFrom` 外设均解析出寄存器、SVD 库可索引、按器件名可匹配、渲染结果非空（>2% 非背景像素）。
+
+## 10. 打包安装程序
+
+```bat
+scripts\build.bat
+scripts\deploy.bat
+packaging\pack.bat
+```
+
+产物 `dist\McuRegDebugger-0.1.0-setup.exe`（NSIS，含卸载项与开始菜单/桌面快捷方式）。
+
+- `deploy\` 含 Qt6 运行库、`platforms\`、`data\`；
+- J-Link 软件 **不打包**（安装后使用本机已装的 SEGGER 软件，避免驱动/许可问题）；
+- 若已下载 `tools\probe-rs\probe-rs.exe`，`deploy.bat` 会一并带上（仅 probe-rs 后端需要）。
+
+## 11. 已知限制
+
+1. **J-Link 独占**：同一时刻只能有一个程序占用探针；本工具运行期间关闭 J-Flash/Keil 调试会话。
+2. GDB Server 由本工具作为子进程管理；进程被强杀留下的孤儿会在**下次启动时自动回收**
+   （PID 记录在 `%APPDATA%\MCUTools\McuRegDebugger\jlink-gdb.pid`，回收前校验映像名）。
+3. 轮询会周期性读整个外设窗口（默认 200 ms，可在设置中调整）；目标处于低功耗模式时读取可能失败并记录日志。
+4. 封装引脚图：STM32F103C8 LQFP48 与 **N32H473CEU7 UQFN48（引脚号已逐脚核实）** 两份。
+   若数据手册的 Pin definition 与 LCEDA 符号不一致，以数据手册为准并改
+   `scripts/gen-package-json.py` 的 `PINS`。
+5. N32H47x 的厂商 SVD 把 GPIOB..GPIOH 的 `PMODE` 只声明了 0..6 位（GPIOA 才是 0..15），
+   属于 SVD 缺陷；寄存器解码按整字提取，不受影响，但位域列表只显示 7 个脚。
+6. N32H47x 的 `PMODE` 枚举语义按参考手册（0 输入 / 1 输出 / 2 复用 / 3 模拟）解释；
+   若实测与手册不符，改 `src/core/GpioCodec.cpp` 的 N32 分支即可。
