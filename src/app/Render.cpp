@@ -201,6 +201,37 @@ Status renderSnapshots(const Options &options, const SvdDevice &device)
         written << packagePath;
     }
 
+    // --- peripheral tree: pre-connection waiting state ----------------------
+    // Same rule as the package view: nothing but a hint until the target's device
+    // tree has been read back.
+    {
+        PeripheralTree waitingTree;
+        waitingTree.setDevice(device); // an SVD is loaded...
+        waitingTree.showWaiting(QStringLiteral("连接目标后自动读取设备树")); // ...but parked
+
+        const QString waitingTreePath = dir + QStringLiteral("/peripheral-tree-waiting.png");
+        double waitingRatio = 1.0;
+        QString waitingTreeError;
+        const bool saved = saveWidget(&waitingTree, waitingTreePath, &waitingTreeError, QSize(380, 560),
+                                     /*minRatio=*/0.0, &waitingRatio);
+        if (!saved)
+            return Status::failure(QStringLiteral("渲染外设树等待态失败: %1").arg(waitingTreeError));
+        written << waitingTreePath;
+
+        // Structural assertion: a parked tree holds exactly one disabled hint row.
+        if (auto *widget = waitingTree.findChild<QTreeWidget *>()) {
+            const int tops = widget->topLevelItemCount();
+            if (tops != 1)
+                return Status::failure(
+                    QStringLiteral("未连接时外设树应只有 1 条提示，实际 %1 条").arg(tops));
+            QTreeWidgetItem *hint = widget->topLevelItem(0);
+            if (hint->childCount() != 0 || (hint->flags() & Qt::ItemIsEnabled))
+                return Status::failure(QStringLiteral("未连接时外设树的提示项不应可交互"));
+            Logger::instance()->info(QStringLiteral("外设树等待态校验通过: 1 条提示，覆盖率 %1%")
+                                         .arg(QString::number(waitingRatio * 100.0, 'f', 2)));
+        }
+    }
+
     // --- peripheral tree with device-tree states ---------------------------
     // Synthetic-but-realistic statuses so the "missing / clock off / present"
     // rendering can be eyeballed without a board.

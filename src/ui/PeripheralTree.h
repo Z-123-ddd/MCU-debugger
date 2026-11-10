@@ -25,6 +25,11 @@ public:
     void setDevice(const SvdDevice &device);
     void clear();
 
+    /// Park the tree until a target is connected: like the package view, the
+    /// peripheral list is only meaningful once it reflects the real device.
+    void showWaiting(const QString &message);
+    bool isWaiting() const { return m_waiting; }
+
     QString selectedPeripheral() const { return m_selected; }
     void selectPeripheral(const QString &name);
 
@@ -51,6 +56,8 @@ private:
     enum class Filter { All, OnChip, Clocked };
 
     QHash<QString, PeripheralStatus> m_statuses;
+    bool m_waiting = false;
+    QString m_waitingMessage = QStringLiteral("连接目标后自动读取设备树");
     struct { int onChip = 0; int clocked = 0; int total = 0; } m_counts;
     Filter m_filterMode = Filter::All;
 

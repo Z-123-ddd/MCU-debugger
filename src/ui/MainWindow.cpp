@@ -386,12 +386,28 @@ bool MainWindow::openSvdFile(const QString &path)
 
 void MainWindow::applyDevice()
 {
-    m_tree->setDevice(m_device);
+    // The SVD alone only describes a family; the tree, port grid and register
+    // view stay parked until the attached part has been identified and its device
+    // tree read back (populateDeviceUi()). Mirrors the package view behaviour.
     m_deviceLabel->setText(QStringLiteral("%1  (%2 外设, %3 寄存器)  %4")
                                .arg(m_device.name)
                                .arg(m_device.peripherals.size())
                                .arg(m_device.totalRegisters())
                                .arg(QFileInfo(m_svdPath).fileName()));
+
+    m_tree->showWaiting(QStringLiteral("连接目标后自动读取设备树"));
+    m_inspector->clear();
+    m_strip->setRegister(nullptr);
+    m_registerView->setPeripheral(nullptr);
+    m_portGrid->setPorts({});
+
+    Logger::instance()->info(QStringLiteral("已加载 %1 的 SVD；连接后将按目标回读设备树")
+                                 .arg(m_device.name));
+}
+
+void MainWindow::populateDeviceUi()
+{
+    m_tree->setDevice(m_device);
 
     // Port matrix: every GPIO-like peripheral.
     QStringList ports;
@@ -560,6 +576,9 @@ void MainWindow::onDisconnectClicked()
     setConnectedUi(false);
     if (m_packagePage)
         m_packagePage->showWaiting(QStringLiteral("已断开连接。重新连接后将自动识别并渲染引脚布局"));
+    if (m_tree)
+        m_tree->showWaiting(QStringLiteral("已断开连接。重新连接后将自动读取设备树"));
+    m_configuredPins.clear();
     statusBar()->showMessage(QStringLiteral("已断开"));
 }
 
@@ -626,6 +645,8 @@ void MainWindow::onIdentifyFinished(bool ok, const QString &error, const Identif
         if (m_packagePage)
             m_packagePage->showWaiting(
                 QStringLiteral("MCU 识别失败，无法确定引脚布局: %1").arg(error));
+        if (m_tree && !m_session->connected())
+            m_tree->showWaiting(QStringLiteral("MCU 识别失败，无法确定设备树"));
         startPolling();
         return;
     }
@@ -884,10 +905,18 @@ void MainWindow::onDeviceTreeScanned(const QVector<PeripheralStatus> &statuses, 
     if (!error.isEmpty()) {
         Logger::instance()->warn(QStringLiteral("设备树读取失败: %1").arg(error));
         statusBar()->showMessage(QStringLiteral("设备树读取失败，外设列表回退为 SVD 全集"), 5000);
+        // Connected but unreadable: still let the user browse the family list
+        // rather than leaving an empty tree.
+        if (m_session->connected() && m_tree->isWaiting())
+            populateDeviceUi();
         return;
     }
 
     m_tree->setStatuses(statuses);
+
+    // First moment we know what this part really has: fill the tree and views.
+    if (m_tree->isWaiting())
+        populateDeviceUi();
 
     int onChip = 0;
     int clocked = 0;

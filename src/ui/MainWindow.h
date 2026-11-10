@@ -95,6 +95,9 @@ private:
     void saveUiState();
 
     void applyDevice();
+    /// Fill the tree / port grid / register view. Only called once the target's
+    /// device tree has been read back, so nothing is shown for an unconnected SVD.
+    void populateDeviceUi();
     void setConnectedUi(bool connected);
     void refreshValues(bool force = false);
     void refreshInspector();

@@ -65,6 +65,16 @@ void PeripheralTree::setDevice(const SvdDevice &device)
     for (const auto &peripheral : device.peripherals)
         m_groups[peripheral.groupLabel()].append(&peripheral);
     m_selected.clear();
+    m_waiting = false; // an SVD is loaded again; the caller decides when to show it
+    rebuild();
+}
+
+void PeripheralTree::showWaiting(const QString &message)
+{
+    m_waiting = true;
+    m_waitingMessage = message;
+    m_selected.clear();
+    m_statuses.clear(); // stale device-tree data must not outlive the connection
     rebuild();
 }
 
@@ -72,6 +82,8 @@ void PeripheralTree::clear()
 {
     m_groups.clear();
     m_selected.clear();
+    m_statuses.clear();
+    m_waiting = false;
     m_tree->clear();
 }
 
@@ -94,6 +106,17 @@ void PeripheralTree::rebuild()
 {
     m_updating = true;
     m_tree->clear();
+
+    // Before a target is connected the list is parked, mirroring the package view:
+    // showing the whole SVD family would imply this part really has all of it.
+    if (m_waiting) {
+        auto *hint = new QTreeWidgetItem(m_tree);
+        hint->setText(kColumnName, m_waitingMessage);
+        hint->setFlags(Qt::NoItemFlags);
+        hint->setForeground(kColumnName, Theme::current().textDim);
+        m_updating = false;
+        return;
+    }
 
     const QString filter = m_filter->text().trimmed();
     QFont bold = font();
