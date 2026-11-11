@@ -1,0 +1,502 @@
+{
+  "name": "QFN28",
+  "chip": "N32G41x",
+  "numberVerified": true,
+  "source": "datasheet: data/datasheets/N32G412.pdf 表3-1 管脚定义（QFN28 列）",
+  "pinCountNote": "28 脚，取自厂商数据手册管脚定义表并校验为 1..28 连续",
+  "pins": [
+    {
+      "number": 1,
+      "name": "BOOT0/PD0",
+      "type": "boot",
+      "functions": [
+        "EVENTOUT",
+        "I2C1_SCL",
+        "USART3_TX",
+        "USART2_CTS",
+        "SPI2_SCK",
+        "GTIM3_CH1",
+        "GTIM2_CH1",
+        "ATIM2_BKIN6",
+        "SPI2_NSS"
+      ]
+    },
+    {
+      "number": 2,
+      "name": "PD14-OSC_IN",
+      "type": "clock",
+      "port": "PD",
+      "pin": 14,
+      "functions": [
+        "USART2_TX",
+        "I2C2_SDA",
+        "ATIM1_CH3N",
+        "I2C1_SDA",
+        "ATIM2_CH1"
+      ]
+    },
+    {
+      "number": 3,
+      "name": "PD15-OSC_OUT",
+      "type": "clock",
+      "port": "PD",
+      "pin": 15,
+      "functions": [
+        "USART2_RX",
+        "I2C2_SCL",
+        "I2C1_SCL",
+        "ATIM2_CH1N"
+      ]
+    },
+    {
+      "number": 4,
+      "name": "PD7-NRST(4)",
+      "type": "reset",
+      "port": "PD",
+      "pin": 7
+    },
+    {
+      "number": 5,
+      "name": "VDDA",
+      "type": "power"
+    },
+    {
+      "number": 6,
+      "name": "PA0",
+      "type": "io",
+      "port": "PA",
+      "pin": 0,
+      "functions": [
+        "USART2_CTS",
+        "USART4_RX",
+        "GTIM1_CH1",
+        "GTIM1_ETR",
+        "GTIM2_CH1",
+        "ATIM2_ETR",
+        "SPI1_MISO",
+        "I2S1_MCK",
+        "EVENTOUT",
+        "COMP1_OUT",
+        "USART4_TX",
+        "SPI2_SCK",
+        "ATIM1_CH1",
+        "GTIM3_CH1"
+      ]
+    },
+    {
+      "number": 7,
+      "name": "PA1",
+      "type": "io",
+      "port": "PA",
+      "pin": 1,
+      "functions": [
+        "USART2_RTS_DE",
+        "USART4_TX",
+        "GTIM2_CH2",
+        "GTIM1_CH2",
+        "EVENTOUT",
+        "USART4_RX",
+        "I2C1_SMBA",
+        "SPI1_SCK/I2S1_CK",
+        "ATIM1_CH2",
+        "ATIM2_CH1N",
+        "GTIM4_CH1",
+        "USART1_RX"
+      ]
+    },
+    {
+      "number": 8,
+      "name": "PA2",
+      "type": "io",
+      "port": "PA",
+      "pin": 2,
+      "functions": [
+        "USART2_TX",
+        "GTIM2_CH3",
+        "GTIM1_CH3",
+        "I2C2_SDA",
+        "COMP2_OUT",
+        "EVENTOUT",
+        "SPI1_MOSI/I2S1_SD",
+        "USART4_TX",
+        "GTIM2_ETR",
+        "ATIM1_CH3",
+        "ATIM2_CH1",
+        "GTIM3_CH1N",
+        "MCO"
+      ]
+    },
+    {
+      "number": 9,
+      "name": "PA3",
+      "type": "io",
+      "port": "PA",
+      "pin": 3,
+      "functions": [
+        "USART2_RX",
+        "USART4_RX",
+        "GTIM2_CH4",
+        "I2C2_SCL",
+        "EVENTOUT",
+        "SPI2_MISO",
+        "ATIM1_CH1N",
+        "ATIM1_CH4",
+        "ATIM2_CH2",
+        "GTIM1_CH4"
+      ]
+    },
+    {
+      "number": 10,
+      "name": "PA4",
+      "type": "io",
+      "port": "PA",
+      "pin": 4,
+      "functions": [
+        "USART2_CK",
+        "USART4_TX",
+        "I2C1_SCL",
+        "SPI1_NSS/I2S1_WS",
+        "USART1_TX",
+        "EVENTOUT",
+        "SPI2_MOSI",
+        "USART2_TX",
+        "ATIM1_CH2N",
+        "ATIM2_CH1",
+        "GTIM4_CH1N"
+      ]
+    },
+    {
+      "number": 11,
+      "name": "PA5",
+      "type": "io",
+      "port": "PA",
+      "pin": 5,
+      "functions": [
+        "SPI1_SCK/I2S1_CK",
+        "I2C1_SDA",
+        "USART1_RX",
+        "EVENTOUT",
+        "USART3_TX",
+        "USART2_RX",
+        "ATIM1_CH3N",
+        "ATIM1_CH1",
+        "GTIM1_CH1",
+        "GTIM1_ETR"
+      ]
+    },
+    {
+      "number": 12,
+      "name": "PA6",
+      "type": "io",
+      "port": "PA",
+      "pin": 6,
+      "functions": [
+        "USART4_CTS",
+        "SPI1_MISO",
+        "I2S1_MCK",
+        "ATIM2_BKIN1",
+        "GTIM3_CH1",
+        "ATIM1_BKIN1",
+        "COMP2_OUT",
+        "EVENTOUT",
+        "USART3_CTS",
+        "I2C2_SDA",
+        "COMP1_OUT",
+        "GTIM2_CH1"
+      ]
+    },
+    {
+      "number": 13,
+      "name": "PA7",
+      "type": "io",
+      "port": "PA",
+      "pin": 7,
+      "functions": [
+        "SPI1_MOSI/I2S1_SD",
+        "ATIM1_CH1N",
+        "ATIM2_CH1N",
+        "GTIM3_CH2",
+        "COMP2_OUT",
+        "EVENTOUT",
+        "I2C2_SCL",
+        "ATIM2_CH1",
+        "GTIM2_CH2",
+        "GTIM4_CH1"
+      ]
+    },
+    {
+      "number": 14,
+      "name": "PB0",
+      "type": "io",
+      "port": "PB",
+      "pin": 0,
+      "functions": [
+        "ATIM1_CH2N",
+        "GTIM4_CH1",
+        "ATIM2_CH2N",
+        "EVENTOUT",
+        "USART3_TX",
+        "USART3_RX",
+        "SPI1_NSS/I2S1_WS",
+        "COMP1_OUT",
+        "GTIM2_CH3",
+        "USART3_CK",
+        "GTIM3_CH3"
+      ]
+    },
+    {
+      "number": 15,
+      "name": "PB1",
+      "type": "io",
+      "port": "PB",
+      "pin": 1,
+      "functions": [
+        "USART4_RTS_DE",
+        "ATIM1_CH3N",
+        "GTIM4_CH2",
+        "ATIM2_CH3N",
+        "EVENTOUT",
+        "USART3_RTS_DE",
+        "USART3_RX",
+        "ATIM2_CH1",
+        "ATIM1_CH2N",
+        "GTIM2_CH4",
+        "COMP3_OUT",
+        "ATIM2_CH2N",
+        "GTIM3_CH4"
+      ]
+    },
+    {
+      "number": 16,
+      "name": "VSS",
+      "type": "ground"
+    },
+    {
+      "number": 17,
+      "name": "VDD",
+      "type": "power"
+    },
+    {
+      "number": 18,
+      "name": "PA8",
+      "type": "io",
+      "port": "PA",
+      "pin": 8,
+      "functions": [
+        "USART1_CK",
+        "I2C2_SMBA",
+        "ATIM1_CH1",
+        "I2C2_SDA",
+        "SPI1_NSS/I2S1_WS",
+        "MCO",
+        "EVENTOUT",
+        "ATIM1_CH2N",
+        "ATIM2_CH1",
+        "USART3_TX",
+        "SPI1_SCK/I2S1_CK"
+      ]
+    },
+    {
+      "number": 19,
+      "name": "PA9",
+      "type": "io",
+      "port": "PA",
+      "pin": 9,
+      "functions": [
+        "USART1_TX",
+        "I2C2_SCL",
+        "ATIM1_CH2",
+        "EVENTOUT",
+        "MCO",
+        "I2C1_SCL",
+        "SPI2_SCK",
+        "SPI2_MOSI",
+        "USART3_RX",
+        "SPI2_MISO",
+        "SPI1_NSS/I2S1_WS",
+        "ATIM1_BKIN4",
+        "ATIM2_BKIN4",
+        "GTIM2_ETR"
+      ]
+    },
+    {
+      "number": 20,
+      "name": "PA10",
+      "type": "io",
+      "port": "PA",
+      "pin": 10,
+      "functions": [
+        "USART1_RX",
+        "I2C2_SDA",
+        "SPI1_SCK/I2S1_CK",
+        "SPI2_SCK",
+        "ATIM1_CH3",
+        "EVENTOUT",
+        "I2C1_SDA",
+        "SPI2_MOSI",
+        "GTIM4_BKIN1",
+        "ATIM2_CH2N"
+      ]
+    },
+    {
+      "number": 21,
+      "name": "PA13",
+      "type": "io",
+      "port": "PA",
+      "pin": 13,
+      "functions": [
+        "SWDIO",
+        "SPI2_NSS",
+        "EVENTOUT",
+        "USART2_RX",
+        "GTIM2_ETR",
+        "ATIM1_CH4N",
+        "ATIM2_CH4",
+        "COMP3_OUT"
+      ]
+    },
+    {
+      "number": 22,
+      "name": "PA14",
+      "type": "io",
+      "port": "PA",
+      "pin": 14,
+      "functions": [
+        "SWDCLK",
+        "USART2_CK",
+        "I2C1_SDA",
+        "COMP2_OUT",
+        "EVENTOUT",
+        "USART2_TX",
+        "USART2_RX",
+        "USART1_RTS_DE",
+        "SPI1_NSS/I2S1_WS",
+        "ATIM1_CH1"
+      ]
+    },
+    {
+      "number": 23,
+      "name": "PA15",
+      "type": "io",
+      "port": "PA",
+      "pin": 15,
+      "functions": [
+        "USART2_CTS",
+        "I2C1_SCL",
+        "SPI2_NSS",
+        "GTIM1_CH1",
+        "GTIM1_ETR",
+        "EVENTOUT",
+        "USART2_RX",
+        "USART3_RTS_DE",
+        "USART4_RTS_DE",
+        "SPI1_NSS/I2S1_WS"
+      ]
+    },
+    {
+      "number": 24,
+      "name": "PB3",
+      "type": "io",
+      "port": "PB",
+      "pin": 3,
+      "functions": [
+        "USART2_RTS_DE",
+        "SPI1_SCK_/_I2S1_CK",
+        "GTIM1_CH2",
+        "EVENTOUT",
+        "USART1_RTS_DE",
+        "I2C2_SCL",
+        "ATIM1_CH2",
+        "GTIM2_CH2"
+      ]
+    },
+    {
+      "number": 25,
+      "name": "PB4",
+      "type": "io",
+      "port": "PB",
+      "pin": 4,
+      "functions": [
+        "USART2_TX",
+        "SPI1_MISO",
+        "I2S1_MCK",
+        "GTIM3_CH1",
+        "USART3_TX",
+        "USART1_TX",
+        "EVENTOUT",
+        "USART1_CTS",
+        "I2C2_SDA",
+        "GTIM2_CH1",
+        "GTIM4_BKIN2"
+      ]
+    },
+    {
+      "number": 26,
+      "name": "PB5",
+      "type": "io",
+      "port": "PB",
+      "pin": 5,
+      "functions": [
+        "USART2_RX",
+        "I2C1_SMBA",
+        "SPI1_MOSI",
+        "/I2S1_SD",
+        "GTIM3_CH2",
+        "USART3_RX",
+        "USART1_RX",
+        "EVENTOUT",
+        "COMP2_OUT",
+        "GTIM2_CH2",
+        "GTIM2_CH3",
+        "GTIM3_BKIN1",
+        "SPI2_SCK"
+      ]
+    },
+    {
+      "number": 27,
+      "name": "PB6",
+      "type": "io",
+      "port": "PB",
+      "pin": 6,
+      "functions": [
+        "USART1_TX",
+        "USART4_TX",
+        "I2C1_SCL",
+        "SPI1_NSS/I2S1_WS",
+        "ATIM1_CH2N",
+        "GTIM1_CH1",
+        "SPI2_SCK",
+        "COMP1_OUT",
+        "SPI2_MISO",
+        "ATIM1_CH3",
+        "GTIM3_CH1N",
+        "ATIM1_CH2",
+        "GTIM3_BKIN2",
+        "GTIM4_BKIN3",
+        "GTIM4_CH1"
+      ]
+    },
+    {
+      "number": 28,
+      "name": "PB7",
+      "type": "io",
+      "port": "PB",
+      "pin": 7,
+      "functions": [
+        "USART1_RX",
+        "USART4_RX",
+        "I2C1_SDA",
+        "GTIM1_CH2",
+        "EVENTOUT",
+        "USART4_CTS",
+        "SPI2_MOSI",
+        "I2C1_SCL",
+        "ATIM1_CH4",
+        "GTIM4_CH1N",
+        "GTIM3_CH1",
+        "COMP3_OUT",
+        "GTIM4_CH2"
+      ]
+    }
+  ]
+}

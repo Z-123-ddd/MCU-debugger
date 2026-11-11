@@ -1,5 +1,7 @@
 #include "core/AppSettings.h"
 
+#include "core/Logger.h"
+
 #include "core/SvdLibrary.h"
 
 #include <QSettings>
@@ -117,6 +119,24 @@ void AppSettings::setSpeedKHz(int speed)
 QString AppSettings::chipName()
 {
     return QSettings().value(QLatin1String(kChip)).toString();
+}
+
+void AppSettings::migrateChipNameSetting()
+{
+    // Version marker so this runs exactly once per installation.
+    constexpr const char *kMarker = "probe/chipModeVersion";
+    constexpr int kCurrent = 2; // 2 = "empty means auto"
+
+    QSettings settings;
+    if (settings.value(QLatin1String(kMarker), 1).toInt() >= kCurrent)
+        return;
+
+    // Older builds wrote the detected part here unconditionally, so the stored
+    // value is the last board rather than a deliberate choice. Drop it.
+    settings.remove(QLatin1String(kChip));
+    settings.setValue(QLatin1String(kMarker), kCurrent);
+    Logger::instance()->info(
+        QStringLiteral("已重置保存的芯片名：旧版本会把它当成手动指定，导致换芯片后仍按上一次的型号"));
 }
 
 void AppSettings::setChipName(const QString &name)

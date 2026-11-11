@@ -386,6 +386,17 @@ void PortGridView::setPorts(const QStringList &portNames)
     }
 }
 
+void PortGridView::clear()
+{
+    m_updating = true;
+    m_portBox->clear();
+    m_updating = false;
+    // Reset the matrix too, otherwise the last port's pins stay drawn and look
+    // like live data after a disconnect.
+    if (m_grid)
+        m_grid->setPins({}, false);
+}
+
 void PortGridView::setActivePort(const QString &portName)
 {
     const int idx = m_portBox->findText(portName);

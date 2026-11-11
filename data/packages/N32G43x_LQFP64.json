@@ -1,0 +1,781 @@
+{
+  "name": "LQFP64",
+  "chip": "N32G43x",
+  "numberVerified": true,
+  "source": "datasheet: data/datasheets/N32G432.pdf 表3-1 管脚定义（LQFP64 列）",
+  "pinCountNote": "64 脚，取自厂商数据手册管脚定义表并校验为 1..64 连续",
+  "pins": [
+    {
+      "number": 1,
+      "name": "VDD",
+      "type": "power"
+    },
+    {
+      "number": 2,
+      "name": "PC13-TAMPER-_RTC(7)",
+      "type": "io",
+      "port": "PC",
+      "pin": 13,
+      "functions": [
+        "TIM1_CH1N",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 3,
+      "name": "PC14-_OSC32_IN",
+      "type": "io",
+      "port": "PC",
+      "pin": 14
+    },
+    {
+      "number": 4,
+      "name": "PC15-_OSC32_OUT",
+      "type": "io",
+      "port": "PC",
+      "pin": 15
+    },
+    {
+      "number": 5,
+      "name": "PD14-OSC_IN",
+      "type": "clock",
+      "port": "PD",
+      "pin": 14,
+      "functions": [
+        "USART2_TX",
+        "I2C2_SDA",
+        "TIM1_CH3N"
+      ]
+    },
+    {
+      "number": 6,
+      "name": "PD15-OSC_OUT",
+      "type": "clock",
+      "port": "PD",
+      "pin": 15,
+      "functions": [
+        "USART2_RX",
+        "I2C2_SCL"
+      ]
+    },
+    {
+      "number": 7,
+      "name": "NRST",
+      "type": "reset"
+    },
+    {
+      "number": 8,
+      "name": "PC0(7)",
+      "type": "io",
+      "port": "PC",
+      "pin": 0,
+      "functions": [
+        "I2C1_SCL",
+        "LPTIM_IN1",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 9,
+      "name": "PC1(7)",
+      "type": "io",
+      "port": "PC",
+      "pin": 1,
+      "functions": [
+        "LPTIM_OUT",
+        "I2C1_SDA",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 10,
+      "name": "PC2(7)",
+      "type": "io",
+      "port": "PC",
+      "pin": 2,
+      "functions": [
+        "EVENTOUT",
+        "LPTIM_IN2"
+      ]
+    },
+    {
+      "number": 11,
+      "name": "PC3(7)",
+      "type": "io",
+      "port": "PC",
+      "pin": 3,
+      "functions": [
+        "LPTIM_ETR",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 12,
+      "name": "VSSA/VREF-",
+      "type": "ground"
+    },
+    {
+      "number": 13,
+      "name": "VDDA/VREF+",
+      "type": "power"
+    },
+    {
+      "number": 14,
+      "name": "PA0",
+      "type": "io",
+      "port": "PA",
+      "pin": 0,
+      "functions": [
+        "USART2_CTS",
+        "LPUART_RX",
+        "TIM2_CH1",
+        "TIMER2_ETR",
+        "TIM5_CH1",
+        "TIM8_ETR",
+        "SPI1_MISO",
+        "I2S1_MCK",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 15,
+      "name": "PA1",
+      "type": "io",
+      "port": "PA",
+      "pin": 1,
+      "functions": [
+        "USART2_RTS",
+        "LPUART_TX",
+        "TIM5_CH2",
+        "TIM2_CH2",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 16,
+      "name": "PA2",
+      "type": "io",
+      "port": "PA",
+      "pin": 2,
+      "functions": [
+        "USART2_TX",
+        "TIM5_CH3",
+        "TIM2_CH3",
+        "I2C2_SDA",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 17,
+      "name": "PA3",
+      "type": "io",
+      "port": "PA",
+      "pin": 3,
+      "functions": [
+        "USART2_RX",
+        "LPUART_RX",
+        "TIM5_CH4",
+        "I2C2_SCL",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 18,
+      "name": "VSS",
+      "type": "ground"
+    },
+    {
+      "number": 19,
+      "name": "VDD",
+      "type": "power"
+    },
+    {
+      "number": 20,
+      "name": "PA4",
+      "type": "io",
+      "port": "PA",
+      "pin": 4,
+      "functions": [
+        "USART2_CK",
+        "LPUART_TX"
+      ]
+    },
+    {
+      "number": 21,
+      "name": "PA5",
+      "type": "io",
+      "port": "PA",
+      "pin": 5,
+      "functions": [
+        "SPI1_SCK",
+        "I2C1_SDA",
+        "I2S1_CK",
+        "USART1_RX",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 22,
+      "name": "PA6",
+      "type": "io",
+      "port": "PA",
+      "pin": 6,
+      "functions": [
+        "LPUART_CTS",
+        "SPI1_MISO",
+        "I2S1_MCK",
+        "TIM8_BKIN",
+        "TIM3_CH1",
+        "TIM1_BKIN",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 23,
+      "name": "PA7",
+      "type": "io",
+      "port": "PA",
+      "pin": 7,
+      "functions": [
+        "SPI1_MOSI",
+        "I2S1_SD",
+        "TIM1_CH1N",
+        "TIM8_CH1N",
+        "TIM3_CH2",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 24,
+      "name": "PC4(7)",
+      "type": "io",
+      "port": "PC",
+      "pin": 4,
+      "functions": [
+        "LPUART_TX",
+        "I2C1_SCL",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 25,
+      "name": "PC5",
+      "type": "io",
+      "port": "PC",
+      "pin": 5,
+      "functions": [
+        "LPUART_RX",
+        "I2C1_SDA",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 26,
+      "name": "PB0",
+      "type": "io",
+      "port": "PB",
+      "pin": 0,
+      "functions": [
+        "TIM1_CH2N",
+        "TIM3_CH3",
+        "TIM8_CH2N",
+        "UART4_TX",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 27,
+      "name": "PB1(7)",
+      "type": "io",
+      "port": "PB",
+      "pin": 1,
+      "functions": [
+        "LPUART_RTS",
+        "TIM1_CH3N",
+        "TIM3_CH4",
+        "TIM8_CH3N",
+        "UART4_RX",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 28,
+      "name": "PB2",
+      "type": "io",
+      "port": "PB",
+      "pin": 2,
+      "functions": [
+        "LPTIM_OUT",
+        "TIM9_ETR",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 29,
+      "name": "PB10",
+      "type": "io",
+      "port": "PB",
+      "pin": 10,
+      "functions": [
+        "USART3_TX",
+        "LPUART_TX",
+        "I2C2_SCL",
+        "TIM2_CH3",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 30,
+      "name": "PB11(7)",
+      "type": "io",
+      "port": "PB",
+      "pin": 11,
+      "functions": [
+        "USART3_RX",
+        "LPUART_RX",
+        "I2C2_SDA",
+        "TIM2_CH4",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 31,
+      "name": "VSS",
+      "type": "ground"
+    },
+    {
+      "number": 32,
+      "name": "VDD",
+      "type": "power"
+    },
+    {
+      "number": 33,
+      "name": "PB12(7)",
+      "type": "io",
+      "port": "PB",
+      "pin": 12,
+      "functions": [
+        "SPI2_NSS",
+        "I2S2_WS",
+        "I2C2_SMBA",
+        "USART3_CK",
+        "TIM1_BKIN",
+        "LPUART_RTS",
+        "TIM9_CH1",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 34,
+      "name": "PB13(7)",
+      "type": "io",
+      "port": "PB",
+      "pin": 13,
+      "functions": [
+        "SPI2_SCK",
+        "I2S2_CK",
+        "USART3_CTS",
+        "I2C2_SCL",
+        "LPUART_CTS",
+        "TIM1_CH1N",
+        "TIM9_CH2",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 35,
+      "name": "PB14",
+      "type": "io",
+      "port": "PB",
+      "pin": 14,
+      "functions": [
+        "SPI2_MISO",
+        "I2S2_MCK",
+        "TIM1_CH2N",
+        "USART3_RTS",
+        "I2C2_SDA",
+        "LPUART_RTS",
+        "TIM9_CH3",
+        "EVENTOUT",
+        "UART4_TX"
+      ]
+    },
+    {
+      "number": 36,
+      "name": "PB15(7)",
+      "type": "io",
+      "port": "PB",
+      "pin": 15,
+      "functions": [
+        "UART4_RX",
+        "SPI2_MOSI",
+        "I2S2_SD",
+        "TIM1_CH3N",
+        "TIM9_CH4",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 37,
+      "name": "PC6(7)",
+      "type": "io",
+      "port": "PC",
+      "pin": 6,
+      "functions": [
+        "SPI2_NSS",
+        "I2S2_WS",
+        "TIM8_CH1",
+        "TIM3_CH1",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 38,
+      "name": "PC7(7)",
+      "type": "io",
+      "port": "PC",
+      "pin": 7,
+      "functions": [
+        "SPI2_SCK",
+        "I2S2_CK",
+        "TIM3_CH2",
+        "TIM8_CH2",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 39,
+      "name": "PC8(7)",
+      "type": "io",
+      "port": "PC",
+      "pin": 8,
+      "functions": [
+        "SPI2_MISO",
+        "I2S2_MCK",
+        "TIM8_CH3",
+        "TIM3_CH3"
+      ]
+    },
+    {
+      "number": 40,
+      "name": "PC9(7)",
+      "type": "io",
+      "port": "PC",
+      "pin": 9,
+      "functions": [
+        "SPI2_MOSI",
+        "I2S2_SD",
+        "TIM3_CH4",
+        "TIM8_CH4",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 41,
+      "name": "PA8(7)",
+      "type": "io",
+      "port": "PA",
+      "pin": 8,
+      "functions": [
+        "USART1_CK",
+        "I2C2_SMBA",
+        "TIM1_CH1",
+        "I2C2_SDA",
+        "SPI1_NSS",
+        "I2S1_WS",
+        "MCO",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 42,
+      "name": "PA9(7)",
+      "type": "io",
+      "port": "PA",
+      "pin": 9,
+      "functions": [
+        "USART1_TX",
+        "I2C2_SCL",
+        "TIM1_CH2"
+      ]
+    },
+    {
+      "number": 43,
+      "name": "PA10(7)",
+      "type": "io",
+      "port": "PA",
+      "pin": 10,
+      "functions": [
+        "USART1_RX",
+        "I2C2_SDA",
+        "SPI1_SCK",
+        "SPI2_SCK",
+        "I2S1_CK",
+        "I2S2_CK",
+        "TIM1_CH3",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 44,
+      "name": "PA11",
+      "type": "io",
+      "port": "PA",
+      "pin": 11,
+      "functions": [
+        "USART1_CTS",
+        "SPI2_MISO",
+        "I2S2_MCK",
+        "CAN_RX",
+        "TIM1_CH4",
+        "USB_DM",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 45,
+      "name": "PA12",
+      "type": "io",
+      "port": "PA",
+      "pin": 12,
+      "functions": [
+        "USART1_RTS",
+        "SPI2_MOSI",
+        "I2S2_SD",
+        "CAN_TX",
+        "TIM1_ETR",
+        "USB_DP",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 46,
+      "name": "PA13(7)",
+      "type": "io",
+      "port": "PA",
+      "pin": 13,
+      "functions": [
+        "SWDIO-JTMS",
+        "SPI2_NSS",
+        "I2S2_WS",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 47,
+      "name": "VSS",
+      "type": "ground"
+    },
+    {
+      "number": 48,
+      "name": "VDD",
+      "type": "power"
+    },
+    {
+      "number": 49,
+      "name": "PA14(7)",
+      "type": "io",
+      "port": "PA",
+      "pin": 14,
+      "functions": [
+        "SWCLK-JTCK",
+        "USART2_CK",
+        "I2C1_SDA"
+      ]
+    },
+    {
+      "number": 50,
+      "name": "PA15",
+      "type": "io",
+      "port": "PA",
+      "pin": 15,
+      "functions": [
+        "JTDI",
+        "USART2_CTS",
+        "I2C1_SCL",
+        "SPI2_NSS",
+        "I2S2_WS",
+        "TIM2_CH1",
+        "TIM2_ETR",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 51,
+      "name": "PC10(7)",
+      "type": "io",
+      "port": "PC",
+      "pin": 10,
+      "functions": [
+        "USART3_TX",
+        "UART4_TX",
+        "LPUART_TX",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 52,
+      "name": "PC11(7)",
+      "type": "io",
+      "port": "PC",
+      "pin": 11,
+      "functions": [
+        "USART3_RX",
+        "UART4_RX",
+        "LPUART_RX",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 53,
+      "name": "PC12(7)",
+      "type": "io",
+      "port": "PC",
+      "pin": 12,
+      "functions": [
+        "USART3_CK",
+        "UART5_TX",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 54,
+      "name": "PD2(7)",
+      "type": "io",
+      "port": "PD",
+      "pin": 2,
+      "functions": [
+        "TIM3_ETR",
+        "UART5_RX",
+        "LPUART_RTS",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 55,
+      "name": "PB3",
+      "type": "io",
+      "port": "PB",
+      "pin": 3,
+      "functions": [
+        "USART2_RTS",
+        "SPI1_SCK",
+        "I2S1_CK",
+        "TIM2_CH2"
+      ]
+    },
+    {
+      "number": 56,
+      "name": "PB4",
+      "type": "io",
+      "port": "PB",
+      "pin": 4,
+      "functions": [
+        "USART2_TX",
+        "SPI1_MISO",
+        "I2S1_MCK",
+        "TIM3_CH1",
+        "UART5_TX",
+        "EVENTOUT",
+        "NJTRST"
+      ]
+    },
+    {
+      "number": 57,
+      "name": "PB5",
+      "type": "io",
+      "port": "PB",
+      "pin": 5,
+      "functions": [
+        "USART2_RX",
+        "I2C1_SMBA",
+        "SPI1_MOSI",
+        "I2S1_SD",
+        "TIM3_CH2",
+        "UART5_RX",
+        "LPTIM_IN1",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 58,
+      "name": "PB6(7)",
+      "type": "io",
+      "port": "PB",
+      "pin": 6,
+      "functions": [
+        "USART1_TX",
+        "LPUART_TX",
+        "I2C1_SCL",
+        "SPI1_NSS",
+        "I2S1_WS",
+        "TIM1_CH2N",
+        "TIM4_CH1",
+        "SPI2_SCK",
+        "I2S2_CK",
+        "LPTIM_ETR",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 59,
+      "name": "PB7",
+      "type": "io",
+      "port": "PB",
+      "pin": 7,
+      "functions": [
+        "USART1_RX",
+        "LPUART_RX",
+        "I2C1_SDA",
+        "TIM4_CH2",
+        "EVENTOUT",
+        "LPTIM_IN2",
+        "PVD_IN"
+      ]
+    },
+    {
+      "number": 60,
+      "name": "BOOT0/PD0(7)",
+      "type": "boot"
+    },
+    {
+      "number": 61,
+      "name": "PB8(7)",
+      "type": "io",
+      "port": "PB",
+      "pin": 8,
+      "functions": [
+        "I2C1_SCL",
+        "CAN_RX",
+        "TIM4_CH3",
+        "USART1_TX",
+        "UART5_TX",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 62,
+      "name": "PB9(7)",
+      "type": "io",
+      "port": "PB",
+      "pin": 9,
+      "functions": [
+        "I2C1_SDA",
+        "CAN_TX",
+        "TIM4_CH4",
+        "UART5_RX",
+        "EVENTOUT"
+      ]
+    },
+    {
+      "number": 63,
+      "name": "VSS",
+      "type": "ground"
+    },
+    {
+      "number": 64,
+      "name": "VDD",
+      "type": "power"
+    }
+  ]
+}

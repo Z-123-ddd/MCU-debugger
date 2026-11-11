@@ -346,9 +346,10 @@ int SvdLibrary::loadManifest()
 
             m_manifest.insert(entry.part, entry);
         }
-        Logger::instance()->info(QStringLiteral("SVD 厂商清单: %1 条 (%2)")
-                                     .arg(m_manifest.size())
-                                     .arg(path));
+        // Startup detail, not per-connection noise.
+        Logger::instance()->debug(QStringLiteral("SVD 厂商清单: %1 条 (%2)")
+                                      .arg(m_manifest.size())
+                                      .arg(path));
         return m_manifest.size();
     }
     return 0;

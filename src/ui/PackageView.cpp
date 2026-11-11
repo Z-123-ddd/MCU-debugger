@@ -1,5 +1,6 @@
 #include "ui/PackageView.h"
 
+#include "core/Logger.h"
 #include "ui/Theme.h"
 
 #include <QComboBox>
@@ -122,6 +123,32 @@ QVector<PackagePin> PackageDescription::dedicatedPins() const
         dedicated << pin;
     }
     return dedicated;
+}
+
+QHash<QString, QSet<QString>> PackageDescription::bondedSignals() const
+{
+    QHash<QString, QSet<QString>> wired; // "signals" is a Qt macro
+    for (const auto &pin : pins) {
+        for (const QString &function : pin.functions) {
+            // "SPI1_NSS", "SPI2_SCK/I2S2_CK", "USART2_RX": the part before '_'
+            // is the instance, the part after it (up to '/') the signal.
+            const int underscore = function.indexOf(QLatin1Char('_'));
+            if (underscore <= 0)
+                continue;
+            QString instance = function.left(underscore).trimmed();
+            QString signal = function.mid(underscore + 1).trimmed();
+            const int slash = signal.indexOf(QLatin1Char('/'));
+            if (slash > 0)
+                signal = signal.left(slash);
+            if (instance.isEmpty() || signal.isEmpty())
+                continue;
+            // Skip board-level annotations such as "板级/CAN_STB".
+            if (instance.contains(QLatin1Char('/')) || instance.contains(QLatin1Char(' ')))
+                continue;
+            wired[instance].insert(signal);
+        }
+    }
+    return wired;
 }
 
 int PackageDescription::bondedPinCount(const QString &portName) const
@@ -258,6 +285,28 @@ PackageDescription PackageDescription::loadFromFile(const QString &path, QString
     return description;
 }
 
+bool PackageView::matchesPart(const QString &tableChip, const QString &part)
+{
+    if (tableChip.isEmpty() || part.isEmpty())
+        return false;
+    // Strip a trailing 'x' wildcard: "N32G45x" -> prefix "N32G45".
+    QString prefix = tableChip;
+    if (prefix.endsWith(QLatin1Char('x'), Qt::CaseInsensitive))
+        prefix.chop(1);
+    if (part.startsWith(prefix, Qt::CaseInsensitive))
+        return true;
+    // Also accept the reverse (part shorter than the table's group, e.g. a user
+    // typing just "N32G45"): compare on the shorter of the two.
+    if (prefix.startsWith(part, Qt::CaseInsensitive))
+        return true;
+    return false;
+}
+
+QString PackageView::descriptionKey(const PackageDescription &description)
+{
+    return description.chip.toUpper() + QLatin1Char('/') + description.packageName;
+}
+
 PackageView::PackageView(QWidget *parent)
     : QWidget(parent)
 {
@@ -276,7 +325,7 @@ void PackageView::loadPackages(const QString &directory)
             const PackageDescription description =
                 PackageDescription::loadFromFile(dir.absoluteFilePath(file), &error);
             if (description.isValid())
-                m_packages.insert(description.packageName, description);
+                m_packages.insert(descriptionKey(description), description);
         }
     }
     // Deliberately no auto-selection: the pinout is drawn only after the target
@@ -284,12 +333,12 @@ void PackageView::loadPackages(const QString &directory)
     update();
 }
 
-bool PackageView::setPackage(const QString &packageName)
+bool PackageView::setPackage(const QString &key)
 {
-    const auto it = m_packages.constFind(packageName);
+    const auto it = m_packages.constFind(key);
     if (it == m_packages.constEnd())
         return false;
-    m_current = packageName;
+    m_current = key;
     if (m_chipLabel.isEmpty())
         m_chipLabel = it.value().chip;
     layoutPins();
@@ -301,10 +350,10 @@ void PackageView::adoptPackage(const PackageDescription &description)
 {
     if (!description.isValid())
         return;
-    m_packages.insert(description.packageName, description);
+    m_packages.insert(descriptionKey(description), description);
     m_current.clear();     // force a fresh layout
     m_chipLabel = description.chip;
-    setPackage(description.packageName);
+    setPackage(descriptionKey(description));
 }
 
 void PackageView::showWaiting(const QString &message)
@@ -350,6 +399,28 @@ void PackageView::setLivePinState(const QString &portName, int bit, const QStrin
         }
     }
     update();
+}
+
+void PackageView::setLivePort(const QString &portName, const QVector<GpioPin> &pins, bool known)
+{
+    auto it = m_packages.find(m_current);
+    if (it == m_packages.end())
+        return;
+    bool touched = false;
+    for (const auto &source : pins) {
+        for (auto &pin : it.value().pins) {
+            if (pin.portName.compare(portName, Qt::CaseInsensitive) != 0
+                || pin.portBit != source.index)
+                continue;
+            pin.liveMode = source.mode;
+            pin.liveHigh = source.outputHigh;
+            pin.liveKnown = known;
+            touched = true;
+            break;
+        }
+    }
+    if (touched)
+        update(); // one repaint for the whole port
 }
 
 void PackageView::clearLiveState()
@@ -700,34 +771,121 @@ void PackagePage::setPackages(const QStringList &names)
     updateHint(QString());
 }
 
-bool PackagePage::renderForChip(const QString &chip, int ioCount, int pinCount, const QString &packageHint)
+bool PackagePage::renderForChip(const QString &chip, int ioCount, int pinCount,
+                               const QString &packageHint, const QStringList &packageChoices)
 {
     PackageView *view = m_view;
-    // The package follows from the identified part, so there is no choice to offer.
-    const bool autoSelected = true;
+    // Whether the package came from the silicon or still needs a human answer.
+    bool autoSelected = true;
 
-    // 1) Prefer a real per-pin description whose chip matches the identified part.
+    // 1) Pick the best real pin table. Several families share a package name
+    //    ("LQFP48" exists for N32G412 / N32G455 / N32H473), so the family has to
+    //    be part of the decision or the wrong table would be drawn.
+    //
+    //    packageHint from the CMSIS-Pack can list alternatives ("UQFN48/LQFP48"),
+    //    so every split part is a candidate.
+    QStringList hintParts;
+    for (const QString &part : packageHint.split(QLatin1Char('/'), Qt::SkipEmptyParts))
+        hintParts << part.trimmed();
+
+    const auto familyMatches = [&chip](const PackageDescription &description) {
+        return PackageView::matchesPart(description.chip, chip);
+    };
+    const auto packageMatchesHint = [&hintParts](const PackageDescription &description) {
+        for (const QString &part : hintParts) {
+            if (description.packageName.compare(part, Qt::CaseInsensitive) == 0)
+                return true;
+        }
+        return false;
+    };
+
+    // Score: family + package is best, then family alone, then package alone.
     QString chosen;
-    if (!chip.isEmpty()) {
-        for (const auto &description : view->descriptions()) {
-            if (description.chip.isEmpty())
-                continue;
-            if (description.chip.startsWith(chip, Qt::CaseInsensitive)
-                || chip.startsWith(description.chip, Qt::CaseInsensitive)) {
-                chosen = description.packageName;
-                break;
+    QString runnerUp;
+    int bestScore = 0;
+    int ties = 0;
+    for (const auto &description : view->descriptions()) {
+        if (!description.isValid())
+            continue;
+        const QString key = PackageView::descriptionKey(description);
+        int score = 0;
+        if (familyMatches(description))
+            score += 2;
+        if (packageMatchesHint(description))
+            score += 4;
+        // When the exact order code is unknown (family-level identification) the
+        // pin count is the best discriminator we have: a family has LQFP48/64/100/
+        // 144 variants, and drawing the wrong one puts every signal on the wrong
+        // pin. An exact match beats any name-based guess.
+        if (pinCount > 0 && description.pins.size() == pinCount)
+            score += 8;
+        else if (pinCount > 0)
+            score -= 4; // a package of the wrong size is worse than no table
+        // A family table that also carries per-part verification wins ties.
+        if (description.numberVerified && score > 0)
+            ++score;
+        if (score > bestScore) {
+            bestScore = score;
+            chosen = key;
+            ties = 1;
+        } else if (score == bestScore && score > 0) {
+            ++ties;
+            runnerUp = key;
+        }
+    }
+
+    // A family (not an exact order code) usually matches several packages:
+    // N32G455 ships as QFN36/48/64 and LQFP48/64/80/100. Even the pin count can
+    // tie (LQFP64 vs QFN64), and drawing either would label every pin wrongly.
+    // DEV_ID identifies the die, not the package, so refuse rather than guess.
+    if (ties > 1) {
+        // Same flash/RAM but several packages: the silicon cannot tell them apart,
+        // so offer the candidates in the selector (no typing) and draw nothing
+        // until one is picked -- a wrong package would mislabel every pin.
+        QStringList options = packageChoices;
+        if (options.isEmpty()) {
+            for (const auto &description : view->descriptions()) {
+                if (PackageView::matchesPart(description.chip, chip))
+                    options << description.packageName;
             }
         }
-        if (chosen.isEmpty() && !packageHint.isEmpty()) {
+        options.removeDuplicates();
+        options.sort();
+
+        if (options.isEmpty()) {
+            showWaiting(QStringLiteral("已识别 %1，但匹配到 %2 个同分封装，无法确定引脚布局。")
+                            .arg(chip)
+                            .arg(ties));
+            return false;
+        }
+
+        QSignalBlocker blocker(m_box);
+        m_box->clear();
+        // itemData must be the table key ("chip/package"), not just the package
+        // name: several families share a package name and setPackage() looks up by
+        // the full key.
+        for (const QString &name : options) {
             for (const auto &description : view->descriptions()) {
-                if (description.packageName.compare(packageHint, Qt::CaseInsensitive) == 0
-                    && (description.chip.isEmpty()
-                        || description.chip.startsWith(chip, Qt::CaseInsensitive))) {
-                    chosen = description.packageName;
+                if (description.packageName.compare(name, Qt::CaseInsensitive) == 0
+                    && PackageView::matchesPart(description.chip, chip)) {
+                    m_box->addItem(name, PackageView::descriptionKey(description));
                     break;
                 }
             }
         }
+        m_packageLabel->setVisible(true);
+        m_box->setVisible(true);
+        m_hint->setStyleSheet(QStringLiteral("color: #B45309;"));
+        m_hint->setText(QStringLiteral("容量已由内存探测确定，但同容量有 %1 种封装；"
+                                       "请在上方选择芯片上印的封装")
+                            .arg(options.size()));
+        view->showWaiting(QStringLiteral("封装待选择：%1").arg(options.join(QStringLiteral(" / "))));
+        autoSelected = false;
+        Logger::instance()->info(
+            QStringLiteral("封装多义（%1 个候选），等待用户选择: %2")
+                .arg(options.size())
+                .arg(options.join(QStringLiteral(", "))));
+        return true;
     }
 
     if (!chosen.isEmpty() && view->setPackage(chosen)) {
@@ -742,7 +900,7 @@ bool PackagePage::renderForChip(const QString &chip, int ioCount, int pinCount, 
             return false;
         }
         view->adoptPackage(synthesized);
-        chosen = synthesized.packageName;
+        chosen = PackageView::descriptionKey(synthesized);
     }
 
     // When the package follows from the identified part there is nothing to pick,
@@ -788,15 +946,21 @@ void PackagePage::updateHint(const QString &packageName)
         m_hint->setText(QStringLiteral("引脚布局将在识别到 MCU 型号后生成"));
         return;
     }
-    bool verified = true;
+    // A key that is not among the loaded tables means synthesize() drew this
+    // picture from counts alone, so say that instead of implying verified pins.
+    bool verified = false;
     QString note;
+    bool found = false;
     for (const auto &description : m_view->descriptions()) {
-        if (description.packageName == packageName) {
+        if (PackageView::descriptionKey(description) == packageName) {
+            found = true;
             verified = description.numberVerified;
             note = description.note;
             break;
         }
     }
+    if (!found)
+        note = QStringLiteral("无该型号的数据手册引脚表，按 IO 数/封装脚数生成结构图，引脚名为通用编号");
 
     if (verified) {
         m_hint->setStyleSheet(QString());

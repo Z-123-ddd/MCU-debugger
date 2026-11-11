@@ -51,15 +51,26 @@ struct PeripheralStatus
     /// decodes it, so bonding has to override the read result.
     int bondedPins = -1;
 
+    /// Does this *part* implement the peripheral, judged from static vendor data
+    /// (CMSIS-Pack capability counts + package pin signals)?
+    ///
+    /// This is the primary filter: the SVD describes the die/family, so it lists
+    /// blocks this particular model does not have (e.g. SPI5 on a 48-pin
+    /// N32H473CE). Defaults to true so "no data" never hides anything.
+    bool exists = true;
+    /// Why a peripheral was judged absent, for the UI tooltip.
+    QString absenceReason;
+
     bool accessible() const { return reachability == Readable; }
     /// False only when we know the package brings no pin out for this peripheral.
     bool bonded() const { return bondedPins != 0; }
-    /// True when this part really offers the peripheral: the die implements it and
-    /// the package exposes it.
-    bool onChip() const
-    {
-        return (reachability == Readable || reachability == Missing) && bonded();
-    }
+    /// True when this part really offers the peripheral: static vendor data says
+    /// the model implements it and the package exposes a pin for it.
+    ///
+    /// Live read results deliberately do not enter this decision: a gated
+    /// peripheral cannot answer on the bus, so "the read failed" says nothing
+    /// about whether the block exists.
+    bool onChip() const { return exists && bonded(); }
     /// Registers respond but no pin is bonded out (typical for larger packages
     /// being cut down to a smaller one).
     bool unbonded() const { return bondedPins == 0; }
@@ -109,6 +120,11 @@ public:
 
     /// Walk every peripheral through \a probe (blocking: call from a worker thread).
     /// \a progress is invoked as (done, total, name) so the caller can log.
+    ///
+    /// Read-only: nothing on the target is written. Which instances this part
+    /// actually implements comes from static vendor data instead (see
+    /// PeripheralPresence), because proving absence by reading would require
+    /// enabling the peripheral's clock, and that can disturb a running bus.
     static QVector<PeripheralStatus> scan(IProbe &probe, const SvdDevice &device,
                                           const std::function<void(int, int, const QString &)> &progress = {});
 };

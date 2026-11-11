@@ -1,0 +1,5818 @@
+{
+  "parts": {
+    "ARMCA5": {
+      "pack": "5.9.0"
+    },
+    "ARMCA7": {
+      "pack": "5.9.0"
+    },
+    "ARMCA9": {
+      "pack": "5.9.0"
+    },
+    "ARMCM0": {
+      "pack": "5.9.0"
+    },
+    "ARMCM0P": {
+      "pack": "5.9.0"
+    },
+    "ARMCM0P_MPU": {
+      "pack": "5.9.0"
+    },
+    "ARMCM1": {
+      "pack": "5.9.0"
+    },
+    "ARMCM23": {
+      "pack": "5.9.0"
+    },
+    "ARMCM23_TZ": {
+      "pack": "5.9.0"
+    },
+    "ARMCM3": {
+      "pack": "5.9.0"
+    },
+    "ARMCM33": {
+      "pack": "5.9.0"
+    },
+    "ARMCM33_DSP_FP": {
+      "pack": "5.9.0"
+    },
+    "ARMCM33_DSP_FP_TZ": {
+      "pack": "5.9.0"
+    },
+    "ARMCM33_TZ": {
+      "pack": "5.9.0"
+    },
+    "ARMCM35P": {
+      "pack": "5.9.0"
+    },
+    "ARMCM35P_DSP_FP": {
+      "pack": "5.9.0"
+    },
+    "ARMCM35P_DSP_FP_TZ": {
+      "pack": "5.9.0"
+    },
+    "ARMCM35P_TZ": {
+      "pack": "5.9.0"
+    },
+    "ARMCM4": {
+      "pack": "5.9.0"
+    },
+    "ARMCM4_FP": {
+      "pack": "5.9.0"
+    },
+    "ARMCM55": {
+      "pack": "5.9.0"
+    },
+    "ARMCM7": {
+      "pack": "5.9.0"
+    },
+    "ARMCM7_DP": {
+      "pack": "5.9.0"
+    },
+    "ARMCM7_SP": {
+      "pack": "5.9.0"
+    },
+    "ARMCM85": {
+      "pack": "5.9.0"
+    },
+    "ARMSC000": {
+      "pack": "5.9.0"
+    },
+    "ARMSC300": {
+      "pack": "5.9.0"
+    },
+    "ARMv81MML_DSP_DP_MVE_FP": {
+      "pack": "5.9.0"
+    },
+    "ARMv8MBL": {
+      "pack": "5.9.0"
+    },
+    "ARMv8MML": {
+      "pack": "5.9.0"
+    },
+    "ARMv8MML_DP": {
+      "pack": "5.9.0"
+    },
+    "ARMv8MML_DSP": {
+      "pack": "5.9.0"
+    },
+    "ARMv8MML_DSP_DP": {
+      "pack": "5.9.0"
+    },
+    "ARMv8MML_DSP_SP": {
+      "pack": "5.9.0"
+    },
+    "ARMv8MML_SP": {
+      "pack": "5.9.0"
+    },
+    "N32G033F8": {
+      "pack": "N32G033_DFP.1.1.0",
+      "svd": "svd/N32G033.svd",
+      "flashBytes": 65536,
+      "ramBytes": 6144,
+      "sram": "6KB",
+      "flash": "64KB",
+      "clock": "64MHz"
+    },
+    "N32G033K8": {
+      "pack": "N32G033_DFP.1.1.0",
+      "svd": "svd/N32G033.svd",
+      "flashBytes": 65536,
+      "ramBytes": 6144,
+      "sram": "6KB",
+      "flash": "64KB",
+      "clock": "64MHz"
+    },
+    "N32G052CB": {
+      "pack": "N32G05x_DFP.1.1.0",
+      "svd": "svd/N32G05x.svd",
+      "flashBytes": 131072,
+      "ramBytes": 16384,
+      "sram": "16KB",
+      "flash": "128KB",
+      "ioCount": 45,
+      "clock": "64MHz",
+      "capabilities": {
+        "CAN": 1,
+        "COMP": 4,
+        "DAC": 1,
+        "I2C": 2,
+        "SPI": 3,
+        "UART": 5
+      }
+    },
+    "N32G052KB": {
+      "pack": "N32G05x_DFP.1.1.0",
+      "svd": "svd/N32G05x.svd",
+      "flashBytes": 131072,
+      "ramBytes": 16384,
+      "sram": "16KB",
+      "flash": "128KB",
+      "ioCount": 29,
+      "clock": "64MHz",
+      "capabilities": {
+        "CAN": 1,
+        "COMP": 3,
+        "DAC": 1,
+        "I2C": 2,
+        "SPI": 3,
+        "UART": 5
+      }
+    },
+    "N32G052RB": {
+      "pack": "N32G05x_DFP.1.1.0",
+      "svd": "svd/N32G05x.svd",
+      "flashBytes": 131072,
+      "ramBytes": 16384,
+      "sram": "16KB",
+      "flash": "128KB",
+      "ioCount": 61,
+      "clock": "64MHz",
+      "capabilities": {
+        "CAN": 1,
+        "COMP": 4,
+        "DAC": 1,
+        "I2C": 2,
+        "SPI": 3,
+        "UART": 5
+      }
+    },
+    "N32G056RB": {
+      "pack": "N32G05x_DFP.1.1.0",
+      "svd": "svd/N32G05x.svd",
+      "flashBytes": 131072,
+      "ramBytes": 16384,
+      "sram": "16KB",
+      "flash": "128KB",
+      "ioCount": 58,
+      "clock": "64MHz",
+      "capabilities": {
+        "CAN": 1,
+        "COMP": 4,
+        "DAC": 1,
+        "I2C": 2,
+        "SPI": 3,
+        "UART": 5
+      }
+    },
+    "N32G05xRB": {
+      "pack": "N32G05x_DFP.1.1.0",
+      "svd": "svd/N32G05x.svd",
+      "flashBytes": 131072,
+      "ramBytes": 16384,
+      "sram": "16KB",
+      "flash": "128KB",
+      "ioCount": 61,
+      "clock": "64MHz",
+      "capabilities": {
+        "CAN": 1,
+        "COMP": 4,
+        "DAC": 1,
+        "I2C": 2,
+        "SPI": 3,
+        "UART": 5
+      }
+    },
+    "N32G401C6L7": {
+      "pack": "N32G401_DFP.1.3.0",
+      "svd": "svd/N32G401.svd",
+      "flashBytes": 32768,
+      "ramBytes": 8192,
+      "sram": "8KB",
+      "flash": "32KB",
+      "package": "LQFP48",
+      "clock": "72MHz",
+      "capabilities": {
+        "COMP": 3,
+        "I2C": 2,
+        "SPI": 2,
+        "UART": 2,
+        "USART": 2
+      }
+    },
+    "N32G401C6Q7": {
+      "pack": "N32G401_DFP.1.3.0",
+      "svd": "svd/N32G401.svd",
+      "flashBytes": 32768,
+      "ramBytes": 8192,
+      "sram": "8KB",
+      "flash": "32KB",
+      "package": "QFN48",
+      "clock": "72MHz",
+      "capabilities": {
+        "COMP": 3,
+        "I2C": 2,
+        "SPI": 2,
+        "UART": 2,
+        "USART": 2
+      }
+    },
+    "N32G401C8L7": {
+      "pack": "N32G401_DFP.1.3.0",
+      "svd": "svd/N32G401.svd",
+      "flashBytes": 65536,
+      "ramBytes": 8192,
+      "sram": "8KB",
+      "flash": "64KB",
+      "package": "LQFP48",
+      "clock": "72MHz",
+      "capabilities": {
+        "COMP": 3,
+        "I2C": 2,
+        "SPI": 2,
+        "UART": 2,
+        "USART": 2
+      }
+    },
+    "N32G401C8Q7": {
+      "pack": "N32G401_DFP.1.3.0",
+      "svd": "svd/N32G401.svd",
+      "flashBytes": 65536,
+      "ramBytes": 8192,
+      "sram": "8KB",
+      "flash": "64KB",
+      "package": "QFN48",
+      "clock": "72MHz",
+      "capabilities": {
+        "COMP": 3,
+        "I2C": 2,
+        "SPI": 2,
+        "UART": 2,
+        "USART": 2
+      }
+    },
+    "N32G401F6Q7": {
+      "pack": "N32G401_DFP.1.3.0",
+      "svd": "svd/N32G401.svd",
+      "flashBytes": 32768,
+      "ramBytes": 8192,
+      "sram": "8KB",
+      "flash": "32KB",
+      "package": "QFN20",
+      "clock": "72MHz",
+      "capabilities": {
+        "COMP": 3,
+        "I2C": 2,
+        "SPI": 2,
+        "UART": 1,
+        "USART": 2
+      }
+    },
+    "N32G401F6S7": {
+      "pack": "N32G401_DFP.1.3.0",
+      "svd": "svd/N32G401.svd",
+      "flashBytes": 32768,
+      "ramBytes": 8192,
+      "sram": "8KB",
+      "flash": "32KB",
+      "package": "TSSOP20",
+      "clock": "72MHz",
+      "capabilities": {
+        "COMP": 3,
+        "I2C": 2,
+        "SPI": 2,
+        "UART": 1,
+        "USART": 2
+      }
+    },
+    "N32G401F6S7-1": {
+      "pack": "N32G401_DFP.1.3.0",
+      "svd": "svd/N32G401.svd",
+      "flashBytes": 32768,
+      "ramBytes": 8192,
+      "sram": "8KB",
+      "flash": "32KB",
+      "package": "TSSOP20",
+      "clock": "72MHz",
+      "capabilities": {
+        "COMP": 3,
+        "I2C": 2,
+        "SPI": 2,
+        "UART": 1,
+        "USART": 2
+      }
+    },
+    "N32G401F8Q7": {
+      "pack": "N32G401_DFP.1.3.0",
+      "svd": "svd/N32G401.svd",
+      "flashBytes": 65536,
+      "ramBytes": 8192,
+      "sram": "8KB",
+      "flash": "64KB",
+      "package": "QFN20",
+      "clock": "72MHz",
+      "capabilities": {
+        "COMP": 3,
+        "I2C": 2,
+        "SPI": 2,
+        "UART": 1,
+        "USART": 2
+      }
+    },
+    "N32G401F8S7": {
+      "pack": "N32G401_DFP.1.3.0",
+      "svd": "svd/N32G401.svd",
+      "flashBytes": 65536,
+      "ramBytes": 8192,
+      "sram": "8KB",
+      "flash": "64KB",
+      "package": "TSSOP20",
+      "clock": "72MHz",
+      "capabilities": {
+        "COMP": 3,
+        "I2C": 2,
+        "SPI": 2,
+        "UART": 1,
+        "USART": 2
+      }
+    },
+    "N32G401F8S7-1": {
+      "pack": "N32G401_DFP.1.3.0",
+      "svd": "svd/N32G401.svd",
+      "flashBytes": 65536,
+      "ramBytes": 8192,
+      "sram": "8KB",
+      "flash": "64KB",
+      "package": "TSSOP20",
+      "clock": "72MHz",
+      "capabilities": {
+        "COMP": 3,
+        "I2C": 2,
+        "SPI": 2,
+        "UART": 1,
+        "USART": 2
+      }
+    },
+    "N32G401F8S7R-1": {
+      "pack": "N32G401_DFP.1.3.0",
+      "svd": "svd/N32G401.svd",
+      "flashBytes": 65536,
+      "ramBytes": 8192,
+      "sram": "8KB",
+      "flash": "64KB",
+      "package": "TSSOP20",
+      "clock": "72MHz",
+      "capabilities": {
+        "COMP": 3,
+        "I2C": 2,
+        "SPI": 2,
+        "UART": 1,
+        "USART": 2
+      }
+    },
+    "N32G401G6Q7": {
+      "pack": "N32G401_DFP.1.3.0",
+      "svd": "svd/N32G401.svd",
+      "flashBytes": 32768,
+      "ramBytes": 8192,
+      "sram": "8KB",
+      "flash": "32KB",
+      "package": "QFN28",
+      "clock": "72MHz",
+      "capabilities": {
+        "COMP": 3,
+        "I2C": 2,
+        "SPI": 2,
+        "UART": 2,
+        "USART": 2
+      }
+    },
+    "N32G401G8Q7": {
+      "pack": "N32G401_DFP.1.3.0",
+      "svd": "svd/N32G401.svd",
+      "flashBytes": 65536,
+      "ramBytes": 8192,
+      "sram": "8KB",
+      "flash": "64KB",
+      "package": "QFN28",
+      "clock": "72MHz",
+      "capabilities": {
+        "COMP": 3,
+        "I2C": 2,
+        "SPI": 2,
+        "UART": 2,
+        "USART": 2
+      }
+    },
+    "N32G401K6L7": {
+      "pack": "N32G401_DFP.1.3.0",
+      "svd": "svd/N32G401.svd",
+      "flashBytes": 32768,
+      "ramBytes": 8192,
+      "sram": "8KB",
+      "flash": "32KB",
+      "package": "LQFP32",
+      "clock": "72MHz",
+      "capabilities": {
+        "COMP": 3,
+        "I2C": 2,
+        "SPI": 2,
+        "UART": 2,
+        "USART": 2
+      }
+    },
+    "N32G401K6Q7": {
+      "pack": "N32G401_DFP.1.3.0",
+      "svd": "svd/N32G401.svd",
+      "flashBytes": 32768,
+      "ramBytes": 8192,
+      "sram": "8KB",
+      "flash": "32KB",
+      "package": "QFN32",
+      "clock": "72MHz",
+      "capabilities": {
+        "COMP": 3,
+        "I2C": 2,
+        "SPI": 2,
+        "UART": 2,
+        "USART": 2
+      }
+    },
+    "N32G401K8L7": {
+      "pack": "N32G401_DFP.1.3.0",
+      "svd": "svd/N32G401.svd",
+      "flashBytes": 65536,
+      "ramBytes": 8192,
+      "sram": "8KB",
+      "flash": "64KB",
+      "package": "LQFP32",
+      "clock": "72MHz",
+      "capabilities": {
+        "COMP": 3,
+        "I2C": 2,
+        "SPI": 2,
+        "UART": 2,
+        "USART": 2
+      }
+    },
+    "N32G401K8Q7": {
+      "pack": "N32G401_DFP.1.3.0",
+      "svd": "svd/N32G401.svd",
+      "flashBytes": 65536,
+      "ramBytes": 8192,
+      "sram": "8KB",
+      "flash": "64KB",
+      "package": "QFN32",
+      "clock": "72MHz",
+      "capabilities": {
+        "COMP": 3,
+        "I2C": 2,
+        "SPI": 2,
+        "UART": 2,
+        "USART": 2
+      }
+    },
+    "N32G401K8Q7-1": {
+      "pack": "N32G401_DFP.1.3.0",
+      "svd": "svd/N32G401.svd",
+      "flashBytes": 65536,
+      "ramBytes": 8192,
+      "sram": "8KB",
+      "flash": "64KB",
+      "package": "QFN32-1",
+      "clock": "72MHz",
+      "capabilities": {
+        "COMP": 3,
+        "I2C": 2,
+        "SPI": 2,
+        "UART": 2,
+        "USART": 2
+      }
+    },
+    "N32G401K8Q7-2": {
+      "pack": "N32G401_DFP.1.3.0",
+      "svd": "svd/N32G401.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384,
+      "sram": "16KB",
+      "flash": "64KB",
+      "package": "QFN32-2",
+      "clock": "72MHz",
+      "capabilities": {
+        "COMP": 3,
+        "I2C": 2,
+        "SPI": 2,
+        "UART": 2,
+        "USART": 2
+      }
+    },
+    "N32G412C8L7": {
+      "pack": "N32G41x_DFP.1.1.0",
+      "svd": "svd/N32G41x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384,
+      "sram": "16KB",
+      "flash": "64KB",
+      "package": "LQFP48",
+      "ioCount": 39,
+      "clock": "80MHz",
+      "capabilities": {
+        "ADC": 2,
+        "CAN": 1,
+        "COMP": 3,
+        "DMA": 1,
+        "I2C": 2,
+        "OPAMP": 4,
+        "SPI": 2,
+        "USART": 4
+      }
+    },
+    "N32G412C8Q7": {
+      "pack": "N32G41x_DFP.1.1.0",
+      "svd": "svd/N32G41x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384,
+      "sram": "16KB",
+      "flash": "64KB",
+      "package": "QFN48",
+      "ioCount": 39,
+      "clock": "80MHz",
+      "capabilities": {
+        "ADC": 2,
+        "CAN": 1,
+        "COMP": 3,
+        "DMA": 1,
+        "I2C": 2,
+        "OPAMP": 4,
+        "SPI": 2,
+        "USART": 4
+      }
+    },
+    "N32G412CBL7": {
+      "pack": "N32G41x_DFP.1.1.0",
+      "svd": "svd/N32G41x.svd",
+      "flashBytes": 131072,
+      "ramBytes": 24576,
+      "sram": "24KB",
+      "flash": "128KB",
+      "package": "LQFP48",
+      "ioCount": 39,
+      "clock": "80MHz",
+      "capabilities": {
+        "ADC": 2,
+        "CAN": 1,
+        "COMP": 3,
+        "DMA": 1,
+        "I2C": 2,
+        "OPAMP": 4,
+        "SPI": 2,
+        "USART": 4
+      }
+    },
+    "N32G412CBQ7": {
+      "pack": "N32G41x_DFP.1.1.0",
+      "svd": "svd/N32G41x.svd",
+      "flashBytes": 131072,
+      "ramBytes": 24576,
+      "sram": "24KB",
+      "flash": "128KB",
+      "package": "QFN48",
+      "ioCount": 39,
+      "clock": "80MHz",
+      "capabilities": {
+        "ADC": 2,
+        "CAN": 1,
+        "COMP": 3,
+        "DMA": 1,
+        "I2C": 2,
+        "OPAMP": 4,
+        "SPI": 2,
+        "USART": 4
+      }
+    },
+    "N32G412G8Q7": {
+      "pack": "N32G41x_DFP.1.1.0",
+      "svd": "svd/N32G41x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384,
+      "sram": "16KB",
+      "flash": "64KB",
+      "package": "QFN28",
+      "ioCount": 25,
+      "clock": "80MHz",
+      "capabilities": {
+        "ADC": 2,
+        "CAN": 0,
+        "COMP": 3,
+        "DMA": 1,
+        "I2C": 2,
+        "OPAMP": 3,
+        "SPI": 2,
+        "USART": 4
+      }
+    },
+    "N32G412GBQ7": {
+      "pack": "N32G41x_DFP.1.1.0",
+      "svd": "svd/N32G41x.svd",
+      "flashBytes": 131072,
+      "ramBytes": 24576,
+      "sram": "24KB",
+      "flash": "128KB",
+      "package": "QFN28",
+      "ioCount": 25,
+      "clock": "80MHz",
+      "capabilities": {
+        "ADC": 2,
+        "CAN": 0,
+        "COMP": 3,
+        "DMA": 1,
+        "I2C": 2,
+        "OPAMP": 3,
+        "SPI": 2,
+        "USART": 4
+      }
+    },
+    "N32G412K8L7": {
+      "pack": "N32G41x_DFP.1.1.0",
+      "svd": "svd/N32G41x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384,
+      "sram": "16KB",
+      "flash": "64KB",
+      "package": "LQFP32",
+      "ioCount": 27,
+      "clock": "80MHz",
+      "capabilities": {
+        "ADC": 2,
+        "CAN": 1,
+        "COMP": 3,
+        "DMA": 1,
+        "I2C": 2,
+        "OPAMP": 3,
+        "SPI": 2,
+        "USART": 4
+      }
+    },
+    "N32G412K8Q7": {
+      "pack": "N32G41x_DFP.1.1.0",
+      "svd": "svd/N32G41x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384,
+      "sram": "16KB",
+      "flash": "64KB",
+      "package": "QFN32",
+      "ioCount": 30,
+      "clock": "80MHz",
+      "capabilities": {
+        "ADC": 2,
+        "CAN": 1,
+        "COMP": 3,
+        "DMA": 1,
+        "I2C": 2,
+        "OPAMP": 4,
+        "SPI": 2,
+        "USART": 4
+      }
+    },
+    "N32G412KBL7": {
+      "pack": "N32G41x_DFP.1.1.0",
+      "svd": "svd/N32G41x.svd",
+      "flashBytes": 131072,
+      "ramBytes": 24576,
+      "sram": "24KB",
+      "flash": "128KB",
+      "package": "LQFP32",
+      "ioCount": 27,
+      "clock": "80MHz",
+      "capabilities": {
+        "ADC": 2,
+        "CAN": 1,
+        "COMP": 3,
+        "DMA": 1,
+        "I2C": 2,
+        "OPAMP": 3,
+        "SPI": 2,
+        "USART": 4
+      }
+    },
+    "N32G412KBQ7": {
+      "pack": "N32G41x_DFP.1.1.0",
+      "svd": "svd/N32G41x.svd",
+      "flashBytes": 131072,
+      "ramBytes": 24576,
+      "sram": "24KB",
+      "flash": "128KB",
+      "package": "QFN32",
+      "ioCount": 30,
+      "clock": "80MHz",
+      "capabilities": {
+        "ADC": 2,
+        "CAN": 1,
+        "COMP": 3,
+        "DMA": 1,
+        "I2C": 2,
+        "OPAMP": 4,
+        "SPI": 2,
+        "USART": 4
+      }
+    },
+    "N32G412R8L7": {
+      "pack": "N32G41x_DFP.1.1.0",
+      "svd": "svd/N32G41x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384,
+      "sram": "16KB",
+      "flash": "64KB",
+      "package": "LQFP64",
+      "ioCount": 53,
+      "clock": "80MHz",
+      "capabilities": {
+        "ADC": 2,
+        "CAN": 1,
+        "COMP": 3,
+        "DMA": 1,
+        "I2C": 2,
+        "OPAMP": 4,
+        "SPI": 2,
+        "USART": 4
+      }
+    },
+    "N32G412RBL7": {
+      "pack": "N32G41x_DFP.1.1.0",
+      "svd": "svd/N32G41x.svd",
+      "flashBytes": 131072,
+      "ramBytes": 24576,
+      "sram": "24KB",
+      "flash": "128KB",
+      "package": "LQFP64",
+      "ioCount": 53,
+      "clock": "80MHz",
+      "capabilities": {
+        "ADC": 2,
+        "CAN": 1,
+        "COMP": 3,
+        "DMA": 1,
+        "I2C": 2,
+        "OPAMP": 4,
+        "SPI": 2,
+        "USART": 4
+      }
+    },
+    "N32G415C8L7": {
+      "pack": "N32G41x_DFP.1.1.0",
+      "svd": "svd/N32G41x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384,
+      "sram": "16KB",
+      "flash": "64KB",
+      "package": "LQFP48",
+      "ioCount": 45,
+      "clock": "80MHz",
+      "capabilities": {
+        "ADC": 2,
+        "CAN": 1,
+        "COMP": 3,
+        "DMA": 1,
+        "I2C": 2,
+        "OPAMP": 4,
+        "SPI": 2,
+        "USART": 4
+      }
+    },
+    "N32G415CBL7": {
+      "pack": "N32G41x_DFP.1.1.0",
+      "svd": "svd/N32G41x.svd",
+      "flashBytes": 131072,
+      "ramBytes": 24576,
+      "sram": "24KB",
+      "flash": "128KB",
+      "package": "LQFP48",
+      "ioCount": 45,
+      "clock": "80MHz",
+      "capabilities": {
+        "ADC": 2,
+        "CAN": 1,
+        "COMP": 3,
+        "DMA": 1,
+        "I2C": 2,
+        "OPAMP": 4,
+        "SPI": 2,
+        "USART": 4
+      }
+    },
+    "N32G415G8Q7": {
+      "pack": "N32G41x_DFP.1.1.0",
+      "svd": "svd/N32G41x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384,
+      "sram": "16KB",
+      "flash": "64KB",
+      "package": "QFN28",
+      "ioCount": 26,
+      "clock": "80MHz",
+      "capabilities": {
+        "ADC": 2,
+        "CAN": 1,
+        "COMP": 3,
+        "DMA": 1,
+        "I2C": 2,
+        "OPAMP": 3,
+        "SPI": 2,
+        "USART": 4
+      }
+    },
+    "N32G415GBQ7": {
+      "pack": "N32G41x_DFP.1.1.0",
+      "svd": "svd/N32G41x.svd",
+      "flashBytes": 131072,
+      "ramBytes": 24576,
+      "sram": "24KB",
+      "flash": "128KB",
+      "package": "QFN28",
+      "ioCount": 26,
+      "clock": "80MHz",
+      "capabilities": {
+        "ADC": 2,
+        "CAN": 1,
+        "COMP": 3,
+        "DMA": 1,
+        "I2C": 2,
+        "OPAMP": 3,
+        "SPI": 2,
+        "USART": 4
+      }
+    },
+    "N32G415K8L7": {
+      "pack": "N32G41x_DFP.1.1.0",
+      "svd": "svd/N32G41x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384,
+      "sram": "16KB",
+      "flash": "64KB",
+      "package": "LQFP32",
+      "ioCount": 30,
+      "clock": "80MHz",
+      "capabilities": {
+        "ADC": 2,
+        "CAN": 1,
+        "COMP": 3,
+        "DMA": 1,
+        "I2C": 2,
+        "OPAMP": 3,
+        "SPI": 2,
+        "USART": 4
+      }
+    },
+    "N32G415K8Q7": {
+      "pack": "N32G41x_DFP.1.1.0",
+      "svd": "svd/N32G41x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384,
+      "sram": "16KB",
+      "flash": "64KB",
+      "package": "QFN32",
+      "ioCount": 30,
+      "clock": "80MHz",
+      "capabilities": {
+        "ADC": 2,
+        "CAN": 1,
+        "COMP": 3,
+        "DMA": 1,
+        "I2C": 2,
+        "OPAMP": 3,
+        "SPI": 2,
+        "USART": 4
+      }
+    },
+    "N32G415KBL7": {
+      "pack": "N32G41x_DFP.1.1.0",
+      "svd": "svd/N32G41x.svd",
+      "flashBytes": 131072,
+      "ramBytes": 24576,
+      "sram": "24KB",
+      "flash": "128KB",
+      "package": "LQFP32",
+      "ioCount": 30,
+      "clock": "80MHz",
+      "capabilities": {
+        "ADC": 2,
+        "CAN": 1,
+        "COMP": 3,
+        "DMA": 1,
+        "I2C": 2,
+        "OPAMP": 3,
+        "SPI": 2,
+        "USART": 4
+      }
+    },
+    "N32G415KBQ7": {
+      "pack": "N32G41x_DFP.1.1.0",
+      "svd": "svd/N32G41x.svd",
+      "flashBytes": 131072,
+      "ramBytes": 24576,
+      "sram": "24KB",
+      "flash": "128KB",
+      "package": "QFN32",
+      "ioCount": 30,
+      "clock": "80MHz",
+      "capabilities": {
+        "ADC": 2,
+        "CAN": 1,
+        "COMP": 3,
+        "DMA": 1,
+        "I2C": 2,
+        "OPAMP": 3,
+        "SPI": 2,
+        "USART": 4
+      }
+    },
+    "N32G415R8L7": {
+      "pack": "N32G41x_DFP.1.1.0",
+      "svd": "svd/N32G41x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384,
+      "sram": "16KB",
+      "flash": "64KB",
+      "package": "LQFP64",
+      "ioCount": 61,
+      "clock": "80MHz",
+      "capabilities": {
+        "ADC": 2,
+        "CAN": 1,
+        "COMP": 3,
+        "DMA": 1,
+        "I2C": 2,
+        "OPAMP": 4,
+        "SPI": 2,
+        "USART": 4
+      }
+    },
+    "N32G415RBL7": {
+      "pack": "N32G41x_DFP.1.1.0",
+      "svd": "svd/N32G41x.svd",
+      "flashBytes": 131072,
+      "ramBytes": 24576,
+      "sram": "24KB",
+      "flash": "128KB",
+      "package": "LQFP64",
+      "ioCount": 61,
+      "clock": "80MHz",
+      "capabilities": {
+        "ADC": 2,
+        "CAN": 1,
+        "COMP": 3,
+        "DMA": 1,
+        "I2C": 2,
+        "OPAMP": 4,
+        "SPI": 2,
+        "USART": 4
+      }
+    },
+    "N32G432C8": {
+      "pack": "N32G43x_DFP.1.2.0",
+      "svd": "svd/N32G432.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384,
+      "sram": "24KB",
+      "flash": "64KB",
+      "ioCount": 38,
+      "clock": "108MHz",
+      "capabilities": {
+        "CAN": 1,
+        "I2C": 2,
+        "LPUART": 1,
+        "SPI": 2,
+        "UART": 2,
+        "USART": 3
+      }
+    },
+    "N32G432CB": {
+      "pack": "N32G43x_DFP.1.2.0",
+      "svd": "svd/N32G432.svd",
+      "flashBytes": 131072,
+      "ramBytes": 24576,
+      "sram": "32KB",
+      "flash": "128KB",
+      "ioCount": 38,
+      "clock": "108MHz",
+      "capabilities": {
+        "CAN": 1,
+        "I2C": 2,
+        "LPUART": 1,
+        "SPI": 2,
+        "UART": 2,
+        "USART": 3
+      }
+    },
+    "N32G432K8": {
+      "pack": "N32G43x_DFP.1.2.0",
+      "svd": "svd/N32G432.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384,
+      "sram": "24KB",
+      "flash": "64KB",
+      "ioCount": 26,
+      "clock": "108MHz",
+      "capabilities": {
+        "CAN": 1,
+        "I2C": 2,
+        "LPUART": 1,
+        "SPI": 2,
+        "UART": 2,
+        "USART": 2
+      }
+    },
+    "N32G432KB": {
+      "pack": "N32G43x_DFP.1.2.0",
+      "svd": "svd/N32G432.svd",
+      "flashBytes": 131072,
+      "ramBytes": 24576,
+      "sram": "32KB",
+      "flash": "128KB",
+      "ioCount": 26,
+      "clock": "108MHz",
+      "capabilities": {
+        "CAN": 1,
+        "I2C": 2,
+        "LPUART": 1,
+        "SPI": 2,
+        "UART": 2,
+        "USART": 2
+      }
+    },
+    "N32G432R8": {
+      "pack": "N32G43x_DFP.1.2.0",
+      "svd": "svd/N32G432.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384,
+      "sram": "24KB",
+      "flash": "64KB",
+      "ioCount": 52,
+      "clock": "108MHz",
+      "capabilities": {
+        "CAN": 1,
+        "I2C": 2,
+        "LPUART": 1,
+        "SPI": 2,
+        "UART": 2,
+        "USART": 3
+      }
+    },
+    "N32G432RB": {
+      "pack": "N32G43x_DFP.1.2.0",
+      "svd": "svd/N32G432.svd",
+      "flashBytes": 131072,
+      "ramBytes": 24576,
+      "sram": "32KB",
+      "flash": "128KB",
+      "ioCount": 52,
+      "clock": "108MHz",
+      "capabilities": {
+        "CAN": 1,
+        "I2C": 2,
+        "LPUART": 1,
+        "SPI": 2,
+        "UART": 2,
+        "USART": 3
+      }
+    },
+    "N32G435C8": {
+      "pack": "N32G43x_DFP.1.2.0",
+      "svd": "svd/N32G435.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384,
+      "sram": "24KB",
+      "flash": "64KB",
+      "ioCount": 38,
+      "clock": "108MHz",
+      "capabilities": {
+        "CAN": 1,
+        "COMP": 2,
+        "I2C": 2,
+        "LPUART": 1,
+        "OPAMP": 2,
+        "SPI": 2,
+        "UART": 2,
+        "USART": 3
+      }
+    },
+    "N32G435CB": {
+      "pack": "N32G43x_DFP.1.2.0",
+      "svd": "svd/N32G435.svd",
+      "flashBytes": 131072,
+      "ramBytes": 24576,
+      "sram": "32KB",
+      "flash": "128KB",
+      "ioCount": 38,
+      "clock": "108MHz",
+      "capabilities": {
+        "CAN": 1,
+        "COMP": 2,
+        "I2C": 2,
+        "LPUART": 1,
+        "OPAMP": 2,
+        "SPI": 2,
+        "UART": 2,
+        "USART": 3
+      }
+    },
+    "N32G435G8": {
+      "pack": "N32G43x_DFP.1.2.0",
+      "svd": "svd/N32G435.svd",
+      "flashBytes": 65536,
+      "ramBytes": 8192,
+      "sram": "16KB",
+      "flash": "64KB",
+      "ioCount": 24,
+      "clock": "108MHz",
+      "capabilities": {
+        "CAN": 0,
+        "COMP": 2,
+        "I2C": 2,
+        "LPUART": 1,
+        "OPAMP": 2,
+        "SPI": 1,
+        "UART": 2,
+        "USART": 2
+      }
+    },
+    "N32G435GB": {
+      "pack": "N32G43x_DFP.1.2.0",
+      "svd": "svd/N32G435.svd",
+      "flashBytes": 131072,
+      "ramBytes": 24576,
+      "sram": "32KB",
+      "flash": "128KB",
+      "ioCount": 24,
+      "clock": "108MHz",
+      "capabilities": {
+        "CAN": 0,
+        "COMP": 2,
+        "I2C": 2,
+        "LPUART": 1,
+        "OPAMP": 2,
+        "SPI": 1,
+        "UART": 2,
+        "USART": 2
+      }
+    },
+    "N32G435K8": {
+      "pack": "N32G43x_DFP.1.2.0",
+      "svd": "svd/N32G435.svd",
+      "flashBytes": 65536,
+      "ramBytes": 8192,
+      "sram": "16KB",
+      "flash": "64KB",
+      "ioCount": 26,
+      "clock": "108MHz",
+      "capabilities": {
+        "CAN": 1,
+        "COMP": 2,
+        "I2C": 2,
+        "LPUART": 1,
+        "OPAMP": 2,
+        "SPI": 2,
+        "UART": 2,
+        "USART": 2
+      }
+    },
+    "N32G435KB": {
+      "pack": "N32G43x_DFP.1.2.0",
+      "svd": "svd/N32G435.svd",
+      "flashBytes": 131072,
+      "ramBytes": 24576,
+      "sram": "32KB",
+      "flash": "128KB",
+      "ioCount": 26,
+      "clock": "108MHz",
+      "capabilities": {
+        "CAN": 1,
+        "COMP": 2,
+        "I2C": 2,
+        "LPUART": 1,
+        "OPAMP": 2,
+        "SPI": 2,
+        "UART": 2,
+        "USART": 2
+      }
+    },
+    "N32G435R8": {
+      "pack": "N32G43x_DFP.1.2.0",
+      "svd": "svd/N32G435.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384,
+      "sram": "24KB",
+      "flash": "64KB",
+      "ioCount": 52,
+      "clock": "108MHz",
+      "capabilities": {
+        "CAN": 1,
+        "COMP": 2,
+        "I2C": 2,
+        "LPUART": 1,
+        "OPAMP": 2,
+        "SPI": 2,
+        "UART": 2,
+        "USART": 3
+      }
+    },
+    "N32G435RB": {
+      "pack": "N32G43x_DFP.1.2.0",
+      "svd": "svd/N32G435.svd",
+      "flashBytes": 131072,
+      "ramBytes": 24576,
+      "sram": "32KB",
+      "flash": "128KB",
+      "ioCount": 52,
+      "clock": "108MHz",
+      "capabilities": {
+        "CAN": 1,
+        "COMP": 2,
+        "I2C": 2,
+        "LPUART": 1,
+        "OPAMP": 2,
+        "SPI": 2,
+        "UART": 2,
+        "USART": 3
+      }
+    },
+    "N32G435T8": {
+      "pack": "N32G43x_DFP.1.2.0",
+      "svd": "svd/N32G435.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384,
+      "sram": "24KB",
+      "flash": "64KB",
+      "ioCount": 27,
+      "clock": "108MHz",
+      "capabilities": {
+        "CAN": 1,
+        "COMP": 2,
+        "I2C": 2,
+        "LPUART": 1,
+        "OPAMP": 2,
+        "SPI": 2,
+        "UART": 2,
+        "USART": 3
+      }
+    },
+    "N32G451CBL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G451.svd",
+      "flashBytes": 131072,
+      "ramBytes": 49152,
+      "sram": "48KB",
+      "flash": "128KB",
+      "package": "LQFP48",
+      "ioCount": 37,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 1,
+        "I2C": 3,
+        "SPI": 3,
+        "UART": 3,
+        "USART": 3
+      }
+    },
+    "N32G451CCL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G451.svd",
+      "flashBytes": 262144,
+      "ramBytes": 98304,
+      "sram": "96KB",
+      "flash": "256KB",
+      "package": "LQFP48",
+      "ioCount": 37,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 1,
+        "I2C": 3,
+        "SPI": 3,
+        "UART": 3,
+        "USART": 3
+      }
+    },
+    "N32G451CEL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G451.svd",
+      "flashBytes": 524288,
+      "ramBytes": 98304,
+      "sram": "96KB",
+      "flash": "512KB",
+      "package": "LQFP48",
+      "ioCount": 37,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 1,
+        "I2C": 3,
+        "SPI": 3,
+        "UART": 3,
+        "USART": 3
+      }
+    },
+    "N32G451RBL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G451.svd",
+      "flashBytes": 131072,
+      "ramBytes": 49152,
+      "sram": "48KB",
+      "flash": "128KB",
+      "package": "LQFP64",
+      "ioCount": 51,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 1,
+        "I2C": 4,
+        "SDIO": 1,
+        "SPI": 3,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G451RCL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G451.svd",
+      "flashBytes": 262144,
+      "ramBytes": 98304,
+      "sram": "96KB",
+      "flash": "256KB",
+      "package": "LQFP64",
+      "ioCount": 51,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 1,
+        "I2C": 4,
+        "SDIO": 1,
+        "SPI": 3,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G451REL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G451.svd",
+      "flashBytes": 524288,
+      "ramBytes": 98304,
+      "sram": "96KB",
+      "flash": "512KB",
+      "package": "LQFP64",
+      "ioCount": 51,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 1,
+        "I2C": 4,
+        "SDIO": 1,
+        "SPI": 3,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G451VCL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G451.svd",
+      "flashBytes": 262144,
+      "ramBytes": 98304,
+      "sram": "96KB",
+      "flash": "256KB",
+      "package": "LQFP100",
+      "ioCount": 80,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 1,
+        "I2C": 4,
+        "SDIO": 1,
+        "SPI": 3,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G451VEL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G451.svd",
+      "flashBytes": 524288,
+      "ramBytes": 98304,
+      "sram": "96KB",
+      "flash": "512KB",
+      "package": "LQFP100",
+      "ioCount": 80,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 1,
+        "I2C": 4,
+        "SDIO": 1,
+        "SPI": 3,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G452CBL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G452.svd",
+      "flashBytes": 131072,
+      "ramBytes": 81920,
+      "sram": "80KB",
+      "flash": "128KB",
+      "package": "LQFP48",
+      "ioCount": 37,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "I2C": 3,
+        "SPI": 3,
+        "UART": 3,
+        "USART": 3
+      }
+    },
+    "N32G452CCL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G452.svd",
+      "flashBytes": 262144,
+      "ramBytes": 147456,
+      "sram": "144KB",
+      "flash": "256KB",
+      "package": "LQFP48",
+      "ioCount": 37,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "I2C": 3,
+        "SPI": 3,
+        "UART": 3,
+        "USART": 3
+      }
+    },
+    "N32G452CEL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G452.svd",
+      "flashBytes": 524288,
+      "ramBytes": 147456,
+      "sram": "144KB",
+      "flash": "512KB",
+      "package": "LQFP48",
+      "ioCount": 37,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "I2C": 3,
+        "SPI": 3,
+        "UART": 3,
+        "USART": 3
+      }
+    },
+    "N32G452MBL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G452.svd",
+      "flashBytes": 131072,
+      "ramBytes": 81920,
+      "sram": "80KB",
+      "flash": "128KB",
+      "package": "LQFP80",
+      "ioCount": 67,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "I2C": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G452MCL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G452.svd",
+      "flashBytes": 262144,
+      "ramBytes": 147456,
+      "sram": "144KB",
+      "flash": "256KB",
+      "package": "LQFP80",
+      "ioCount": 67,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "I2C": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G452MEL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G452.svd",
+      "flashBytes": 524288,
+      "ramBytes": 147456,
+      "sram": "144KB",
+      "flash": "512KB",
+      "package": "LQFP80",
+      "ioCount": 67,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "I2C": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G452QCL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G452.svd",
+      "flashBytes": 262144,
+      "ramBytes": 147456,
+      "sram": "144KB",
+      "flash": "256KB",
+      "package": "LQFP128",
+      "ioCount": 97,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "I2C": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G452QEL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G452.svd",
+      "flashBytes": 524288,
+      "ramBytes": 147456,
+      "sram": "144KB",
+      "flash": "512KB",
+      "package": "LQFP128",
+      "ioCount": 97,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "I2C": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G452RBL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G452.svd",
+      "flashBytes": 131072,
+      "ramBytes": 81920,
+      "sram": "80KB",
+      "flash": "128KB",
+      "package": "LQFP64",
+      "ioCount": 51,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "I2C": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G452RCL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G452.svd",
+      "flashBytes": 262144,
+      "ramBytes": 147456,
+      "sram": "144KB",
+      "flash": "256KB",
+      "package": "LQFP64",
+      "ioCount": 51,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "I2C": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G452REL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G452.svd",
+      "flashBytes": 524288,
+      "ramBytes": 147456,
+      "sram": "144KB",
+      "flash": "512KB",
+      "package": "LQFP64",
+      "ioCount": 51,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "I2C": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G452VCL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G452.svd",
+      "flashBytes": 262144,
+      "ramBytes": 147456,
+      "sram": "144KB",
+      "flash": "256KB",
+      "package": "LQFP100",
+      "ioCount": 80,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "I2C": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G452VEL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G452.svd",
+      "flashBytes": 524288,
+      "ramBytes": 147456,
+      "sram": "144KB",
+      "flash": "512KB",
+      "package": "LQFP100",
+      "ioCount": 80,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "I2C": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G455CBL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G455.svd",
+      "flashBytes": 131072,
+      "ramBytes": 81920,
+      "sram": "80KB",
+      "flash": "128KB",
+      "package": "LQFP48",
+      "ioCount": 37,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "COMP": 5,
+        "I2C": 3,
+        "OPAMP": 4,
+        "SPI": 3,
+        "TSC": 8,
+        "UART": 3,
+        "USART": 3
+      }
+    },
+    "N32G455CCL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G455.svd",
+      "flashBytes": 262144,
+      "ramBytes": 147456,
+      "sram": "144KB",
+      "flash": "256KB",
+      "package": "LQFP48",
+      "ioCount": 37,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "COMP": 5,
+        "I2C": 3,
+        "OPAMP": 4,
+        "SPI": 3,
+        "TSC": 8,
+        "UART": 3,
+        "USART": 3
+      }
+    },
+    "N32G455CEQ7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G455.svd",
+      "flashBytes": 524288,
+      "ramBytes": 147456,
+      "sram": "144KB",
+      "flash": "512KB",
+      "package": "QFN48",
+      "ioCount": 51,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "COMP": 7,
+        "I2C": 3,
+        "OPAMP": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "TSC": 10,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G455MBL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G455.svd",
+      "flashBytes": 131072,
+      "ramBytes": 81920,
+      "sram": "80KB",
+      "flash": "128KB",
+      "package": "LQFP80",
+      "ioCount": 67,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "COMP": 7,
+        "I2C": 4,
+        "OPAMP": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "TSC": 18,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G455MCL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G455.svd",
+      "flashBytes": 262144,
+      "ramBytes": 147456,
+      "sram": "144KB",
+      "flash": "256KB",
+      "package": "LQFP80",
+      "ioCount": 67,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "COMP": 7,
+        "I2C": 4,
+        "OPAMP": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "TSC": 18,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G455MEL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G455.svd",
+      "flashBytes": 524288,
+      "ramBytes": 147456,
+      "sram": "144KB",
+      "flash": "512KB",
+      "package": "LQFP80",
+      "ioCount": 67,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "COMP": 7,
+        "I2C": 4,
+        "OPAMP": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "TSC": 18,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G455RBL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G455.svd",
+      "flashBytes": 131072,
+      "ramBytes": 81920,
+      "sram": "80KB",
+      "flash": "128KB",
+      "package": "LQFP64",
+      "ioCount": 51,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "COMP": 7,
+        "I2C": 4,
+        "OPAMP": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "TSC": 16,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G455RCL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G455.svd",
+      "flashBytes": 262144,
+      "ramBytes": 147456,
+      "sram": "144KB",
+      "flash": "256KB",
+      "package": "LQFP64",
+      "ioCount": 51,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "COMP": 7,
+        "I2C": 4,
+        "OPAMP": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "TSC": 16,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G455REL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G455.svd",
+      "flashBytes": 524288,
+      "ramBytes": 147456,
+      "sram": "144KB",
+      "flash": "512KB",
+      "package": "LQFP64",
+      "ioCount": 51,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "COMP": 7,
+        "I2C": 4,
+        "OPAMP": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "TSC": 16,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G455RGL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G455.svd",
+      "flashBytes": 524288,
+      "ramBytes": 147456,
+      "sram": "144KB",
+      "flash": "512KB",
+      "package": "LQFP64",
+      "ioCount": 51,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "COMP": 7,
+        "I2C": 4,
+        "OPAMP": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "TSC": 16,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G455TBQ7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G455.svd",
+      "flashBytes": 131072,
+      "ramBytes": 81920,
+      "sram": "80KB",
+      "flash": "128KB",
+      "package": "QFN36",
+      "ioCount": 26,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "COMP": 7,
+        "I2C": 2,
+        "OPAMP": 4,
+        "SPI": 1,
+        "UART": 1,
+        "USART": 2
+      }
+    },
+    "N32G455VBL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G455.svd",
+      "flashBytes": 131072,
+      "ramBytes": 81920,
+      "sram": "80KB",
+      "flash": "128KB",
+      "package": "LQFP100",
+      "ioCount": 80,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "COMP": 7,
+        "I2C": 4,
+        "OPAMP": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "TSC": 24,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G455VCL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G455.svd",
+      "flashBytes": 262144,
+      "ramBytes": 147456,
+      "sram": "144KB",
+      "flash": "256KB",
+      "package": "LQFP100",
+      "ioCount": 80,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "COMP": 7,
+        "I2C": 4,
+        "OPAMP": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "TSC": 24,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G455VEL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G455.svd",
+      "flashBytes": 524288,
+      "ramBytes": 147456,
+      "sram": "144KB",
+      "flash": "512KB",
+      "package": "LQFP100",
+      "ioCount": 80,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "COMP": 7,
+        "I2C": 4,
+        "OPAMP": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "TSC": 24,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G455VGL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G455.svd",
+      "flashBytes": 524288,
+      "ramBytes": 147456,
+      "sram": "144KB",
+      "flash": "512KB",
+      "package": "LQFP100",
+      "ioCount": 80,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "COMP": 7,
+        "I2C": 4,
+        "OPAMP": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "TSC": 24,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G457MCL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G457.svd",
+      "flashBytes": 262144,
+      "ramBytes": 147456,
+      "sram": "144KB",
+      "flash": "256KB",
+      "package": "LQFP80",
+      "ioCount": 67,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "COMP": 7,
+        "ETH": 1,
+        "I2C": 4,
+        "OPAMP": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "TSC": 18,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G457MEL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G457.svd",
+      "flashBytes": 524288,
+      "ramBytes": 147456,
+      "sram": "144KB",
+      "flash": "512KB",
+      "package": "LQFP80",
+      "ioCount": 67,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "COMP": 7,
+        "ETH": 1,
+        "I2C": 4,
+        "OPAMP": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "TSC": 18,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G457QEL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G457.svd",
+      "flashBytes": 524288,
+      "ramBytes": 147456,
+      "sram": "144KB",
+      "flash": "512KB",
+      "package": "LQFP128",
+      "ioCount": 97,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "COMP": 7,
+        "ETH": 1,
+        "I2C": 4,
+        "OPAMP": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "TSC": 24,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G457RCL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G457.svd",
+      "flashBytes": 262144,
+      "ramBytes": 147456,
+      "sram": "144KB",
+      "flash": "256KB",
+      "package": "LQFP64",
+      "ioCount": 51,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "COMP": 7,
+        "ETH": 1,
+        "I2C": 4,
+        "OPAMP": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "TSC": 16,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G457REL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G457.svd",
+      "flashBytes": 524288,
+      "ramBytes": 147456,
+      "sram": "144KB",
+      "flash": "512KB",
+      "package": "LQFP64",
+      "ioCount": 51,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "COMP": 7,
+        "ETH": 1,
+        "I2C": 4,
+        "OPAMP": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "TSC": 16,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G457VCL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G457.svd",
+      "flashBytes": 262144,
+      "ramBytes": 147456,
+      "sram": "144KB",
+      "flash": "256KB",
+      "package": "LQFP100",
+      "ioCount": 80,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "COMP": 7,
+        "ETH": 1,
+        "I2C": 4,
+        "OPAMP": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "TSC": 24,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32G457VEL7": {
+      "pack": "N32G45x_DFP.1.3.0",
+      "svd": "svd/N32G457.svd",
+      "flashBytes": 524288,
+      "ramBytes": 147456,
+      "sram": "144KB",
+      "flash": "512KB",
+      "package": "LQFP100",
+      "ioCount": 80,
+      "clock": "144MHz",
+      "capabilities": {
+        "CAN": 2,
+        "COMP": 7,
+        "ETH": 1,
+        "I2C": 4,
+        "OPAMP": 4,
+        "QSPI": 1,
+        "SDIO": 1,
+        "SPI": 3,
+        "TSC": 24,
+        "UART": 4,
+        "USART": 3
+      }
+    },
+    "N32H473CC": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H473.svd",
+      "flashBytes": 262144,
+      "ramBytes": 147456,
+      "sram": "112KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "256KB",
+      "package": "UQFN48/LQFP48",
+      "ioCount": 42,
+      "clock": "200MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 5,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H473CE": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H473.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "UQFN48/LQFP48",
+      "ioCount": 42,
+      "clock": "200MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 5,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H473CG": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H473.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512+512KB",
+      "package": "QFN48",
+      "ioCount": 42,
+      "clock": "200MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 5,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H473KC": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H473.svd",
+      "flashBytes": 262144,
+      "ramBytes": 147456,
+      "sram": "112KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "256KB",
+      "package": "QFN32",
+      "ioCount": 26,
+      "clock": "200MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 4,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H473KE": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H473.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "QFN32",
+      "ioCount": 26,
+      "clock": "200MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 4,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H473MC": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H473.svd",
+      "flashBytes": 262144,
+      "ramBytes": 147456,
+      "sram": "112KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "256KB",
+      "package": "LQFP80",
+      "ioCount": 66,
+      "clock": "200MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 6,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H473ME": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H473.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "LQFP80",
+      "ioCount": 66,
+      "clock": "200MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 6,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H473QC": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H473.svd",
+      "flashBytes": 262144,
+      "ramBytes": 147456,
+      "sram": "112KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "256KB",
+      "package": "LQFP128",
+      "ioCount": 107,
+      "clock": "200MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 6,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H473QE": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H473.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "LQFP128",
+      "ioCount": 107,
+      "clock": "200MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 6,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H473RC": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H473.svd",
+      "flashBytes": 262144,
+      "ramBytes": 147456,
+      "sram": "112KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "256KB",
+      "package": "LQFP64",
+      "ioCount": 52,
+      "clock": "200MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 5,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H473RE": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H473.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "LQFP64",
+      "ioCount": 52,
+      "clock": "200MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 5,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H473VC": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H473.svd",
+      "flashBytes": 262144,
+      "ramBytes": 147456,
+      "sram": "112KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "256KB",
+      "package": "LQFP100/LQFP128",
+      "ioCount": 107,
+      "clock": "200MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 6,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H473VE": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H473.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "LQFP100/LQFP128",
+      "ioCount": 107,
+      "clock": "200MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 6,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H474CC": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H474.svd",
+      "flashBytes": 262144,
+      "ramBytes": 147456,
+      "sram": "112KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "256KB",
+      "package": "UQFN48/LQFP48",
+      "ioCount": 42,
+      "clock": "200MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 5,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H474CE": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H474.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "UQFN48/LQFP48",
+      "ioCount": 42,
+      "clock": "200MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 5,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H474KC": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H474.svd",
+      "flashBytes": 262144,
+      "ramBytes": 147456,
+      "sram": "112KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "256KB",
+      "package": "QFN32",
+      "ioCount": 26,
+      "clock": "200MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 4,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H474KE": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H474.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "QFN32",
+      "ioCount": 26,
+      "clock": "200MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 4,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H474MC": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H474.svd",
+      "flashBytes": 262144,
+      "ramBytes": 147456,
+      "sram": "112KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "256KB",
+      "package": "LQFP80",
+      "ioCount": 66,
+      "clock": "200MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 6,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H474ME": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H474.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "LQFP80",
+      "ioCount": 66,
+      "clock": "200MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 6,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H474QC": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H474.svd",
+      "flashBytes": 262144,
+      "ramBytes": 147456,
+      "sram": "112KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "256KB",
+      "package": "LQFP128",
+      "ioCount": 107,
+      "clock": "200MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 6,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H474QE": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H474.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "LQFP128",
+      "ioCount": 107,
+      "clock": "200MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 6,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H474RC": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H474.svd",
+      "flashBytes": 262144,
+      "ramBytes": 147456,
+      "sram": "112KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "256KB",
+      "package": "LQFP64",
+      "ioCount": 52,
+      "clock": "200MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 5,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H474RE": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H474.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "LQFP64",
+      "ioCount": 52,
+      "clock": "200MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 5,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H474VC": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H474.svd",
+      "flashBytes": 262144,
+      "ramBytes": 147456,
+      "sram": "112KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "256KB",
+      "package": "LQFP100",
+      "ioCount": 86,
+      "clock": "200MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 6,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H474VE": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H474.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "LQFP100",
+      "ioCount": 86,
+      "clock": "200MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 6,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H475CE": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H475.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "LQFP48",
+      "ioCount": 42,
+      "clock": "240MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 3,
+        "UART": 2,
+        "USART": 1,
+        "xSPI": 0
+      }
+    },
+    "N32H475RE": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H475.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "QFN60",
+      "ioCount": 48,
+      "clock": "240MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 3,
+        "UART": 2,
+        "USART": 1,
+        "xSPI": 0
+      }
+    },
+    "N32H475UE": {
+      "pack": "N32H47x_DFP.1.2.0",
+      "svd": "svd/N32H475.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "QFN52",
+      "ioCount": 48,
+      "clock": "240MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 3,
+        "UART": 2,
+        "USART": 1,
+        "xSPI": 0
+      }
+    },
+    "N32H480RE": {
+      "pack": "N32H48x_DFP.1.2.0",
+      "svd": "svd/N32H480.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "LQFP64",
+      "ioCount": 54,
+      "clock": "180MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 0,
+        "DAC": 2,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SDIO": 1,
+        "SPI": 5,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H480VE": {
+      "pack": "N32H48x_DFP.1.2.0",
+      "svd": "svd/N32H480.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "LQFP100",
+      "ioCount": 85,
+      "clock": "180MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 0,
+        "DAC": 2,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SDIO": 1,
+        "SPI": 6,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H480VG": {
+      "pack": "N32H48x_DFP.1.2.0",
+      "svd": "svd/N32H480.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512+512KB",
+      "package": "LQFP100",
+      "ioCount": 85,
+      "clock": "180MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 0,
+        "DAC": 2,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SDIO": 1,
+        "SPI": 6,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H480ZE": {
+      "pack": "N32H48x_DFP.1.2.0",
+      "svd": "svd/N32H480.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "LQFP144",
+      "ioCount": 118,
+      "clock": "180MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 0,
+        "DAC": 2,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SDIO": 1,
+        "SPI": 6,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H480ZG": {
+      "pack": "N32H48x_DFP.1.2.0",
+      "svd": "svd/N32H480.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512+512KB",
+      "package": "LQFP144-1",
+      "ioCount": 112,
+      "clock": "180MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 0,
+        "DAC": 2,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SDIO": 1,
+        "SPI": 6,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H481RE": {
+      "pack": "N32H48x_DFP.1.2.0",
+      "svd": "svd/N32H481.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "LQFP64",
+      "ioCount": 54,
+      "clock": "240MHz",
+      "capabilities": {
+        "ADC": 4,
+        "DAC": 2,
+        "DMA": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 6,
+        "UART": 4,
+        "USART": 3,
+        "xSPI": 1
+      }
+    },
+    "N32H482RE": {
+      "pack": "N32H48x_DFP.1.2.0",
+      "svd": "svd/N32H482.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "LQFP64",
+      "ioCount": 54,
+      "clock": "240MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 0,
+        "DAC": 2,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SDIO": 1,
+        "SPI": 5,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H482VE": {
+      "pack": "N32H48x_DFP.1.2.0",
+      "svd": "svd/N32H482.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "LQFP100",
+      "ioCount": 85,
+      "clock": "240MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 0,
+        "DAC": 2,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SDIO": 1,
+        "SPI": 6,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H482VG": {
+      "pack": "N32H48x_DFP.1.2.0",
+      "svd": "svd/N32H482.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512+512KB",
+      "package": "LQFP100",
+      "ioCount": 85,
+      "clock": "240MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 0,
+        "DAC": 2,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SDIO": 1,
+        "SPI": 6,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H482ZE": {
+      "pack": "N32H48x_DFP.1.2.0",
+      "svd": "svd/N32H482.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "LQFP144",
+      "ioCount": 118,
+      "clock": "240MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 0,
+        "DAC": 2,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SDIO": 1,
+        "SPI": 6,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H484QE": {
+      "pack": "1.0.1",
+      "svd": "svd/N32H487.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608
+    },
+    "N32H487RE": {
+      "pack": "N32H48x_DFP.1.2.0",
+      "svd": "svd/N32H487.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "LQFP64",
+      "ioCount": 54,
+      "clock": "240MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 0,
+        "DAC": 8,
+        "DMA": 2,
+        "DVP": 1,
+        "ETH": 1,
+        "FDCAN": 3,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SDIO": 1,
+        "SPI": 5,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H487VE": {
+      "pack": "N32H48x_DFP.1.2.0",
+      "svd": "svd/N32H487.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "LQFP100",
+      "ioCount": 85,
+      "clock": "240MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 0,
+        "DAC": 8,
+        "DMA": 2,
+        "DVP": 1,
+        "ETH": 1,
+        "FDCAN": 3,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SDIO": 1,
+        "SPI": 6,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H487ZE": {
+      "pack": "N32H48x_DFP.1.2.0",
+      "svd": "svd/N32H487.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "LQFP144",
+      "ioCount": 118,
+      "clock": "240MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 0,
+        "DAC": 8,
+        "DMA": 2,
+        "DVP": 1,
+        "ETH": 1,
+        "FDCAN": 3,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SDIO": 1,
+        "SPI": 6,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H487ZG": {
+      "pack": "N32H48x_DFP.1.2.0",
+      "svd": "svd/N32H487.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512+512KB",
+      "package": "LQFP144-1",
+      "ioCount": 112,
+      "clock": "240MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 0,
+        "DAC": 2,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SDIO": 1,
+        "SPI": 6,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H488RE": {
+      "pack": "N32H48x_DFP.1.2.0",
+      "svd": "svd/N32H488.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "LQFP64",
+      "ioCount": 54,
+      "clock": "240MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "DVP": 1,
+        "ETH": 1,
+        "FDCAN": 3,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SDIO": 1,
+        "SPI": 5,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H488VE": {
+      "pack": "N32H48x_DFP.1.2.0",
+      "svd": "svd/N32H488.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "LQFP100",
+      "ioCount": 85,
+      "clock": "240MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "DVP": 1,
+        "ETH": 1,
+        "FDCAN": 3,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SDIO": 1,
+        "SPI": 6,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H488ZE": {
+      "pack": "N32H48x_DFP.1.2.0",
+      "svd": "svd/N32H488.svd",
+      "flashBytes": 524288,
+      "ramBytes": 196608,
+      "sram": "160KB",
+      "ccmSram": "32KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "LQFP144",
+      "ioCount": 118,
+      "clock": "240MHz",
+      "capabilities": {
+        "ADC": 4,
+        "COMP": 7,
+        "DAC": 8,
+        "DMA": 2,
+        "DVP": 1,
+        "ETH": 1,
+        "FDCAN": 3,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SDIO": 1,
+        "SPI": 6,
+        "UART": 4,
+        "USART": 4,
+        "xSPI": 1
+      }
+    },
+    "N32H492xE": {
+      "pack": "N32H49x_DFP.1.1.0",
+      "svd": "svd/N32H49x.svd",
+      "flashBytes": 524288,
+      "ramBytes": 327680,
+      "sram": "240KB",
+      "ccmSram": "80KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "LQFP144",
+      "ioCount": 118,
+      "clock": "240MHz",
+      "capabilities": {
+        "ADC": 3,
+        "DAC": 2,
+        "DMA": 2,
+        "FDCAN": 3,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SDIO": 1,
+        "SPI": 6,
+        "UART": 5,
+        "USART": 5
+      }
+    },
+    "N32H492xG": {
+      "pack": "N32H49x_DFP.1.1.0",
+      "svd": "svd/N32H49x.svd",
+      "flashBytes": 1048576,
+      "ramBytes": 327680,
+      "sram": "496KB",
+      "ccmSram": "80KB",
+      "backupSram": "4KB",
+      "flash": "1024KB",
+      "package": "LQFP144",
+      "ioCount": 118,
+      "clock": "240MHz",
+      "capabilities": {
+        "ADC": 3,
+        "DAC": 2,
+        "DMA": 2,
+        "FDCAN": 3,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SDIO": 1,
+        "SPI": 6,
+        "UART": 5,
+        "USART": 5
+      }
+    },
+    "N32H493xE": {
+      "pack": "N32H49x_DFP.1.1.0",
+      "svd": "svd/N32H49x.svd",
+      "flashBytes": 524288,
+      "ramBytes": 327680,
+      "sram": "196KB",
+      "ccmSram": "64KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "BGA81",
+      "ioCount": 67,
+      "clock": "240MHz",
+      "capabilities": {
+        "ADC": 3,
+        "DAC": 2,
+        "DMA": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 5,
+        "UART": 2,
+        "USART": 1
+      }
+    },
+    "N32H493xG": {
+      "pack": "N32H49x_DFP.1.1.0",
+      "svd": "svd/N32H49x.svd",
+      "flashBytes": 1048576,
+      "ramBytes": 327680,
+      "sram": "196KB",
+      "ccmSram": "64KB",
+      "backupSram": "4KB",
+      "flash": "1024KB",
+      "package": "BGA81",
+      "ioCount": 67,
+      "clock": "240MHz",
+      "capabilities": {
+        "ADC": 3,
+        "DAC": 2,
+        "DMA": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SPI": 5,
+        "UART": 2,
+        "USART": 1
+      }
+    },
+    "N32H497xE": {
+      "pack": "N32H49x_DFP.1.1.0",
+      "svd": "svd/N32H49x.svd",
+      "flashBytes": 524288,
+      "ramBytes": 327680,
+      "sram": "240KB",
+      "ccmSram": "80KB",
+      "backupSram": "4KB",
+      "flash": "512KB",
+      "package": "LQFP144",
+      "ioCount": 118,
+      "clock": "240MHz",
+      "capabilities": {
+        "ADC": 3,
+        "DAC": 2,
+        "DMA": 2,
+        "FDCAN": 2,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SDIO": 1,
+        "SPI": 6,
+        "UART": 5,
+        "USART": 5
+      }
+    },
+    "N32H497xG": {
+      "pack": "N32H49x_DFP.1.1.0",
+      "svd": "svd/N32H49x.svd",
+      "flashBytes": 1048576,
+      "ramBytes": 589824,
+      "sram": "496KB",
+      "ccmSram": "80KB",
+      "backupSram": "4KB",
+      "flash": "1024KB",
+      "package": "LQFP144",
+      "ioCount": 118,
+      "clock": "240MHz",
+      "capabilities": {
+        "ADC": 3,
+        "DAC": 2,
+        "DMA": 2,
+        "FDCAN": 3,
+        "I2C": 4,
+        "LPTIM": 2,
+        "SDIO": 1,
+        "SPI": 6,
+        "UART": 5,
+        "USART": 5
+      }
+    },
+    "N32H730xIx7": {
+      "pack": "N32H7xx_DFP.1.3.0",
+      "flashBytes": 1966080
+    },
+    "N32H735xIx7": {
+      "pack": "N32H7xx_DFP.1.3.0",
+      "flashBytes": 1966080
+    },
+    "N32H735xIx7EC": {
+      "pack": "N32H7xx_DFP.1.3.0",
+      "flashBytes": 1966080
+    },
+    "N32H760xIx7": {
+      "pack": "N32H7xx_DFP.1.3.0",
+      "flashBytes": 1966080
+    },
+    "N32H760xKx7": {
+      "pack": "N32H7xx_DFP.1.3.0",
+      "flashBytes": 4063232
+    },
+    "N32H762xIx7": {
+      "pack": "N32H7xx_DFP.1.3.0",
+      "flashBytes": 1966080
+    },
+    "N32H762xKx7": {
+      "pack": "N32H7xx_DFP.1.3.0",
+      "flashBytes": 4063232
+    },
+    "N32H765xIx7": {
+      "pack": "N32H7xx_DFP.1.3.0",
+      "flashBytes": 1966080
+    },
+    "N32H765xIx7EC": {
+      "pack": "N32H7xx_DFP.1.3.0",
+      "flashBytes": 1966080
+    },
+    "N32H765xKx7": {
+      "pack": "N32H7xx_DFP.1.3.0",
+      "flashBytes": 4063232
+    },
+    "N32H765xKx7EC": {
+      "pack": "N32H7xx_DFP.1.3.0",
+      "flashBytes": 4063232
+    },
+    "N32H785xIx7": {
+      "pack": "N32H7xx_DFP.1.3.0"
+    },
+    "N32H785xIx7EC": {
+      "pack": "N32H7xx_DFP.1.3.0"
+    },
+    "N32H785xKx7": {
+      "pack": "N32H7xx_DFP.1.3.0"
+    },
+    "N32H785xKx7EC": {
+      "pack": "N32H7xx_DFP.1.3.0"
+    },
+    "N32H787xIx7": {
+      "pack": "N32H7xx_DFP.1.3.0"
+    },
+    "N32H787xKx7": {
+      "pack": "N32H7xx_DFP.1.3.0"
+    },
+    "STM32F100C4": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F100xx.svd",
+      "flashBytes": 16384,
+      "ramBytes": 4096
+    },
+    "STM32F100C6": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F100xx.svd",
+      "flashBytes": 32768,
+      "ramBytes": 4096
+    },
+    "STM32F100C8": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F100xx.svd",
+      "flashBytes": 65536,
+      "ramBytes": 8192
+    },
+    "STM32F100CB": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F100xx.svd",
+      "flashBytes": 131072,
+      "ramBytes": 8192
+    },
+    "STM32F100R4": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F100xx.svd",
+      "flashBytes": 16384,
+      "ramBytes": 4096
+    },
+    "STM32F100R6": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F100xx.svd",
+      "flashBytes": 32768,
+      "ramBytes": 4096
+    },
+    "STM32F100R8": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F100xx.svd",
+      "flashBytes": 65536,
+      "ramBytes": 8192
+    },
+    "STM32F100RB": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F100xx.svd",
+      "flashBytes": 131072,
+      "ramBytes": 8192
+    },
+    "STM32F100RC": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F100xx.svd",
+      "flashBytes": 262144,
+      "ramBytes": 24576
+    },
+    "STM32F100RD": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F100xx.svd",
+      "flashBytes": 393216,
+      "ramBytes": 32768
+    },
+    "STM32F100RE": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F100xx.svd",
+      "flashBytes": 524288,
+      "ramBytes": 32768
+    },
+    "STM32F100V8": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F100xx.svd",
+      "flashBytes": 65536,
+      "ramBytes": 8192
+    },
+    "STM32F100VB": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F100xx.svd",
+      "flashBytes": 131072,
+      "ramBytes": 8192
+    },
+    "STM32F100VC": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F100xx.svd",
+      "flashBytes": 262144,
+      "ramBytes": 24576
+    },
+    "STM32F100VD": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F100xx.svd",
+      "flashBytes": 393216,
+      "ramBytes": 32768
+    },
+    "STM32F100VE": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F100xx.svd",
+      "flashBytes": 524288,
+      "ramBytes": 32768
+    },
+    "STM32F100ZC": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F100xx.svd",
+      "flashBytes": 262144,
+      "ramBytes": 24576
+    },
+    "STM32F100ZD": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F100xx.svd",
+      "flashBytes": 393216,
+      "ramBytes": 32768
+    },
+    "STM32F100ZE": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F100xx.svd",
+      "flashBytes": 524288,
+      "ramBytes": 32768
+    },
+    "STM32F101C4": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 16384,
+      "ramBytes": 4096
+    },
+    "STM32F101C6": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 32768,
+      "ramBytes": 6144
+    },
+    "STM32F101C8": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 65536,
+      "ramBytes": 10240
+    },
+    "STM32F101CB": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 131072,
+      "ramBytes": 16384
+    },
+    "STM32F101R4": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 16384,
+      "ramBytes": 4096
+    },
+    "STM32F101R6": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 32768,
+      "ramBytes": 6144
+    },
+    "STM32F101R8": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 65536,
+      "ramBytes": 10240
+    },
+    "STM32F101RB": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 131072,
+      "ramBytes": 16384
+    },
+    "STM32F101RC": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 262144,
+      "ramBytes": 32768
+    },
+    "STM32F101RD": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 393216,
+      "ramBytes": 49152
+    },
+    "STM32F101RE": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 524288,
+      "ramBytes": 49152
+    },
+    "STM32F101RF": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 786432,
+      "ramBytes": 81920
+    },
+    "STM32F101RG": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 1048576,
+      "ramBytes": 81920
+    },
+    "STM32F101T4": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 16384,
+      "ramBytes": 4096
+    },
+    "STM32F101T6": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 32768,
+      "ramBytes": 6144
+    },
+    "STM32F101T8": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 65536,
+      "ramBytes": 10240
+    },
+    "STM32F101TB": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 131072,
+      "ramBytes": 16384
+    },
+    "STM32F101V8": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 65536,
+      "ramBytes": 10240
+    },
+    "STM32F101VB": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 131072,
+      "ramBytes": 16384
+    },
+    "STM32F101VC": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 262144,
+      "ramBytes": 32768
+    },
+    "STM32F101VD": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 393216,
+      "ramBytes": 49152
+    },
+    "STM32F101VE": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 524288,
+      "ramBytes": 49152
+    },
+    "STM32F101VF": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 786432,
+      "ramBytes": 81920
+    },
+    "STM32F101VG": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 1048576,
+      "ramBytes": 81920
+    },
+    "STM32F101ZC": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 262144,
+      "ramBytes": 32768
+    },
+    "STM32F101ZD": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 393216,
+      "ramBytes": 49152
+    },
+    "STM32F101ZE": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 524288,
+      "ramBytes": 49152
+    },
+    "STM32F101ZF": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 786432,
+      "ramBytes": 81920
+    },
+    "STM32F101ZG": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F101xx.svd",
+      "flashBytes": 1048576,
+      "ramBytes": 81920
+    },
+    "STM32F102C4": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F102xx.svd",
+      "flashBytes": 16384,
+      "ramBytes": 4096
+    },
+    "STM32F102C6": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F102xx.svd",
+      "flashBytes": 32768,
+      "ramBytes": 6144
+    },
+    "STM32F102C8": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F102xx.svd",
+      "flashBytes": 65536,
+      "ramBytes": 10240
+    },
+    "STM32F102CB": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F102xx.svd",
+      "flashBytes": 131072,
+      "ramBytes": 16384
+    },
+    "STM32F102R4": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F102xx.svd",
+      "flashBytes": 16384,
+      "ramBytes": 4096
+    },
+    "STM32F102R6": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F102xx.svd",
+      "flashBytes": 32768,
+      "ramBytes": 6144
+    },
+    "STM32F102R8": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F102xx.svd",
+      "flashBytes": 65536,
+      "ramBytes": 10240
+    },
+    "STM32F102RB": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F102xx.svd",
+      "flashBytes": 131072,
+      "ramBytes": 16384
+    },
+    "STM32F103C4": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 16384,
+      "ramBytes": 6144
+    },
+    "STM32F103C6": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 32768,
+      "ramBytes": 10240
+    },
+    "STM32F103C8": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 65536,
+      "ramBytes": 20480
+    },
+    "STM32F103CB": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 131072,
+      "ramBytes": 20480
+    },
+    "STM32F103R4": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 16384,
+      "ramBytes": 6144
+    },
+    "STM32F103R6": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 32768,
+      "ramBytes": 10240
+    },
+    "STM32F103R8": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 65536,
+      "ramBytes": 20480
+    },
+    "STM32F103RB": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 131072,
+      "ramBytes": 20480
+    },
+    "STM32F103RC": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 262144,
+      "ramBytes": 49152
+    },
+    "STM32F103RD": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 393216,
+      "ramBytes": 65536
+    },
+    "STM32F103RE": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 524288,
+      "ramBytes": 65536
+    },
+    "STM32F103RF": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 786432,
+      "ramBytes": 98304
+    },
+    "STM32F103RG": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 1048576,
+      "ramBytes": 98304
+    },
+    "STM32F103T4": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 16384,
+      "ramBytes": 6144
+    },
+    "STM32F103T6": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 32768,
+      "ramBytes": 10240
+    },
+    "STM32F103T8": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 65536,
+      "ramBytes": 20480
+    },
+    "STM32F103TB": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 131072,
+      "ramBytes": 20480
+    },
+    "STM32F103V8": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 65536,
+      "ramBytes": 20480
+    },
+    "STM32F103VB": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 131072,
+      "ramBytes": 20480
+    },
+    "STM32F103VC": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 262144,
+      "ramBytes": 49152
+    },
+    "STM32F103VD": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 393216,
+      "ramBytes": 65536
+    },
+    "STM32F103VE": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 524288,
+      "ramBytes": 65536
+    },
+    "STM32F103VF": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 786432,
+      "ramBytes": 98304
+    },
+    "STM32F103VG": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 1048576,
+      "ramBytes": 98304
+    },
+    "STM32F103ZC": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 262144,
+      "ramBytes": 49152
+    },
+    "STM32F103ZD": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 393216,
+      "ramBytes": 65536
+    },
+    "STM32F103ZE": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 524288,
+      "ramBytes": 65536
+    },
+    "STM32F103ZF": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 786432,
+      "ramBytes": 98304
+    },
+    "STM32F103ZG": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F103xx.svd",
+      "flashBytes": 1048576,
+      "ramBytes": 98304
+    },
+    "STM32F105R8": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F105xx.svd",
+      "flashBytes": 65536,
+      "ramBytes": 65536
+    },
+    "STM32F105RB": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F105xx.svd",
+      "flashBytes": 131072,
+      "ramBytes": 65536
+    },
+    "STM32F105RC": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F105xx.svd",
+      "flashBytes": 262144,
+      "ramBytes": 65536
+    },
+    "STM32F105V8": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F105xx.svd",
+      "flashBytes": 65536,
+      "ramBytes": 65536
+    },
+    "STM32F105VB": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F105xx.svd",
+      "flashBytes": 131072,
+      "ramBytes": 65536
+    },
+    "STM32F105VC": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F105xx.svd",
+      "flashBytes": 262144,
+      "ramBytes": 65536
+    },
+    "STM32F107RB": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F107xx.svd",
+      "flashBytes": 131072,
+      "ramBytes": 65536
+    },
+    "STM32F107RC": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F107xx.svd",
+      "flashBytes": 262144,
+      "ramBytes": 65536
+    },
+    "STM32F107VB": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F107xx.svd",
+      "flashBytes": 131072,
+      "ramBytes": 65536
+    },
+    "STM32F107VC": {
+      "pack": "1.0.5",
+      "svd": "SVD\\STM32F107xx.svd",
+      "flashBytes": 262144,
+      "ramBytes": 65536
+    },
+    "STM32F301C6": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F301x.svd",
+      "flashBytes": 32768,
+      "ramBytes": 12288
+    },
+    "STM32F301C8": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F301x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384
+    },
+    "STM32F301K6": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F301x.svd",
+      "flashBytes": 32768,
+      "ramBytes": 12288
+    },
+    "STM32F301K8": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F301x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384
+    },
+    "STM32F301R6": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F301x.svd",
+      "flashBytes": 32768,
+      "ramBytes": 12288
+    },
+    "STM32F301R8": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F301x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384
+    },
+    "STM32F302C6": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F302x.svd",
+      "flashBytes": 32768,
+      "ramBytes": 12288
+    },
+    "STM32F302C8": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F302x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384
+    },
+    "STM32F302CB": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F30x.svd",
+      "flashBytes": 131072,
+      "ramBytes": 24576
+    },
+    "STM32F302CC": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F30x.svd",
+      "flashBytes": 262144,
+      "ramBytes": 32768
+    },
+    "STM32F302K6": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F302x.svd",
+      "flashBytes": 32768,
+      "ramBytes": 12288
+    },
+    "STM32F302K8": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F302x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384
+    },
+    "STM32F302R6": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F302x.svd",
+      "flashBytes": 32768,
+      "ramBytes": 12288
+    },
+    "STM32F302R8": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F302x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384
+    },
+    "STM32F302RB": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F30x.svd",
+      "flashBytes": 131072,
+      "ramBytes": 24576
+    },
+    "STM32F302RC": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F30x.svd",
+      "flashBytes": 262144,
+      "ramBytes": 32768
+    },
+    "STM32F302RD": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F303xE.svd",
+      "flashBytes": 393216,
+      "ramBytes": 65536
+    },
+    "STM32F302RE": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F303xE.svd",
+      "flashBytes": 524288,
+      "ramBytes": 65536
+    },
+    "STM32F302VB": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F30x.svd",
+      "flashBytes": 131072,
+      "ramBytes": 24576
+    },
+    "STM32F302VC": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F30x.svd",
+      "flashBytes": 262144,
+      "ramBytes": 32768
+    },
+    "STM32F302VD": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F303xE.svd",
+      "flashBytes": 393216,
+      "ramBytes": 65536
+    },
+    "STM32F302VE": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F303xE.svd",
+      "flashBytes": 524288,
+      "ramBytes": 65536
+    },
+    "STM32F302ZD": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F303xE.svd",
+      "flashBytes": 393216,
+      "ramBytes": 65536
+    },
+    "STM32F302ZE": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F303xE.svd",
+      "flashBytes": 524288,
+      "ramBytes": 65536
+    },
+    "STM32F303C6": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F303x.svd",
+      "flashBytes": 32768,
+      "ramBytes": 12288
+    },
+    "STM32F303C8": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F303x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 12288
+    },
+    "STM32F303CB": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F30x.svd",
+      "flashBytes": 131072,
+      "ramBytes": 40960
+    },
+    "STM32F303CC": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F30x.svd",
+      "flashBytes": 262144,
+      "ramBytes": 49152
+    },
+    "STM32F303K6": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F303x.svd",
+      "flashBytes": 32768,
+      "ramBytes": 12288
+    },
+    "STM32F303K8": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F303x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 12288
+    },
+    "STM32F303R6": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F303x.svd",
+      "flashBytes": 32768,
+      "ramBytes": 12288
+    },
+    "STM32F303R8": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F303x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 12288
+    },
+    "STM32F303RB": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F30x.svd",
+      "flashBytes": 131072,
+      "ramBytes": 40960
+    },
+    "STM32F303RC": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F30x.svd",
+      "flashBytes": 262144,
+      "ramBytes": 49152
+    },
+    "STM32F303RD": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F303xE.svd",
+      "flashBytes": 393216,
+      "ramBytes": 65536
+    },
+    "STM32F303RE": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F303xE.svd",
+      "flashBytes": 524288,
+      "ramBytes": 65536
+    },
+    "STM32F303VB": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F30x.svd",
+      "flashBytes": 131072,
+      "ramBytes": 40960
+    },
+    "STM32F303VC": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F30x.svd",
+      "flashBytes": 262144,
+      "ramBytes": 49152
+    },
+    "STM32F303VD": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F303xE.svd",
+      "flashBytes": 393216,
+      "ramBytes": 65536
+    },
+    "STM32F303VE": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F303xE.svd",
+      "flashBytes": 524288,
+      "ramBytes": 65536
+    },
+    "STM32F303ZD": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F303xE.svd",
+      "flashBytes": 393216,
+      "ramBytes": 65536
+    },
+    "STM32F303ZE": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F303xE.svd",
+      "flashBytes": 524288,
+      "ramBytes": 65536
+    },
+    "STM32F318C8": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F301x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384
+    },
+    "STM32F318K8": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F301x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384
+    },
+    "STM32F328C8": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F301x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384
+    },
+    "STM32F334C4": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F334x.svd",
+      "flashBytes": 16384,
+      "ramBytes": 16384
+    },
+    "STM32F334C6": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F334x.svd",
+      "flashBytes": 32768,
+      "ramBytes": 16384
+    },
+    "STM32F334C8": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F334x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384
+    },
+    "STM32F334K4": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F334x.svd",
+      "flashBytes": 16384,
+      "ramBytes": 12288
+    },
+    "STM32F334K6": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F334x.svd",
+      "flashBytes": 32768,
+      "ramBytes": 16384
+    },
+    "STM32F334K8": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F334x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384
+    },
+    "STM32F334R6": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F334x.svd",
+      "flashBytes": 32768,
+      "ramBytes": 16384
+    },
+    "STM32F334R8": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F334x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384
+    },
+    "STM32F358CC": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F30x.svd",
+      "flashBytes": 262144,
+      "ramBytes": 40960
+    },
+    "STM32F358RC": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F30x.svd",
+      "flashBytes": 262144,
+      "ramBytes": 40960
+    },
+    "STM32F358VC": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F30x.svd",
+      "flashBytes": 262144,
+      "ramBytes": 40960
+    },
+    "STM32F373C8": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F37x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384
+    },
+    "STM32F373CB": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F37x.svd",
+      "flashBytes": 131072,
+      "ramBytes": 24576
+    },
+    "STM32F373CC": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F37x.svd",
+      "flashBytes": 262144,
+      "ramBytes": 32768
+    },
+    "STM32F373R8": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F37x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384
+    },
+    "STM32F373RB": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F37x.svd",
+      "flashBytes": 131072,
+      "ramBytes": 24576
+    },
+    "STM32F373RC": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F37x.svd",
+      "flashBytes": 262144,
+      "ramBytes": 32768
+    },
+    "STM32F373V8": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F37x.svd",
+      "flashBytes": 65536,
+      "ramBytes": 16384
+    },
+    "STM32F373VB": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F37x.svd",
+      "flashBytes": 131072,
+      "ramBytes": 24576
+    },
+    "STM32F373VC": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F37x.svd",
+      "flashBytes": 262144,
+      "ramBytes": 32768
+    },
+    "STM32F378CC": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F37x.svd",
+      "flashBytes": 262144,
+      "ramBytes": 32768
+    },
+    "STM32F378RC": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F37x.svd",
+      "flashBytes": 262144,
+      "ramBytes": 32768
+    },
+    "STM32F378VC": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F37x.svd",
+      "flashBytes": 262144,
+      "ramBytes": 32768
+    },
+    "STM32F398VE": {
+      "pack": "2.2.2",
+      "svd": "CMSIS/SVD/STM32F37x.svd",
+      "flashBytes": 524288,
+      "ramBytes": 65536
+    },
+    "STM32F401CB": {
+      "pack": "2.8.0",
+      "flashBytes": 131072,
+      "ramBytes": 65536
+    },
+    "STM32F401CC": {
+      "pack": "2.8.0",
+      "flashBytes": 262144,
+      "ramBytes": 65536
+    },
+    "STM32F401CD": {
+      "pack": "2.8.0",
+      "flashBytes": 393216,
+      "ramBytes": 98304
+    },
+    "STM32F401CE": {
+      "pack": "2.8.0",
+      "svd": "CMSIS/SVD/STM32F401xE.svd",
+      "flashBytes": 524288,
+      "ramBytes": 98304
+    },
+    "STM32F401RB": {
+      "pack": "2.8.0",
+      "flashBytes": 131072,
+      "ramBytes": 65536
+    },
+    "STM32F401RC": {
+      "pack": "2.8.0",
+      "flashBytes": 262144,
+      "ramBytes": 65536
+    },
+    "STM32F401RD": {
+      "pack": "2.8.0",
+      "flashBytes": 393216,
+      "ramBytes": 98304
+    },
+    "STM32F401RE": {
+      "pack": "2.8.0",
+      "svd": "CMSIS/SVD/STM32F401xE.svd",
+      "flashBytes": 524288,
+      "ramBytes": 98304
+    },
+    "STM32F401VB": {
+      "pack": "2.8.0",
+      "flashBytes": 131072,
+      "ramBytes": 65536
+    },
+    "STM32F401VC": {
+      "pack": "2.8.0",
+      "flashBytes": 262144,
+      "ramBytes": 65536
+    },
+    "STM32F401VD": {
+      "pack": "2.8.0",
+      "flashBytes": 393216,
+      "ramBytes": 98304
+    },
+    "STM32F401VE": {
+      "pack": "2.8.0",
+      "svd": "CMSIS/SVD/STM32F401xE.svd",
+      "flashBytes": 524288,
+      "ramBytes": 98304
+    },
+    "STM32F405OE": {
+      "pack": "2.8.0",
+      "flashBytes": 524288,
+      "ramBytes": 131072
+    },
+    "STM32F405OG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 131072
+    },
+    "STM32F405RG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 131072
+    },
+    "STM32F405VG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 131072
+    },
+    "STM32F405ZG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 131072
+    },
+    "STM32F407IE": {
+      "pack": "2.8.0",
+      "flashBytes": 524288,
+      "ramBytes": 131072
+    },
+    "STM32F407IG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 131072
+    },
+    "STM32F407VE": {
+      "pack": "2.8.0",
+      "flashBytes": 524288,
+      "ramBytes": 131072
+    },
+    "STM32F407VG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 131072
+    },
+    "STM32F407ZE": {
+      "pack": "2.8.0",
+      "flashBytes": 524288,
+      "ramBytes": 131072
+    },
+    "STM32F407ZG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 131072
+    },
+    "STM32F410C8": {
+      "pack": "2.8.0",
+      "flashBytes": 65536,
+      "ramBytes": 32768
+    },
+    "STM32F410CA": {
+      "pack": "2.8.0",
+      "flashBytes": 98304,
+      "ramBytes": 32768
+    },
+    "STM32F410CB": {
+      "pack": "2.8.0",
+      "flashBytes": 131072,
+      "ramBytes": 32768
+    },
+    "STM32F410R8": {
+      "pack": "2.8.0",
+      "flashBytes": 65536,
+      "ramBytes": 32768
+    },
+    "STM32F410RA": {
+      "pack": "2.8.0",
+      "flashBytes": 98304,
+      "ramBytes": 32768
+    },
+    "STM32F410RB": {
+      "pack": "2.8.0",
+      "flashBytes": 131072,
+      "ramBytes": 32768
+    },
+    "STM32F410T8": {
+      "pack": "2.8.0",
+      "flashBytes": 65536,
+      "ramBytes": 32768
+    },
+    "STM32F410TA": {
+      "pack": "2.8.0",
+      "flashBytes": 98304,
+      "ramBytes": 32768
+    },
+    "STM32F410TB": {
+      "pack": "2.8.0",
+      "flashBytes": 131072,
+      "ramBytes": 32768
+    },
+    "STM32F411CC": {
+      "pack": "2.8.0",
+      "flashBytes": 262144,
+      "ramBytes": 131072
+    },
+    "STM32F411CE": {
+      "pack": "2.8.0",
+      "flashBytes": 524288,
+      "ramBytes": 131072
+    },
+    "STM32F411RC": {
+      "pack": "2.8.0",
+      "flashBytes": 262144,
+      "ramBytes": 131072
+    },
+    "STM32F411RE": {
+      "pack": "2.8.0",
+      "flashBytes": 524288,
+      "ramBytes": 131072
+    },
+    "STM32F411VC": {
+      "pack": "2.8.0",
+      "flashBytes": 262144,
+      "ramBytes": 131072
+    },
+    "STM32F411VE": {
+      "pack": "2.8.0",
+      "flashBytes": 524288,
+      "ramBytes": 131072
+    },
+    "STM32F412CE": {
+      "pack": "2.17.1",
+      "flashBytes": 524288,
+      "ramBytes": 262144
+    },
+    "STM32F412CG": {
+      "pack": "2.17.1",
+      "flashBytes": 1048576,
+      "ramBytes": 262144
+    },
+    "STM32F412RE": {
+      "pack": "2.17.1",
+      "flashBytes": 524288,
+      "ramBytes": 262144
+    },
+    "STM32F412RG": {
+      "pack": "2.17.1",
+      "flashBytes": 1048576,
+      "ramBytes": 262144
+    },
+    "STM32F412VE": {
+      "pack": "2.17.1",
+      "flashBytes": 524288,
+      "ramBytes": 262144
+    },
+    "STM32F412VG": {
+      "pack": "2.17.1",
+      "flashBytes": 1048576,
+      "ramBytes": 262144
+    },
+    "STM32F412ZE": {
+      "pack": "2.17.1",
+      "flashBytes": 524288,
+      "ramBytes": 262144
+    },
+    "STM32F412ZG": {
+      "pack": "2.17.1",
+      "flashBytes": 1048576,
+      "ramBytes": 262144
+    },
+    "STM32F413CG": {
+      "pack": "2.17.1",
+      "flashBytes": 1048576,
+      "ramBytes": 327680
+    },
+    "STM32F413CH": {
+      "pack": "2.17.1",
+      "flashBytes": 1572864,
+      "ramBytes": 327680
+    },
+    "STM32F413MG": {
+      "pack": "2.17.1",
+      "flashBytes": 1048576,
+      "ramBytes": 327680
+    },
+    "STM32F413MH": {
+      "pack": "2.17.1",
+      "flashBytes": 1572864,
+      "ramBytes": 327680
+    },
+    "STM32F413RG": {
+      "pack": "2.17.1",
+      "flashBytes": 1048576,
+      "ramBytes": 327680
+    },
+    "STM32F413RH": {
+      "pack": "2.17.1",
+      "flashBytes": 1572864,
+      "ramBytes": 327680
+    },
+    "STM32F413VG": {
+      "pack": "2.17.1",
+      "flashBytes": 1048576,
+      "ramBytes": 327680
+    },
+    "STM32F413VH": {
+      "pack": "2.17.1",
+      "flashBytes": 1572864,
+      "ramBytes": 327680
+    },
+    "STM32F413ZG": {
+      "pack": "2.17.1",
+      "flashBytes": 1048576,
+      "ramBytes": 327680
+    },
+    "STM32F413ZH": {
+      "pack": "2.17.1",
+      "flashBytes": 1572864,
+      "ramBytes": 327680
+    },
+    "STM32F415OG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 131072
+    },
+    "STM32F415RG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 131072
+    },
+    "STM32F415VG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 131072
+    },
+    "STM32F415ZG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 131072
+    },
+    "STM32F417IE": {
+      "pack": "2.8.0",
+      "flashBytes": 524288,
+      "ramBytes": 131072
+    },
+    "STM32F417IG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 131072
+    },
+    "STM32F417VE": {
+      "pack": "2.8.0",
+      "flashBytes": 524288,
+      "ramBytes": 131072
+    },
+    "STM32F417VG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 131072
+    },
+    "STM32F417ZE": {
+      "pack": "2.8.0",
+      "flashBytes": 524288,
+      "ramBytes": 131072
+    },
+    "STM32F417ZG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 131072
+    },
+    "STM32F423CH": {
+      "pack": "2.17.1",
+      "flashBytes": 1572864,
+      "ramBytes": 327680
+    },
+    "STM32F423MH": {
+      "pack": "2.17.1",
+      "flashBytes": 1572864,
+      "ramBytes": 327680
+    },
+    "STM32F423RH": {
+      "pack": "2.17.1",
+      "flashBytes": 1572864,
+      "ramBytes": 327680
+    },
+    "STM32F423VH": {
+      "pack": "2.17.1",
+      "flashBytes": 1572864,
+      "ramBytes": 327680
+    },
+    "STM32F423ZH": {
+      "pack": "2.17.1",
+      "flashBytes": 1572864,
+      "ramBytes": 327680
+    },
+    "STM32F427AG": {
+      "pack": "2.17.1",
+      "flashBytes": 1048576,
+      "ramBytes": 196608
+    },
+    "STM32F427AI": {
+      "pack": "2.17.1",
+      "flashBytes": 2097152,
+      "ramBytes": 196608
+    },
+    "STM32F427IG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 196608
+    },
+    "STM32F427II": {
+      "pack": "2.8.0",
+      "flashBytes": 2097152,
+      "ramBytes": 196608
+    },
+    "STM32F427VG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 196608
+    },
+    "STM32F427VI": {
+      "pack": "2.8.0",
+      "flashBytes": 2097152,
+      "ramBytes": 196608
+    },
+    "STM32F427ZG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 196608
+    },
+    "STM32F427ZI": {
+      "pack": "2.8.0",
+      "flashBytes": 2097152,
+      "ramBytes": 196608
+    },
+    "STM32F429AG": {
+      "pack": "2.17.1",
+      "flashBytes": 1048576,
+      "ramBytes": 196608
+    },
+    "STM32F429AI": {
+      "pack": "2.17.1",
+      "flashBytes": 2097152,
+      "ramBytes": 196608
+    },
+    "STM32F429BE": {
+      "pack": "2.8.0",
+      "flashBytes": 524288,
+      "ramBytes": 196608
+    },
+    "STM32F429BG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 196608
+    },
+    "STM32F429BI": {
+      "pack": "2.8.0",
+      "flashBytes": 2097152,
+      "ramBytes": 196608
+    },
+    "STM32F429IE": {
+      "pack": "2.8.0",
+      "flashBytes": 524288,
+      "ramBytes": 196608
+    },
+    "STM32F429IG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 196608
+    },
+    "STM32F429II": {
+      "pack": "2.8.0",
+      "flashBytes": 2097152,
+      "ramBytes": 196608
+    },
+    "STM32F429NE": {
+      "pack": "2.8.0",
+      "flashBytes": 524288,
+      "ramBytes": 196608
+    },
+    "STM32F429NG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 196608
+    },
+    "STM32F429NI": {
+      "pack": "2.8.0",
+      "flashBytes": 2097152,
+      "ramBytes": 196608
+    },
+    "STM32F429VE": {
+      "pack": "2.8.0",
+      "flashBytes": 524288,
+      "ramBytes": 196608
+    },
+    "STM32F429VG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 196608
+    },
+    "STM32F429VI": {
+      "pack": "2.8.0",
+      "flashBytes": 2097152,
+      "ramBytes": 196608
+    },
+    "STM32F429ZE": {
+      "pack": "2.8.0",
+      "flashBytes": 524288,
+      "ramBytes": 196608
+    },
+    "STM32F429ZG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 196608
+    },
+    "STM32F429ZI": {
+      "pack": "2.8.0",
+      "flashBytes": 2097152,
+      "ramBytes": 196608
+    },
+    "STM32F437AI": {
+      "pack": "2.17.1",
+      "flashBytes": 2097152,
+      "ramBytes": 196608
+    },
+    "STM32F437IG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 196608
+    },
+    "STM32F437II": {
+      "pack": "2.8.0",
+      "flashBytes": 2097152,
+      "ramBytes": 196608
+    },
+    "STM32F437VG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 196608
+    },
+    "STM32F437VI": {
+      "pack": "2.8.0",
+      "flashBytes": 2097152,
+      "ramBytes": 196608
+    },
+    "STM32F437ZG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 196608
+    },
+    "STM32F437ZI": {
+      "pack": "2.8.0",
+      "flashBytes": 2097152,
+      "ramBytes": 196608
+    },
+    "STM32F439AI": {
+      "pack": "2.17.1",
+      "flashBytes": 2097152,
+      "ramBytes": 196608
+    },
+    "STM32F439BG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 196608
+    },
+    "STM32F439BI": {
+      "pack": "2.8.0",
+      "flashBytes": 2097152,
+      "ramBytes": 196608
+    },
+    "STM32F439IG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 196608
+    },
+    "STM32F439II": {
+      "pack": "2.8.0",
+      "flashBytes": 2097152,
+      "ramBytes": 196608
+    },
+    "STM32F439NG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 196608
+    },
+    "STM32F439NI": {
+      "pack": "2.8.0",
+      "flashBytes": 2097152,
+      "ramBytes": 196608
+    },
+    "STM32F439VG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 196608
+    },
+    "STM32F439VI": {
+      "pack": "2.8.0",
+      "flashBytes": 2097152,
+      "ramBytes": 196608
+    },
+    "STM32F439ZG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 196608
+    },
+    "STM32F439ZI": {
+      "pack": "2.8.0",
+      "flashBytes": 2097152,
+      "ramBytes": 196608
+    },
+    "STM32F446MC": {
+      "pack": "2.8.0",
+      "flashBytes": 262144,
+      "ramBytes": 131072
+    },
+    "STM32F446ME": {
+      "pack": "2.8.0",
+      "flashBytes": 524288,
+      "ramBytes": 131072
+    },
+    "STM32F446RC": {
+      "pack": "2.8.0",
+      "flashBytes": 262144,
+      "ramBytes": 131072
+    },
+    "STM32F446RE": {
+      "pack": "2.8.0",
+      "flashBytes": 524288,
+      "ramBytes": 131072
+    },
+    "STM32F446VC": {
+      "pack": "2.8.0",
+      "flashBytes": 262144,
+      "ramBytes": 131072
+    },
+    "STM32F446VE": {
+      "pack": "2.8.0",
+      "flashBytes": 524288,
+      "ramBytes": 131072
+    },
+    "STM32F446ZC": {
+      "pack": "2.8.0",
+      "flashBytes": 262144,
+      "ramBytes": 131072
+    },
+    "STM32F446ZE": {
+      "pack": "2.8.0",
+      "flashBytes": 524288,
+      "ramBytes": 131072
+    },
+    "STM32F469AE": {
+      "pack": "2.8.0",
+      "flashBytes": 524288,
+      "ramBytes": 327680
+    },
+    "STM32F469AG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 327680
+    },
+    "STM32F469AI": {
+      "pack": "2.8.0",
+      "flashBytes": 2097152,
+      "ramBytes": 327680
+    },
+    "STM32F469BE": {
+      "pack": "2.8.0",
+      "flashBytes": 524288,
+      "ramBytes": 327680
+    },
+    "STM32F469BG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 327680
+    },
+    "STM32F469BI": {
+      "pack": "2.8.0",
+      "flashBytes": 2097152,
+      "ramBytes": 327680
+    },
+    "STM32F469IE": {
+      "pack": "2.8.0",
+      "flashBytes": 524288,
+      "ramBytes": 327680
+    },
+    "STM32F469IG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 327680
+    },
+    "STM32F469II": {
+      "pack": "2.8.0",
+      "flashBytes": 2097152,
+      "ramBytes": 327680
+    },
+    "STM32F469NE": {
+      "pack": "2.8.0",
+      "flashBytes": 524288,
+      "ramBytes": 327680
+    },
+    "STM32F469NG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 327680
+    },
+    "STM32F469NI": {
+      "pack": "2.8.0",
+      "flashBytes": 2097152,
+      "ramBytes": 327680
+    },
+    "STM32F469VE": {
+      "pack": "2.17.1",
+      "flashBytes": 524288,
+      "ramBytes": 327680
+    },
+    "STM32F469VG": {
+      "pack": "2.17.1",
+      "flashBytes": 1048576,
+      "ramBytes": 327680
+    },
+    "STM32F469VI": {
+      "pack": "2.17.1",
+      "flashBytes": 2097152,
+      "ramBytes": 327680
+    },
+    "STM32F469ZE": {
+      "pack": "2.17.1",
+      "flashBytes": 524288,
+      "ramBytes": 327680
+    },
+    "STM32F469ZG": {
+      "pack": "2.17.1",
+      "flashBytes": 1048576,
+      "ramBytes": 327680
+    },
+    "STM32F469ZI": {
+      "pack": "2.17.1",
+      "flashBytes": 2097152,
+      "ramBytes": 327680
+    },
+    "STM32F479AG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 327680
+    },
+    "STM32F479AI": {
+      "pack": "2.8.0",
+      "flashBytes": 2097152,
+      "ramBytes": 327680
+    },
+    "STM32F479BG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 327680
+    },
+    "STM32F479BI": {
+      "pack": "2.8.0",
+      "flashBytes": 2097152,
+      "ramBytes": 327680
+    },
+    "STM32F479IG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 327680
+    },
+    "STM32F479II": {
+      "pack": "2.8.0",
+      "flashBytes": 2097152,
+      "ramBytes": 327680
+    },
+    "STM32F479NG": {
+      "pack": "2.8.0",
+      "flashBytes": 1048576,
+      "ramBytes": 327680
+    },
+    "STM32F479NI": {
+      "pack": "2.8.0",
+      "flashBytes": 2097152,
+      "ramBytes": 327680
+    },
+    "STM32F479VG": {
+      "pack": "2.17.1",
+      "flashBytes": 1048576,
+      "ramBytes": 327680
+    },
+    "STM32F479VI": {
+      "pack": "2.17.1",
+      "flashBytes": 2097152,
+      "ramBytes": 327680
+    },
+    "STM32F479ZG": {
+      "pack": "2.17.1",
+      "flashBytes": 1048576,
+      "ramBytes": 327680
+    },
+    "STM32F479ZI": {
+      "pack": "2.17.1",
+      "flashBytes": 2097152,
+      "ramBytes": 327680
+    },
+    "STM32G431C6Tx": {
+      "pack": "2.1.0"
+    },
+    "STM32G431C6Ux": {
+      "pack": "2.1.0"
+    },
+    "STM32G431C8Tx": {
+      "pack": "2.1.0"
+    },
+    "STM32G431C8Ux": {
+      "pack": "2.1.0"
+    },
+    "STM32G431CBTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G431CBUx": {
+      "pack": "2.1.0"
+    },
+    "STM32G431CBYx": {
+      "pack": "2.1.0"
+    },
+    "STM32G431K6Tx": {
+      "pack": "2.1.0"
+    },
+    "STM32G431K6Ux": {
+      "pack": "2.1.0"
+    },
+    "STM32G431K8Tx": {
+      "pack": "2.1.0"
+    },
+    "STM32G431K8Ux": {
+      "pack": "2.1.0"
+    },
+    "STM32G431KBTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G431KBUx": {
+      "pack": "2.1.0"
+    },
+    "STM32G431M6Tx": {
+      "pack": "2.1.0"
+    },
+    "STM32G431M8Tx": {
+      "pack": "2.1.0"
+    },
+    "STM32G431MBTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G431R6Ix": {
+      "pack": "2.1.0"
+    },
+    "STM32G431R6Tx": {
+      "pack": "2.1.0"
+    },
+    "STM32G431R8Ix": {
+      "pack": "2.1.0"
+    },
+    "STM32G431R8Tx": {
+      "pack": "2.1.0"
+    },
+    "STM32G431RBIx": {
+      "pack": "2.1.0"
+    },
+    "STM32G431RBTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G431V6Tx": {
+      "pack": "2.1.0"
+    },
+    "STM32G431V8Tx": {
+      "pack": "2.1.0"
+    },
+    "STM32G431VBTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G441CBTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G441CBUx": {
+      "pack": "2.1.0"
+    },
+    "STM32G441CBYx": {
+      "pack": "2.1.0"
+    },
+    "STM32G441KBTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G441KBUx": {
+      "pack": "2.1.0"
+    },
+    "STM32G441MBTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G441RBIx": {
+      "pack": "2.1.0"
+    },
+    "STM32G441RBTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G441VBTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G471CCTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G471CCUx": {
+      "pack": "2.1.0"
+    },
+    "STM32G471CETx": {
+      "pack": "2.1.0"
+    },
+    "STM32G471CEUx": {
+      "pack": "2.1.0"
+    },
+    "STM32G471MCTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G471METx": {
+      "pack": "2.1.0"
+    },
+    "STM32G471MEYx": {
+      "pack": "2.1.0"
+    },
+    "STM32G471QCTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G471QETx": {
+      "pack": "2.1.0"
+    },
+    "STM32G471RCTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G471RETx": {
+      "pack": "2.1.0"
+    },
+    "STM32G471VCHx": {
+      "pack": "2.1.0"
+    },
+    "STM32G471VCIx": {
+      "pack": "2.1.0"
+    },
+    "STM32G471VCTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G471VEHx": {
+      "pack": "2.1.0"
+    },
+    "STM32G471VEIx": {
+      "pack": "2.1.0"
+    },
+    "STM32G471VETx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473CBTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473CBUx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473CCTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473CCUx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473CETx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473CEUx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473MBTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473MCTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473METx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473MEYx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473PBIx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473PCIx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473PEIx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473QBTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473QCTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473QETx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473RBTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473RCTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473RETx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473VBHx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473VBIx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473VBTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473VCHx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473VCIx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473VCTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473VEHx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473VEIx": {
+      "pack": "2.1.0"
+    },
+    "STM32G473VETx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474CBTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474CBUx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474CCTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474CCUx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474CETx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474CEUx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474MBTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474MCTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474METx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474MEYx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474PBIx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474PCIx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474PEIx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474QBTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474QCTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474QETx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474RBTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474RCTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474RETx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474VBHx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474VBIx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474VBTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474VCHx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474VCIx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474VCTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474VEHx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474VEIx": {
+      "pack": "2.1.0"
+    },
+    "STM32G474VETx": {
+      "pack": "2.1.0"
+    },
+    "STM32G483CETx": {
+      "pack": "2.1.0"
+    },
+    "STM32G483CEUx": {
+      "pack": "2.1.0"
+    },
+    "STM32G483METx": {
+      "pack": "2.1.0"
+    },
+    "STM32G483MEYx": {
+      "pack": "2.1.0"
+    },
+    "STM32G483PEIx": {
+      "pack": "2.1.0"
+    },
+    "STM32G483QETx": {
+      "pack": "2.1.0"
+    },
+    "STM32G483RETx": {
+      "pack": "2.1.0"
+    },
+    "STM32G483VEHx": {
+      "pack": "2.1.0"
+    },
+    "STM32G483VEIx": {
+      "pack": "2.1.0"
+    },
+    "STM32G483VETx": {
+      "pack": "2.1.0"
+    },
+    "STM32G484CETx": {
+      "pack": "2.1.0"
+    },
+    "STM32G484CEUx": {
+      "pack": "2.1.0"
+    },
+    "STM32G484METx": {
+      "pack": "2.1.0"
+    },
+    "STM32G484MEYx": {
+      "pack": "2.1.0"
+    },
+    "STM32G484PEIx": {
+      "pack": "2.1.0"
+    },
+    "STM32G484QETx": {
+      "pack": "2.1.0"
+    },
+    "STM32G484RETx": {
+      "pack": "2.1.0"
+    },
+    "STM32G484VEHx": {
+      "pack": "2.1.0"
+    },
+    "STM32G484VEIx": {
+      "pack": "2.1.0"
+    },
+    "STM32G484VETx": {
+      "pack": "2.1.0"
+    },
+    "STM32G491CCTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G491CCUx": {
+      "pack": "2.1.0"
+    },
+    "STM32G491CETx": {
+      "pack": "2.1.0"
+    },
+    "STM32G491CEUx": {
+      "pack": "2.1.0"
+    },
+    "STM32G491KCUx": {
+      "pack": "2.1.0"
+    },
+    "STM32G491KEUx": {
+      "pack": "2.1.0"
+    },
+    "STM32G491MCSx": {
+      "pack": "2.1.0"
+    },
+    "STM32G491MCTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G491MESx": {
+      "pack": "2.1.0"
+    },
+    "STM32G491METx": {
+      "pack": "2.1.0"
+    },
+    "STM32G491RCIx": {
+      "pack": "2.1.0"
+    },
+    "STM32G491RCTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G491REIx": {
+      "pack": "2.1.0"
+    },
+    "STM32G491RETx": {
+      "pack": "2.1.0"
+    },
+    "STM32G491REYx": {
+      "pack": "2.1.0"
+    },
+    "STM32G491VCTx": {
+      "pack": "2.1.0"
+    },
+    "STM32G491VETx": {
+      "pack": "2.1.0"
+    },
+    "STM32G4A1CETx": {
+      "pack": "2.1.0"
+    },
+    "STM32G4A1CEUx": {
+      "pack": "2.1.0"
+    },
+    "STM32G4A1KEUx": {
+      "pack": "2.1.0"
+    },
+    "STM32G4A1MESx": {
+      "pack": "2.1.0"
+    },
+    "STM32G4A1METx": {
+      "pack": "2.1.0"
+    },
+    "STM32G4A1REIx": {
+      "pack": "2.1.0"
+    },
+    "STM32G4A1RETx": {
+      "pack": "2.1.0"
+    },
+    "STM32G4A1REYx": {
+      "pack": "2.1.0"
+    },
+    "STM32G4A1VETx": {
+      "pack": "2.1.0"
+    },
+    "STM32GBK1CBTx": {
+      "pack": "1.5.0"
+    }
+  }
+}

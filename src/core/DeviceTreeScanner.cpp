@@ -207,14 +207,17 @@ QVector<PeripheralStatus> DeviceTreeScanner::scan(
 
     // The clock-enable registers are shared by many peripherals: read each once.
     QHash<QString, quint32> clockRegisterValues;
+    QHash<QString, quint32> clockRegisterAddress;
     if (probe.isConnected()) {
         for (auto it = clocks.constBegin(); it != clocks.constEnd(); ++it) {
             const ClockBit &bit = it.value();
             if (clockRegisterValues.contains(bit.registerName))
                 continue;
             quint32 value = 0;
-            if (probe.readU32(bit.address, &value))
+            if (probe.readU32(bit.address, &value)) {
                 clockRegisterValues.insert(bit.registerName, value);
+                clockRegisterAddress.insert(bit.registerName, bit.address);
+            }
         }
     }
 

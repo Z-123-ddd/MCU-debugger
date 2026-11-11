@@ -63,6 +63,17 @@ QStringList ResourcePaths::deviceIdSupplements()
     return files;
 }
 
+QString ResourcePaths::learnedDeviceIdPath()
+{
+    // dataRoots() already lists AppData, so this file is picked up by
+    // deviceIdSupplements() on the next start without extra wiring.
+    const QString dir = QDir::cleanPath(
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+        + QStringLiteral("/data/device_ids.d"));
+    QDir().mkpath(dir);
+    return dir + QStringLiteral("/learned.json");
+}
+
 QString ResourcePaths::packageDirectory()
 {
     const QString configured = AppSettings::packageDir();

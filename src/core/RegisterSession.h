@@ -55,6 +55,15 @@ public:
     void requestPeripheralRead(const SvdPeripheral &peripheral);
     void requestRegisterRead(const SvdPeripheral &peripheral, const SvdRegister &reg);
 
+    /// Read a word at an absolute address that is *not* part of the SVD model
+    /// (SCB fault registers live outside any peripheral window). The value is
+    /// cached under  address, so valueFor() works afterwards.
+    void requestRawRead(quint32 address);
+
+    /// Write a word at an absolute address outside the SVD model (used to clear
+    /// latched fault flags by writing them back).
+    void writeRawWord(quint32 address, quint32 value);
+
     /// Write a register value (4/2/1 byte depending on size).
     void writeRegister(const SvdPeripheral &peripheral, const SvdRegister &reg, quint32 value);
     /// Read-modify-write a single field.
@@ -86,6 +95,8 @@ private slots:
 private:
     quint32 resetValueFor(const SvdRegister &reg) const;
     void rememberWrite(quint32 address, quint32 oldValue, bool oldValid);
+    /// Record a failed read, marking the session disconnected when the link is gone.
+    void noteReadFailure(quint32 address, const QString &error);
 
     struct PendingRead
     {
@@ -107,6 +118,13 @@ private:
     SvdDevice m_device;
     QHash<quint32, RegisterValue> m_values;
     QHash<quint64, PendingRead> m_pendingReads;
+    /// Register addresses sorted ascending, so a completed window read only has
+    /// to look at the registers it actually covers.
+    ///
+    /// The old walk scanned every register of every peripheral for *each*
+    /// completion (1455 on N32H473CE x a dozen reads per poll).
+    QVector<QPair<quint32, const SvdRegister *>> m_registerIndex;
+    void rebuildRegisterIndex();
     QVector<WriteRecord> m_history;
     bool m_connected = false;
 };

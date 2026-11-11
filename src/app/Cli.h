@@ -15,6 +15,10 @@ struct Options
 {
     bool gui = true;
     bool selftest = false;
+    /// --bench: time the per-poll refresh path (no hardware needed)
+    bool bench = false;
+    /// --verbose: also log the per-step details (now DEBUG level).
+    bool verbose = false;
     bool probeInfo = false;
     bool printHelp = false;
     bool printVersion = false;
@@ -45,6 +49,9 @@ QString helpText();
 
 /// `--selftest`: parse the SVD, run consistency checks, optionally render PNGs.
 int runSelftest(const Options &options);
+
+/// Time the GUI refresh path per poll; prints ms per stage.
+int runBench(const Options &options);
 
 /// `--probe-info`: load the J-Link DLL, print version/firmware/SN, try to connect.
 int runProbeInfo(const Options &options);

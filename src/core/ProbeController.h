@@ -2,6 +2,7 @@
 
 #include "core/DeviceIdentifier.h"
 #include "core/IProbe.h"
+#include "core/RttClient.h"
 #include "core/DeviceTreeScanner.h"
 #include "core/JLinkGdbProbe.h"
 #include "core/ProbeRsProbe.h"
@@ -39,6 +40,8 @@ public:
     void doSelectChip(const QString &chipName);
     void doExec(const QString &command);
     void doListProbes();
+    /// Locate the SEGGER RTT control block on the worker thread.
+    void doFindRtt(quint32 hintAddress, quint32 ramStart, quint32 ramSize);
     void doValidateChip(const QString &chipName);
     void doScanDeviceTree(const QString &svdPath);
 
@@ -46,6 +49,13 @@ signals:
     void opened(bool ok, const QString &error, const mrd::ProbeInfo &info);
     void closed();
     void connectFinished(bool ok, const QString &error, const mrd::ProbeInfo &info);
+
+    /// Identification already performed while attaching (auto mode).
+    ///
+    /// doConnect() has to identify the part anyway, in order to re-attach with the
+    /// right device name. Emitting that result lets the UI skip a second, identical
+    /// identify, which otherwise doubles the connect log and the library scans.
+    void earlyIdentified(bool ok, const QString &error, const mrd::IdentificationResult &result);
     void identifyFinished(bool ok, const QString &error, const mrd::IdentificationResult &result);
     void readFinished(quint64 requestId, quint32 address, const QByteArray &data, bool ok, const QString &error);
     void writeFinished(quint64 requestId, quint32 address, bool ok, const QString &error);
@@ -53,6 +63,7 @@ signals:
     void probesListed(const QStringList &serials, const QString &error);
     void chipValidated(const QString &chipName, bool ok, const QString &message);
     void deviceTreeScanned(const QVector<mrd::PeripheralStatus> &statuses, const QString &error);
+    void rttLocated(const mrd::RttControlBlock &block, const QString &error);
 
 private:
     SvdLibrary &library();
@@ -97,11 +108,16 @@ public slots:
     void requestValidateChip(const QString &chipName);
     /// Walk every SVD peripheral through the probe to build the real device tree.
     void requestScanDeviceTree(const QString &svdPath);
+    /// Find the RTT control block (worker thread; result via rttLocated).
+    void requestFindRtt(quint32 hintAddress, quint32 ramStart, quint32 ramSize);
 
 signals:
     void opened(bool ok, const QString &error, const mrd::ProbeInfo &info);
     void closed();
     void connectFinished(bool ok, const QString &error, const mrd::ProbeInfo &info);
+
+    /// Identification already done while attaching (see ProbeWorker::earlyIdentified).
+    void earlyIdentified(bool ok, const QString &error, const mrd::IdentificationResult &result);
     void identifyFinished(bool ok, const QString &error, const mrd::IdentificationResult &result);
     void readFinished(quint64 requestId, quint32 address, const QByteArray &data, bool ok, const QString &error);
     void writeFinished(quint64 requestId, quint32 address, bool ok, const QString &error);
@@ -109,6 +125,8 @@ signals:
     void probesListed(const QStringList &serials, const QString &error);
     void chipValidated(const QString &chipName, bool ok, const QString &message);
     void deviceTreeScanned(const QVector<mrd::PeripheralStatus> &statuses, const QString &error);
+    /// Result of requestFindRtt: the control block, or an empty one plus an error.
+    void rttLocated(const mrd::RttControlBlock &block, const QString &error);
 
 private:
     template <typename Fn>

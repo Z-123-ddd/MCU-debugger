@@ -1,14 +1,13 @@
 #include "ui/PeripheralTree.h"
 
 #include "core/HexUtil.h"
-
-#include "core/HexUtil.h"
 #include "ui/Theme.h"
 
 #include <QComboBox>
 #include <QFont>
 #include <QHeaderView>
 #include <QLineEdit>
+#include <QSignalBlocker>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
@@ -18,6 +17,7 @@ namespace {
 constexpr int kColumnName = 0;
 constexpr int kColumnBase = 1;
 constexpr int kColumnState = 2;
+constexpr int kColumnLive = 3;
 } // namespace
 
 PeripheralTree::PeripheralTree(QWidget *parent)
@@ -46,8 +46,12 @@ PeripheralTree::PeripheralTree(QWidget *parent)
     });
 
     m_tree = new QTreeWidget(this);
-    m_tree->setColumnCount(3);
-    m_tree->setHeaderLabels({QStringLiteral("外设"), QStringLiteral("基地址"), QStringLiteral("时钟")});
+    m_tree->setColumnCount(4);
+    m_tree->setHeaderLabels({QStringLiteral("外设"), QStringLiteral("基地址"),
+                             QStringLiteral("时钟"), QStringLiteral("实时")});
+    m_tree->header()->setSectionResizeMode(kColumnLive, QHeaderView::ResizeToContents);
+    m_tree->setToolTip(QStringLiteral("“实时”列显示外设的活数据，例如定时器 CNT 计数值；"
+                                      "它随轮询刷新，可用来判断外设是否真的在跑"));
     m_tree->header()->setSectionResizeMode(kColumnName, QHeaderView::Stretch);
     m_tree->header()->setSectionResizeMode(kColumnBase, QHeaderView::ResizeToContents);
     m_tree->header()->setSectionResizeMode(kColumnState, QHeaderView::ResizeToContents);
@@ -75,6 +79,7 @@ void PeripheralTree::showWaiting(const QString &message)
     m_waitingMessage = message;
     m_selected.clear();
     m_statuses.clear(); // stale device-tree data must not outlive the connection
+    m_rows.clear();     // live values are stale too
     rebuild();
 }
 
@@ -83,8 +88,38 @@ void PeripheralTree::clear()
     m_groups.clear();
     m_selected.clear();
     m_statuses.clear();
+    m_rows.clear();
     m_waiting = false;
     m_tree->clear();
+}
+
+void PeripheralTree::setLiveValue(const QString &peripheralName, const QString &text)
+{
+    const auto it = m_rows.constFind(peripheralName);
+    if (it == m_rows.constEnd() || !it.value())
+        return;
+    QTreeWidgetItem *item = it.value();
+    if (item->text(kColumnLive) == text)
+        return; // avoid needless repaints on every poll
+    item->setText(kColumnLive, text);
+    if (!text.isEmpty())
+        item->setForeground(kColumnLive, Theme::current().accent);
+}
+
+void PeripheralTree::setLiveToolTip(const QString &peripheralName, const QString &text)
+{
+    const auto it = m_rows.constFind(peripheralName);
+    if (it == m_rows.constEnd() || !it.value())
+        return;
+    it.value()->setToolTip(kColumnLive, text);
+}
+
+void PeripheralTree::clearLiveValues()
+{
+    for (auto it = m_rows.constBegin(); it != m_rows.constEnd(); ++it) {
+        if (it.value())
+            it.value()->setText(kColumnLive, QString());
+    }
 }
 
 void PeripheralTree::setStatuses(const QVector<PeripheralStatus> &statuses)
@@ -99,6 +134,28 @@ void PeripheralTree::setStatuses(const QVector<PeripheralStatus> &statuses)
         if (status.clockKnown && status.clockEnabled)
             ++m_counts.clocked;
     }
+
+    // The SVD describes the die, not this part: switch to "only what the target
+    // confirmed" as soon as the read back produced usable answers. If the probe
+    // proved nothing (RCC unreadable, target unresponsive) stay on "show all" so
+    // the tree does not silently go blank.
+    if (m_counts.onChip > 0) {
+        m_filterMode = Filter::OnChip;
+        if (m_stateFilter) {
+            QSignalBlocker blocker(m_stateFilter);
+            const int index = m_stateFilter->findData(int(Filter::OnChip));
+            if (index >= 0)
+                m_stateFilter->setCurrentIndex(index);
+        }
+    } else {
+        m_filterMode = Filter::All;
+        if (m_stateFilter) {
+            QSignalBlocker blocker(m_stateFilter);
+            const int index = m_stateFilter->findData(int(Filter::All));
+            if (index >= 0)
+                m_stateFilter->setCurrentIndex(index);
+        }
+    }
     rebuild();
 }
 
@@ -106,6 +163,7 @@ void PeripheralTree::rebuild()
 {
     m_updating = true;
     m_tree->clear();
+    m_rows.clear();
 
     // Before a target is connected the list is parked, mirroring the package view:
     // showing the whole SVD family would imply this part really has all of it.
@@ -144,6 +202,17 @@ void PeripheralTree::rebuild()
                 if (status.unbonded())
                     continue;
 
+                // Static vendor judgement: the SVD covers the die/family, so it
+                // lists blocks this model lacks (SPI5 on a 48-pin N32H473CE).
+                // In "show all" they still appear, marked and greyed, so the user
+                // can see what was dropped and why.
+                // Default view: hide what the vendor says this model lacks, and
+                // also anything the live probe proved absent (bus rejected with
+                // the clock running) -- both mean "not usable on this part".
+                if (m_filterMode == Filter::OnChip
+                    && (!status.exists || status.reachability == PeripheralStatus::Missing))
+                    continue;
+
                 if (m_filterMode == Filter::OnChip && !status.onChip())
                     continue;
                 if (m_filterMode == Filter::Clocked && !(status.clockKnown && status.clockEnabled))
@@ -177,6 +246,7 @@ void PeripheralTree::rebuild()
 
         for (const auto *peripheral : visible) {
             auto *item = new QTreeWidgetItem(groupItem);
+            m_rows.insert(peripheral->name, item);
             item->setText(kColumnName, peripheral->name);
             item->setText(kColumnBase, hexAddr(peripheral->baseAddress));
             item->setData(kColumnName, Qt::UserRole, peripheral->name);
@@ -205,6 +275,16 @@ void PeripheralTree::rebuild()
                     tip += QStringLiteral("\n时钟门控: SVD 未提供");
                 }
                 item->setText(kColumnState, clockText);
+
+                if (!status.exists) {
+                    item->setText(kColumnName,
+                                  QStringLiteral("%1  (本型号不具备)").arg(peripheral->name));
+                    item->setForeground(kColumnName, palette.textDim);
+                    tip += QStringLiteral("\n静态判定: %1")
+                               .arg(status.absenceReason.isEmpty()
+                                        ? QStringLiteral("厂商能力清单显示本型号无此实例")
+                                        : status.absenceReason);
+                }
 
                 switch (status.reachability) {
                 case PeripheralStatus::Readable:

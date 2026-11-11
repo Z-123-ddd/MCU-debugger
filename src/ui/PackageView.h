@@ -1,6 +1,9 @@
 #pragma once
 
+#include "core/GpioCodec.h"
+
 #include <QHash>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -60,6 +63,12 @@ struct PackageDescription
     QHash<QString, QVector<int>> gpioPorts() const;
     /// Pins bonded to a dedicated function only (no ordinary GPIO use).
     QVector<PackagePin> dedicatedPins() const;
+    /// Instance -> the peripheral signals this package wires up.
+    ///
+    /// "SPI1" -> {"NSS","SCK","MISO","MOSI"}. Built from the pin table's function
+    /// names, so an instance missing a mandatory signal here cannot be used on
+    /// this package (e.g. SPI5 has no MISO pin on the 48-pin part).
+    QHash<QString, QSet<QString>> bondedSignals() const;
     /// How many pins of  portName this package bonds out (0 = not available).
     int bondedPinCount(const QString &portName) const;
     static PackageDescription loadFromFile(const QString &path, QString *error = nullptr);
@@ -93,7 +102,19 @@ public:
 
     /// Load every `*.json` in \a directory; falls back to an embedded map.
     void loadPackages(const QString &directory);
-    bool setPackage(const QString &packageName);
+    /// Select a package by its *table key* (see descriptionKey) -- the same
+    /// package name exists for several families, so the key includes the chip.
+    bool setPackage(const QString &key);
+    /// Does this table describe  part?
+    ///
+    /// Tables are generated per datasheet, and one datasheet covers a series
+    /// group: `N32G455.pdf` documents N32G451/452/455/457 and is stored with
+    /// `chip: "N32G45x"`. The trailing `x` is therefore a wildcard, and a plain
+    /// prefix match handles the rest ("N32H473CE" -> "N32H47x" -> "N32H47").
+    static bool matchesPart(const QString &tableChip, const QString &part);
+
+    /// Stable identity of a package table: "<chip>/<package>".
+    static QString descriptionKey(const PackageDescription &description);
 
     /// Inject a package that was not loaded from disk (e.g. synthesized).
     void adoptPackage(const PackageDescription &description);
@@ -108,6 +129,13 @@ public:
     QVector<PackageDescription> descriptions() const { return m_packages.values().toVector(); }
 
     void setLivePinState(const QString &portName, int bit, const QString &mode, bool high, bool known);
+
+    /// Apply a whole port's live state with a single repaint.
+    ///
+    /// setLivePinState() calls update() each time, so feeding a 16-pin port asked
+    /// for 16 repaints per poll; this batches them into one.
+    void setLivePort(const QString &portName, const QVector<GpioPin> &pins, bool known);
+
     void clearLiveState();
 
     /// Chip name shown in the package body.
@@ -135,6 +163,9 @@ private:
     void paintPin(QPainter &painter, const PackagePin &pin, const PinRect &geometry);
     QColor colorFor(const PackagePin &pin) const;
 
+    /// "<chip>/<package>" -> description. The chip is part of the key on purpose:
+    /// LQFP48 exists for N32G412, N32G455 and N32H473 alike, and keying by the
+    /// package name alone made them overwrite each other.
     QHash<QString, PackageDescription> m_packages;
     QString m_current;
     QString m_waitingMessage = QStringLiteral("连接目标后自动识别并渲染引脚布局");
@@ -158,11 +189,17 @@ public:
     PackageView *view() const { return m_view; }
     void setPackages(const QStringList &names);
 
-    /// Draw the pinout for the chip J-Link just identified.
-    /// Prefers a real data/packages JSON; otherwise synthesizes the grid from the
-    /// given IO / pin counts. Returns false when there is nothing to draw.
+    /// Draw the pinout for \a chip.
+    ///
+    /// Prefers a real `data/packages` JSON; otherwise synthesizes the grid from the
+    /// given IO / pin counts. \a packageChoices lists the packages that remain
+    /// possible when the family is known but the exact order code is not (same
+    /// flash/RAM, different package): those are offered in the selector instead of
+    /// guessing one, so the user picks from a list rather than typing a part
+    /// number. Returns false when there is nothing to draw.
     bool renderForChip(const QString &chip, int ioCount, int pinCount,
-                       const QString &packageHint = QString());
+                       const QString &packageHint = QString(),
+                       const QStringList &packageChoices = {});
 
     /// Pre-identification / disconnected state.
     void showWaiting(const QString &reason);

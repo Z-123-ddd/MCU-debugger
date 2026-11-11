@@ -37,7 +37,18 @@ public:
     static int speedKHz();
     static void setSpeedKHz(int speed);
 
-    static QString chipName(); ///< last used probe-rs chip name (e.g. STM32F103C8)
+    /// Explicitly chosen device name; empty means "identify from DBGMCU_IDCODE".
+    ///
+    /// It used to hold the last *detected* part as well, which turned every new
+    /// connection into a manual override for the previous board.
+    static QString chipName();
+
+    /// One-shot migration for the setting above.
+    ///
+    /// Builds up to 1.1.1.0 stored the auto-detected part here, so upgrading users
+    /// would keep seeing (and connecting as) their previous chip. Clearing it once
+    /// restores "auto" as the default without touching later manual choices.
+    static void migrateChipNameSetting();
     static void setChipName(const QString &name);
 
     /// Device/SVD binding remembered per J-Link serial number.

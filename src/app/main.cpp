@@ -58,7 +58,8 @@ int main(int argc, char *argv[])
 {
     const mrd::cli::Options options = mrd::cli::parse(argc, argv);
 
-    if (options.printHelp || options.printVersion || options.selftest || options.probeInfo)
+    if (options.printHelp || options.printVersion || options.selftest || options.probeInfo
+        || options.bench)
         attachParentConsole();
 
     if (options.printVersion) {
@@ -81,6 +82,10 @@ int main(int argc, char *argv[])
     QCoreApplication::setApplicationVersion(QStringLiteral(APP_VERSION));
 
     mrd::Logger::instance()->setLogFile(options.logPath.isEmpty() ? defaultLogPath() : options.logPath);
+    // Connecting used to print a dozen step lines; they are DEBUG now, reachable
+    // with --verbose when something needs diagnosing.
+    if (options.verbose)
+        mrd::Logger::instance()->setMinimumLevel(mrd::Logger::Debug);
 
     if (!options.errors.isEmpty()) {
         for (const QString &e : options.errors)
@@ -91,6 +96,8 @@ int main(int argc, char *argv[])
 
     if (options.selftest)
         return mrd::cli::runSelftest(options);
+    if (options.bench)
+        return mrd::cli::runBench(options);
     if (options.probeInfo)
         return mrd::cli::runProbeInfo(options);
 

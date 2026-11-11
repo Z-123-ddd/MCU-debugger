@@ -158,6 +158,8 @@ void InspectorPanel::clear()
 void InspectorPanel::setRegister(const SvdRegister *reg, quint32 registerAddress, quint32 value, bool valid)
 {
     const bool sameRegister = (reg == m_register);
+    const quint32 previousValue = m_value;
+    const bool previousValid = m_valid;
     m_register = reg;
     m_address = registerAddress;
     m_value = value;
@@ -165,6 +167,46 @@ void InspectorPanel::setRegister(const SvdRegister *reg, quint32 registerAddress
 
     if (!reg) {
         clear();
+        return;
+    }
+
+    if (sameRegister) {
+        // Polling path: the register did not change, only its value. Rebuilding
+        // the table here cost ~280 us per completion (Qt re-creates every item and
+        // calls resizeRowsToContents), so touch only what actually moved.
+        if (previousValue == value && previousValid == valid)
+            return;
+
+        // Per-field value cells: compare first, because setText() invalidates the
+        // view even when the text is identical.
+        const int rows = qMin(m_table->rowCount(), reg->fields.size());
+        for (int i = 0; i < rows; ++i) {
+            const SvdField &field = reg->fields.at(i);
+            QTableWidgetItem *item = m_table->item(i, 2);
+            if (!item)
+                continue;
+            const QString text =
+                valid ? QString::number(field.extract(value)) : QStringLiteral("-");
+            if (item->text() != text)
+                item->setText(text);
+        }
+
+        m_strip->setValue(value, valid);
+        if (m_registerEdit->text() != (valid ? hex32(value) : QString()))
+            m_registerEdit->setText(valid ? hex32(value) : QString());
+        m_valueLabel->setText(valid ? QStringLiteral("当前值 %1 (%2)").arg(hex32(value)).arg(value)
+                                    : QStringLiteral("当前值：未读取（离线显示复位值 %1）")
+                                          .arg(hex32(reg->resetValue)));
+
+        // The editor shows the *selected field's* value; only rebuild it when that
+        // field's bits actually changed (refreshEditor rebuilds the enum combo).
+        bool fieldChanged = !previousValid; // first real value: editor must fill in
+        if (!fieldChanged && m_selectedField >= 0 && m_selectedField < reg->fields.size()) {
+            const SvdField &field = reg->fields.at(m_selectedField);
+            fieldChanged = field.extract(previousValue) != field.extract(value);
+        }
+        if (fieldChanged)
+            refreshEditor();
         return;
     }
 
@@ -287,6 +329,18 @@ void InspectorPanel::selectField(int index)
 {
     if (!m_register || index < 0 || index >= m_register->fields.size())
         return;
+
+    // Selecting the field that is already selected only refreshes the views; it
+    // must not re-emit. Otherwise a listener that mirrors the selection back
+    // (MainWindow does, to keep its own strip in step) recurses without bound:
+    //   fieldSelected -> listener -> selectField -> fieldSelected -> ...
+    // which showed up as "clicking a field on the right crashes the app".
+    if (m_selectedField == index) {
+        m_strip->setSelectedField(index);
+        refreshEditor();
+        return;
+    }
+
     m_selectedField = index;
     m_strip->setSelectedField(index);
     refreshEditor();

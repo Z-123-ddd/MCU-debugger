@@ -51,8 +51,32 @@ set(CORE_SOURCES
     src/core/DeviceIdentifier.cpp
     src/core/DeviceTreeScanner.h
     src/core/DeviceTreeScanner.cpp
+    src/core/PeripheralPresence.h
+    src/core/PeripheralPresence.cpp
+    src/core/PartTable.h
+    src/core/PartTable.cpp
+    src/core/FaultStatus.h
+    src/core/FaultStatus.cpp
+    src/core/ElfFile.h
+    src/core/ElfFile.cpp
+    src/core/DwarfReader.h
+    src/core/DwarfReader.cpp
+    src/core/SymbolFile.h
+    src/core/SymbolFile.cpp
+    src/core/RttClient.h
+    src/core/RttClient.cpp
+    src/core/SampleHistory.h
+    src/core/SampleHistory.cpp
+    src/core/SampleCollector.h
+    src/core/SampleCollector.cpp
+    src/core/MemoryProbe.h
+    src/core/MemoryProbe.cpp
+    src/core/PeripheralRoles.h
+    src/core/PeripheralRoles.cpp
     src/core/GpioCodec.h
     src/core/GpioCodec.cpp
+    src/core/JLinkDeviceName.h
+    src/core/JLinkDeviceName.cpp
     src/core/RegisterSession.h
     src/core/RegisterSession.cpp
 )
@@ -70,6 +94,10 @@ set(UI_SOURCES
     src/ui/Theme.cpp
     src/ui/BitFieldStrip.h
     src/ui/BitFieldStrip.cpp
+    src/ui/ScopePage.h
+    src/ui/ScopePage.cpp
+    src/ui/PlotWidget.h
+    src/ui/PlotWidget.cpp
     src/ui/RegisterBlockView.h
     src/ui/RegisterBlockView.cpp
     src/ui/InspectorPanel.h

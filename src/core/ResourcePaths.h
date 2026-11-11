@@ -18,6 +18,13 @@ public:
     /// Keeps the built-in table small while leaving the door open for other
     /// vendors (an archived STM32 table drops back in here, no code change).
     static QStringList deviceIdSupplements();
+
+    /// Writable location for a learned identification row.
+    ///
+    /// Filled in when the user manually picks the chip for a DEV_ID we did not
+    /// know, so the next connection identifies it without help. Always inside
+    /// AppData: the bundled `data/` may be read-only after installation.
+    static QString learnedDeviceIdPath();
     static QString packageDirectory(); ///< data/packages
 };
 

@@ -135,6 +135,10 @@ bool GpioCodec::isGpioPort(const SvdPeripheral &peripheral)
     // STM32F1 / F4 style
     if ((reg(peripheral, "IDR") && reg(peripheral, "ODR")) || reg(peripheral, "MODER"))
         return true;
+    // Nations N32G4x style: GPIOx_PL_CFG / GPIOx_PH_CFG (4 bits per pin, same
+    // encoding as the STM32F1 CRL/CRH pair but with different register names)
+    if (regAny(peripheral, {QStringLiteral("GPIOx_PL_CFG"), QStringLiteral("PL_CFG")}) != nullptr)
+        return true;
     // Nations N32H47x style
     return reg(peripheral, "GPIOx_PMODE") != nullptr
            || (reg(peripheral, "PMODE") != nullptr && (reg(peripheral, "PID") || reg(peripheral, "POD")));
@@ -163,7 +167,11 @@ QVector<GpioPin> GpioCodec::decode(const SvdPeripheral &peripheral, const QHash<
         return pins;
 
     bool valid = false;
-    const bool f1Layout = reg(peripheral, "CRL") != nullptr || reg(peripheral, "CRH") != nullptr;
+    // The N32G4x pair is bit-for-bit the STM32F1 CRL/CRH layout (MODE[1:0] then
+    // CNF[1:0] per pin), so both feed the same decoder; only the names differ.
+    const bool f1Layout = reg(peripheral, "CRL") != nullptr || reg(peripheral, "CRH") != nullptr
+                          || regAny(peripheral, {QStringLiteral("GPIOx_PL_CFG"),
+                                                 QStringLiteral("PL_CFG")}) != nullptr;
     const bool n32Layout = !f1Layout
                            && (regAny(peripheral, {QStringLiteral("PMODE"), QStringLiteral("GPIOx_PMODE")}) != nullptr
                                || regAny(peripheral, {QStringLiteral("PID"), QStringLiteral("GPIOx_PID")})
@@ -260,15 +268,31 @@ QVector<GpioPin> GpioCodec::decode(const SvdPeripheral &peripheral, const QHash<
     }
 
     if (f1Layout) {
-        const quint32 crl = valueOf(peripheral, values, "CRL", 0x44444444u, &valid);
+        // Register names differ per family but the encoding does not:
+        //   STM32F1 / N32G4x  CRL+CRH  or  PL_CFG+PH_CFG
+        //   data registers    IDR+ODR  or  PID+POD
+        const quint32 crl = valueOfAny(peripheral, values,
+                                       {QStringLiteral("CRL"), QStringLiteral("GPIOx_PL_CFG"),
+                                        QStringLiteral("PL_CFG")},
+                                       0x44444444u, &valid);
         quint32 crh = 0;
-        if (reg(peripheral, "CRH")) {
+        if (regAny(peripheral, {QStringLiteral("CRH"), QStringLiteral("GPIOx_PH_CFG"),
+                                QStringLiteral("PH_CFG")})) {
             bool crhValid = false;
-            crh = valueOf(peripheral, values, "CRH", 0x44444444u, &crhValid);
+            crh = valueOfAny(peripheral, values,
+                             {QStringLiteral("CRH"), QStringLiteral("GPIOx_PH_CFG"),
+                              QStringLiteral("PH_CFG")},
+                             0x44444444u, &crhValid);
             valid = valid || crhValid;
         }
-        const quint32 idr = valueOf(peripheral, values, "IDR", 0, &valid);
-        const quint32 odr = valueOf(peripheral, values, "ODR", 0, &valid);
+        const quint32 idr = valueOfAny(peripheral, values,
+                                       {QStringLiteral("IDR"), QStringLiteral("GPIOx_PID"),
+                                        QStringLiteral("PID")},
+                                       0, &valid);
+        const quint32 odr = valueOfAny(peripheral, values,
+                                       {QStringLiteral("ODR"), QStringLiteral("GPIOx_POD"),
+                                        QStringLiteral("POD")},
+                                       0, &valid);
 
         for (int i = 0; i < 16; ++i) {
             GpioPin pin;
@@ -277,7 +301,6 @@ QVector<GpioPin> GpioCodec::decode(const SvdPeripheral &peripheral, const QHash<
             const quint32 nybble = (i < 8) ? ((crl >> (i * 4)) & 0xF) : ((crh >> ((i - 8) * 4)) & 0xF);
             const quint32 modeBits = (nybble & 0x3);
             const quint32 cnfBits = (nybble >> 2) & 0x3;
-            pin.mode = modeForF1(cnfBits, modeBits);
             pin.speed = speedForF1(modeBits);
             if (modeBits == 0) {
                 pin.kind = (cnfBits == 0) ? GpioPin::Analog : GpioPin::Input;
@@ -289,6 +312,26 @@ QVector<GpioPin> GpioCodec::decode(const SvdPeripheral &peripheral, const QHash<
             } else {
                 pin.kind = GpioPin::Output;
                 pin.subMode = subModeForF1Output(cnfBits);
+            }
+            // Mode text has to follow the decoded kind, not just the MODE bits:
+            // MODE!=0 with CNF>=2 is alternating function, and MODE=0/CNF=0 is
+            // analog, so a mode-only label would call both of them wrong.
+            switch (pin.kind) {
+            case GpioPin::Analog:
+                pin.mode = QStringLiteral("模拟");
+                break;
+            case GpioPin::Alternate:
+                pin.mode = QStringLiteral("复用");
+                break;
+            case GpioPin::Output:
+                pin.mode = QStringLiteral("输出");
+                break;
+            case GpioPin::Input:
+                pin.mode = QStringLiteral("输入");
+                break;
+            default:
+                pin.mode = modeForF1(cnfBits, modeBits);
+                break;
             }
             // STM32F1: CRL/CRH reset to 0x44444444, i.e. 0b0100 = floating input.
             const bool atF1Reset =
@@ -460,8 +503,13 @@ QVector<GpioWrite> GpioCodec::encodePinConfig(const SvdPeripheral &peripheral, i
         }
     };
 
+    // N32G4x names the same 4-bit-per-pin pair PL_CFG/PH_CFG instead of CRL/CRH,
+    // so an encoder that only knew CRL/CRH silently produced no writes there and
+    // the pin reconfiguration menu did nothing.
     const bool f1Layout = peripheral.findRegister(QStringLiteral("CRL"))
-                          || peripheral.findRegister(QStringLiteral("CRH"));
+                          || peripheral.findRegister(QStringLiteral("CRH"))
+                          || peripheral.findRegister(QStringLiteral("GPIOx_PL_CFG"))
+                          || peripheral.findRegister(QStringLiteral("PL_CFG"));
     const bool n32Layout =
         peripheral.findRegister(QStringLiteral("PMODE")) || peripheral.findRegister(QStringLiteral("GPIOx_PMODE"));
 
@@ -541,7 +589,11 @@ QVector<GpioWrite> GpioCodec::encodePinConfig(const SvdPeripheral &peripheral, i
     if (f1Layout) {
         // CRL covers pins 0..7, CRH covers 8..15; 4 bits per pin (CNF[1:0], MODE[1:0]).
         const bool low = bit < 8;
-        const QStringList names = {low ? QStringLiteral("CRL") : QStringLiteral("CRH")};
+        const QStringList names = {
+            low ? QStringLiteral("CRL") : QStringLiteral("CRH"),
+            low ? QStringLiteral("GPIOx_PL_CFG") : QStringLiteral("GPIOx_PH_CFG"),
+            low ? QStringLiteral("PL_CFG") : QStringLiteral("PH_CFG"),
+        };
         const quint32 cr = snapshot(names, 0x44444444u);
         const int shift = (bit % 8) * 4;
 

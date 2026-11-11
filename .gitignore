@@ -55,6 +55,13 @@ out*/
 __pycache__/
 *.pyc
 
+# ---- secrets ------------------------------------------------------------
+# .env holds the assistant/API keys used while developing; never commit it.
+.env
+.env.*
+!.env.example
+*.key
+
 # ---- OS ------------------------------------------------------------------
 Thumbs.db
 desktop.ini

@@ -12,6 +12,8 @@
 #include "core/ProbeRsRunner.h"
 #include "core/SvdLibrary.h"
 
+#include <QFileInfo>
+
 #include <memory>
 
 #include <cstdio>
@@ -86,7 +88,8 @@ void dumpGpioPorts(IProbe &probe, const SvdDevice &device, const QString &onlyPo
 
 int runProbeInfo(const Options &options)
 {
-    Logger::instance()->setMinimumLevel(Logger::Warn);
+    // --verbose keeps the per-step detail (identification, memory/port probes).
+    Logger::instance()->setMinimumLevel(options.verbose ? Logger::Debug : Logger::Warn);
     g_failures = 0;
 
     const QString backend = !options.backend.isEmpty()
@@ -94,19 +97,12 @@ int runProbeInfo(const Options &options)
                                 : AppSettings::probeBackend();
 
     out(QStringLiteral("=== 探针后端: %1 ===").arg(backend));
-    if (!Logger::instance()->logFile().isEmpty())
-        out(QStringLiteral("日志文件: %1").arg(Logger::instance()->logFile()));
 
     std::unique_ptr<IProbe> probe;
     QString serial;
 
     if (backend == QLatin1String("probe-rs")) {
         ProbeRsRunner runner;
-        const QStringList candidates = ProbeRsRunner::candidatePaths(AppSettings::probeRsPath());
-        out(QStringLiteral("候选 probe-rs (%1 个):").arg(candidates.size()));
-        for (const QString &path : candidates)
-            out(QStringLiteral("  - %1").arg(path));
-
         runner.setBinary(ProbeRsRunner::locate(AppSettings::probeRsPath()));
         if (runner.binary().isEmpty()) {
             out(QString());
@@ -114,17 +110,12 @@ int runProbeInfo(const Options &options)
             out(QStringLiteral("        请运行: powershell -ExecutionPolicy Bypass -File scripts\\fetch-probe-rs.ps1"));
             return 4;
         }
-        out(QStringLiteral("[OK] %1 | %2").arg(runner.binary(), runner.version()));
+        out(QStringLiteral("[OK] probe-rs %1").arg(runner.version()));
 
         auto rsProbe = std::make_unique<ProbeRsProbe>();
         rsProbe->runner()->setBinary(runner.binary());
         probe = std::move(rsProbe);
     } else {
-        const QStringList candidates = JLinkRunner::candidatePaths(AppSettings::jlinkPath());
-        out(QStringLiteral("候选 JLink.exe (%1 个):").arg(candidates.size()));
-        for (const QString &path : candidates)
-            out(QStringLiteral("  - %1").arg(path));
-
         const QString executable = JLinkRunner::locate(AppSettings::jlinkPath());
         if (executable.isEmpty()) {
             out(QString());
@@ -140,8 +131,8 @@ int runProbeInfo(const Options &options)
             out(QStringLiteral("[ERROR] %1").arg(info.error));
             return 4;
         }
-        out(QStringLiteral("[OK] %1").arg(executable));
-        out(QStringLiteral("     Commander %1 | DLL %2 | 固件 %3 | 硬件 %4 | S/N %5 | %6")
+        // Version + probe identity only: the install path is noise here.
+        out(QStringLiteral("[OK] J-Link %1 | DLL %2 | 固件 %3 | 硬件 %4 | S/N %5 | %6")
                 .arg(info.value.commander, info.value.dllVersion, info.value.firmware, info.value.hardware,
                      info.value.serial.isEmpty() ? QStringLiteral("?") : info.value.serial, info.value.product));
         check(info.value.probeFound, QStringLiteral("发现 J-Link 硬件"),
@@ -158,9 +149,7 @@ int runProbeInfo(const Options &options)
     const bool dbLoaded = DeviceIdentifier::loadDatabase(&dbError);
     out(QString());
     check(dbLoaded, QStringLiteral("器件识别库"),
-          dbLoaded ? QStringLiteral("%1 条 @ %2")
-                         .arg(DeviceIdentifier::database().size())
-                         .arg(DeviceIdentifier::databasePath())
+          dbLoaded ? QStringLiteral("%1 条").arg(DeviceIdentifier::database().size())
                    : dbError);
 
     // --- connect -----------------------------------------------------------
@@ -223,14 +212,50 @@ int runProbeInfo(const Options &options)
 
     // Two-phase: re-attach with the resolved part number so J-Link applies the
     // right flash/AP settings (also proves the name is valid).
-    if (identified && options.deviceName.isEmpty() && !identified.value.probeRsChip.isEmpty()
-        && identified.value.probeRsChip.compare(requestedChip, Qt::CaseInsensitive) != 0) {
+    // Prefer the name J-Link accepts: SEGGER stores N32G455CC, not the order code
+    // N32G455CCL7, so handing it the latter fails with "Failed to get index".
+    QString targetDevice;
+    if (identified) {
+        targetDevice = identified.value.jlinkDeviceName;
+        if (targetDevice.isEmpty())
+            targetDevice = identified.value.probeRsChip;
+    }
+
+    if (identified && options.deviceName.isEmpty() && !targetDevice.isEmpty()
+        && targetDevice.compare(requestedChip, Qt::CaseInsensitive) != 0) {
         out(QString());
-        out(QStringLiteral("按识别结果重新以 %1 连接...").arg(identified.value.probeRsChip));
-        probe->setDevice(identified.value.probeRsChip);
-        const Status reconnect = probe->connectTarget();
-        check(static_cast<bool>(reconnect), QStringLiteral("以识别出的器件名重连"),
-              reconnect ? identified.value.probeRsChip : reconnect.error);
+        out(QStringLiteral("按识别结果重新以 %1 连接...").arg(targetDevice));
+        probe->setDevice(targetDevice);
+        Status reconnect = probe->connectTarget();
+        // setDevice() stops the GDB server, so a failed re-attach leaves the probe
+        // dead -- every later read then fails with "GDB Server 未连接" and the whole
+        // device tree looks empty.
+        if (!reconnect) {
+            // Try the other plausible spellings before giving up: the plain order
+            // code and the suffix-stripped form are both used across J-Link versions.
+            for (const QString &candidate : identified.value.jlinkDeviceCandidates) {
+                if (candidate.compare(targetDevice, Qt::CaseInsensitive) == 0)
+                    continue;
+                out(QStringLiteral("以 %1 失败，改试 %2").arg(targetDevice, candidate));
+                probe->setDevice(candidate);
+                reconnect = probe->connectTarget();
+                if (reconnect) {
+                    targetDevice = candidate;
+                    break;
+                }
+            }
+        }
+        if (!reconnect) {
+            out(QStringLiteral("[WARN] J-Link 不接受 %1（该系列可能未收录在 JLinkARM.dll 中）")
+                    .arg(targetDevice));
+            out(QStringLiteral("       退回通用 Cortex-M4 保持会话可用（读寄存器不受影响）"));
+            probe->setDevice(QStringLiteral("Cortex-M4"));
+            reconnect = probe->connectTarget();
+            if (!reconnect)
+                out(QStringLiteral("[ERROR] 通用 Cortex-M4 也无法重连: %1").arg(reconnect.error));
+        }
+        check(static_cast<bool>(reconnect), QStringLiteral("重连后会话可用"),
+              reconnect ? targetDevice : reconnect.error);
         if (reconnect) {
             const ProbeInfo again = probe->info();
             out(QStringLiteral("J-Link 解析器件: %1").arg(again.detectedChip.isEmpty()
@@ -238,7 +263,7 @@ int runProbeInfo(const Options &options)
                                                              : again.detectedChip));
             // Re-resolve against the now-known part number (no second IDCODE probe:
             // the manual path is deterministic and avoids a fresh-attach race).
-            identified = DeviceIdentifier::identify(*probe, library, identified.value.probeRsChip, serial);
+            identified = DeviceIdentifier::identify(*probe, library, targetDevice, serial);
         }
     }
 
@@ -254,11 +279,20 @@ int runProbeInfo(const Options &options)
                      r.vendor.isEmpty() ? QStringLiteral("-") : r.vendor,
                      r.coreName.isEmpty() ? QStringLiteral("-") : r.coreName,
                      r.manuallySelected ? QStringLiteral(" (手动)") : QString()));
-        out(QStringLiteral("后端器件名: %1").arg(r.probeRsChip));
-        out(QStringLiteral("SVD       : %1").arg(r.svdPath.isEmpty() ? QStringLiteral("<未匹配>") : r.svdPath));
+        // What J-Link is actually driving, which is not the same as the part
+        // number: SEGGER ships no N32G455 entry, so the session runs as a generic
+        // Cortex-M4. Saying otherwise would imply J-Link recognised the part.
+        const ProbeInfo live = probe->info();
+        out(QStringLiteral("后端器件名: %1（器件名 %2）")
+                .arg(live.chipName.isEmpty() ? QStringLiteral("Cortex-M4") : live.chipName,
+                     r.probeRsChip));
+        out(QStringLiteral("SVD       : %1")
+                .arg(r.svdPath.isEmpty() ? QStringLiteral("<未匹配>")
+                                         : QFileInfo(r.svdPath).fileName()));
         if (!r.note.isEmpty())
             out(QStringLiteral("备注      : %1").arg(r.note));
-        check(!r.svdPath.isEmpty(), QStringLiteral("匹配到 SVD 描述文件"), r.svdPath);
+        check(!r.svdPath.isEmpty(), QStringLiteral("匹配到 SVD 描述文件"),
+              QFileInfo(r.svdPath).fileName());
 
         if (!r.svdPath.isEmpty()) {
             const auto parsed = library.load(r.svdPath);

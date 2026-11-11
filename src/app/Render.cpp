@@ -8,6 +8,10 @@
 #include "ui/BitFieldStrip.h"
 #include "core/DeviceIdentifier.h"
 #include "core/DeviceTreeScanner.h"
+#include "core/FaultStatus.h"
+#include "core/PartTable.h"
+#include "core/PeripheralPresence.h"
+#include "core/PeripheralRoles.h"
 #include "ui/InspectorPanel.h"
 #include "ui/PackageView.h"
 #include "ui/PeripheralTree.h"
@@ -16,6 +20,9 @@
 #include "ui/Theme.h"
 
 #include <QApplication>
+#include <algorithm>
+
+#include <QComboBox>
 #include <QDir>
 #include <QEvent>
 #include <QLayout>
@@ -192,6 +199,49 @@ Status renderSnapshots(const Options &options, const SvdDevice &device)
         written << narrowPath;
     }
 
+    // --- CPU health states: normal / HardFault -------------------------------
+    // Shows what the status-bar indicator says for each verdict, so the wording
+    // and colouring are reviewable without a crashed board.
+    {
+        QStringList summaryLines;
+        FaultSnapshot normal;
+        normal.cfsrValid = normal.hfsrValid = true;
+        FaultSnapshot crashed;
+        crashed.cfsrValid = crashed.hfsrValid = true;
+        crashed.hfsr = 1u << 30;        // FORCED: escalated into HardFault
+        crashed.cfsr = (1u << 9) | (1u << 15) | (1u << 25); // PRECISERR|BFARVALID|DIVBYZERO
+        crashed.bfarValid = true;
+        crashed.bfar = 0x2000FFF0;
+
+        struct Case { const char *label; CpuHealth health; FaultSnapshot snap; bool halted; };
+        const QVector<Case> cases = {
+            {"正常", CpuHealth::Normal, normal, false},
+            {"已暂停", CpuHealth::Halted, normal, true},
+            {"HardFault", CpuHealth::HardFault, crashed, false},
+            {"未知", CpuHealth::Unknown, FaultSnapshot(), false},
+        };
+        for (const auto &one : cases) {
+            const CpuHealth decided = FaultStatus::evaluate(one.snap, one.halted);
+            summaryLines << QStringLiteral("%1: %2 => %3")
+                                .arg(QString::fromUtf8(one.label),
+                                     FaultStatus::summary(one.health, one.snap),
+                                     FaultStatus::summary(decided, one.snap));
+        }
+        for (const QString &line : summaryLines)
+            Logger::instance()->info(line);
+
+        // The crashed case must decode to something actionable.
+        const QStringList flags = FaultStatus::decode(crashed);
+        if (!flags.contains(QLatin1String("FORCED")) || !flags.contains(QLatin1String("PRECISERR")))
+            return Status::failure(QStringLiteral("HardFault 解码结果异常: %1")
+                                       .arg(flags.join(QStringLiteral(","))));
+        Logger::instance()->info(QStringLiteral("HardFault 解码: CFSR=0x%1 HFSR=0x%2 BFAR=0x%3 -> %4")
+                                     .arg(crashed.cfsr, 8, 16, QLatin1Char('0'))
+                                     .arg(crashed.hfsr, 8, 16, QLatin1Char('0'))
+                                     .arg(crashed.bfar, 8, 16, QLatin1Char('0'))
+                                     .arg(flags.join(QStringLiteral(", "))));
+    }
+
     // --- whole inspector panel at a narrow dock width ------------------------
     // The reported bug lived one level up: the dock may be dragged narrow
     // (setMinimumWidth(200)), so the panel -- not just the bare strip -- has to
@@ -265,17 +315,33 @@ Status renderSnapshots(const Options &options, const SvdDevice &device)
     package.loadPackages(ResourcePaths::packageDirectory());
     const QStringList packages = package.packages();
     if (!packages.isEmpty()) {
-        // Prefer a package describing this very chip (name prefix match); else first.
+        // Pick this part's package: family match plus the package name from the
+        // vendor pack ("UQFN48/LQFP48" -> prefer UQFN48). Keyed by chip/package
+        // now, because every family has its own LQFP48/LQFP64 tables.
+        QString wantedPackage;
+        {
+            const QString part = options.deviceName.isEmpty() ? device.name : options.deviceName;
+            const QStringList parts = PartTable::lookup(part).package.split(
+                QLatin1Char('/'), Qt::SkipEmptyParts);
+            if (!parts.isEmpty())
+                wantedPackage = parts.first().trimmed();
+        }
+
         QString chosen = packages.first();
-        Q_UNUSED(chosen);
+        int bestScore = -1;
         for (const auto &description : package.descriptions()) {
             const QString chip = description.chip;
             if (chip.isEmpty() || device.name.isEmpty())
                 continue;
-            if (chip.startsWith(device.name, Qt::CaseInsensitive)
-                || device.name.startsWith(chip, Qt::CaseInsensitive)) {
-                chosen = description.packageName;
-                break;
+            if (!PackageView::matchesPart(chip, device.name))
+                continue;
+            int score = 1;
+            if (!wantedPackage.isEmpty()
+                && description.packageName.compare(wantedPackage, Qt::CaseInsensitive) == 0)
+                score += 4;
+            if (score > bestScore) {
+                bestScore = score;
+                chosen = PackageView::descriptionKey(description);
             }
         }
         package.setPackage(chosen);
@@ -296,7 +362,9 @@ Status renderSnapshots(const Options &options, const SvdDevice &device)
                 package.setLivePinState(port, pin.index, pin.mode, pin.outputHigh, true);
         }
 
-        const QString packagePath = dir + QStringLiteral("/package-%1.png").arg(chosen);
+        const QString packagePath =
+            dir + QStringLiteral("/package-%1.png")
+                      .arg(package.currentPackage().section(QLatin1Char('/'), 1));
         if (!saveWidget(&package, packagePath, &renderError))
             return Status::failure(
                 QStringLiteral("渲染封装图失败: %1").arg(renderError.isEmpty() ? packagePath : renderError));
@@ -357,6 +425,18 @@ Status renderSnapshots(const Options &options, const SvdDevice &device)
             ++index;
         }
 
+        // Which package this render should show: the first alternative the pack
+        // lists for the part (UQFN48 out of "UQFN48/LQFP48" for N32H473CE).
+        QString wantedPackage;
+        {
+            const QString part = options.deviceName.isEmpty() ? device.name : options.deviceName;
+            const PartTable::Entry entry = PartTable::lookup(part);
+            const QStringList parts =
+                entry.package.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+            if (!parts.isEmpty())
+                wantedPackage = parts.first().trimmed();
+        }
+
         // Apply the same bonding annotation the GUI does: a GPIO port whose
         // registers answer on the bus but which this package does not bring out
         // must not be reported as usable.
@@ -368,8 +448,13 @@ Status renderSnapshots(const Options &options, const SvdDevice &device)
                 ResourcePaths::packageDirectory() + QLatin1Char('/') + candidate, &error);
             if (!description.isValid() || description.chip.isEmpty())
                 continue;
-            if (description.chip.startsWith(device.name, Qt::CaseInsensitive)
-                || device.name.startsWith(description.chip, Qt::CaseInsensitive)) {
+            // Several families share a package name and each has many packages, so
+            // pick by this part's package too -- the first family match would
+            // otherwise draw a different package (LQFP48 vs UQFN48 etc).
+            if (!wantedPackage.isEmpty()
+                && description.packageName.compare(wantedPackage, Qt::CaseInsensitive) != 0)
+                continue;
+            if (PackageView::matchesPart(description.chip, device.name)) {
                 packagePath = candidate;
                 const QHash<QString, QVector<int>> bonded = description.bondedPorts();
                 for (auto &status : statuses) {
@@ -390,12 +475,89 @@ Status renderSnapshots(const Options &options, const SvdDevice &device)
             }
         }
 
+        // Apply the same static presence check the GUI does: vendor per-model
+        // counts + package signals. Without it the default view would still list
+        // SPI5/FDCAN3, which is exactly the over-report this feature removes.
+        {
+            PeripheralPresence::Inputs inputs;
+            QString dbError;
+            DeviceIdentifier::loadDatabase(&dbError);
+            for (const auto &entry : DeviceIdentifier::database()) {
+                if (entry.mcu.compare(device.name, Qt::CaseInsensitive) == 0
+                    || entry.mcu.startsWith(device.name, Qt::CaseInsensitive)
+                    || device.name.startsWith(entry.mcu, Qt::CaseInsensitive)) {
+                    inputs.limits = entry.capabilities;
+                    break;
+                }
+            }
+            for (const QString &candidate : QDir(ResourcePaths::packageDirectory())
+                                                .entryList({QStringLiteral("*.json")}, QDir::Files)) {
+                const PackageDescription description = PackageDescription::loadFromFile(
+                    ResourcePaths::packageDirectory() + QLatin1Char('/') + candidate);
+                if (!description.isValid() || description.chip.isEmpty())
+                    continue;
+                if (description.chip.startsWith(device.name, Qt::CaseInsensitive)
+                    || device.name.startsWith(description.chip, Qt::CaseInsensitive)) {
+                    inputs.bondedSignals = description.bondedSignals();
+                    break;
+                }
+            }
+            const QHash<QString, QString> absent = PeripheralPresence::absent(device, inputs);
+            for (auto &status : statuses) {
+                const auto it = absent.constFind(status.name);
+                status.exists = (it == absent.constEnd());
+                if (it != absent.constEnd())
+                    status.absenceReason = it.value();
+            }
+            Logger::instance()->debug(QStringLiteral("渲染快照: 静态判定剔除 %1 个外设")
+                                          .arg(absent.size()));
+        }
+
         PeripheralTree tree;
         tree.setDevice(device);
         tree.setStatuses(statuses);
+        // Feed the live column so the snapshot shows what the user sees: timers
+        // report their counter and whether it advanced since the previous poll.
+        {
+            int liveTimers = 0;
+            quint32 counter = 0x1A2B;
+            for (const auto &peripheral : device.peripherals) {
+                if (!PeripheralRoles::isTimer(peripheral))
+                    continue;
+                const SvdRegister *counterReg = PeripheralRoles::counterRegister(peripheral);
+                if (!counterReg)
+                    continue;
+                const auto statusIt = std::find_if(statuses.begin(), statuses.end(),
+                                                   [&](const PeripheralStatus &s) {
+                                                       return s.name == peripheral.name;
+                                                   });
+                const bool gated = statusIt != statuses.end() && statusIt->clockKnown
+                                   && !statusIt->clockEnabled;
+                if (gated) {
+                    tree.setLiveValue(peripheral.name, QStringLiteral("—"));
+                } else {
+                    // Advancing counters get the arrow, one stays frozen, so both
+                    // states are visible in the artifact.
+                    const bool advanced = (liveTimers % 4) != 3;
+                    tree.setLiveValue(peripheral.name,
+                                      QStringLiteral("%1 %2").arg(counter).arg(
+                                          advanced ? QStringLiteral("↑") : QStringLiteral("·")));
+                    tree.setLiveToolTip(peripheral.name,
+                                        QStringLiteral("%1 = %2 (0x%3)")
+                                            .arg(counterReg->name)
+                                            .arg(counter)
+                                            .arg(counter, 0, 16));
+                    counter += 137;
+                }
+                ++liveTimers;
+            }
+            Logger::instance()->info(QStringLiteral("外设树实时列: %1 个定时器").arg(liveTimers));
+        }
+
         const QString treePath = dir + QStringLiteral("/peripheral-tree.png");
         QString treeError;
-        if (!saveWidget(&tree, treePath, &treeError, QSize(380, 560)))
+        // Wider than before: the tree gained the "实时" column.
+        if (!saveWidget(&tree, treePath, &treeError, QSize(470, 560)))
             return Status::failure(QStringLiteral("渲染外设树失败: %1").arg(treeError));
         written << treePath;
 
@@ -433,14 +595,23 @@ Status renderSnapshots(const Options &options, const SvdDevice &device)
                 }
             }
 
+            // The tree now defaults to "only what the target confirmed", so the
+            // rows it shows are the onChip() subset -- not the whole SVD.
+            const bool filterToExisting = onChip > 0;
             int expectedRows = 0;
             int expectedMissing = 0;
             int expectedOn = 0;
             int expectedOff = 0;
+            int missingInAll = 0; ///< "显示: 全部" must bring these back
             for (const auto &status : statuses) {
                 // Unbonded ports are not listed at all any more.
                 if (status.unbonded())
                     continue;
+                if (status.reachability == PeripheralStatus::Missing)
+                    ++missingInAll;
+                if (filterToExisting
+                    && (!status.onChip() || status.reachability == PeripheralStatus::Missing))
+                    continue; // default view: vendor-confirmed, bonded, not probed-absent
                 ++expectedRows;
                 if (status.reachability == PeripheralStatus::Missing)
                     ++expectedMissing;
@@ -465,6 +636,28 @@ Status renderSnapshots(const Options &options, const SvdDevice &device)
                         .arg(clockOff)
                         .arg(expectedOff));
             }
+            // A peripheral the bus rejected with its clock running must not be
+            // listed by default: that is the SPI5 / FDCAN3 over-report this
+            // filter exists to remove.
+            if (filterToExisting && missingInAll != 0) {
+                for (int g = 0; g < widget->topLevelItemCount(); ++g) {
+                    QTreeWidgetItem *group = widget->topLevelItem(g);
+                    for (int c = 0; c < group->childCount(); ++c) {
+                        const QString text = group->child(c)->text(0);
+                        if (text.contains(QStringLiteral("本型号不具备"))
+                            || text.contains(QStringLiteral("本芯片未实现")))
+                            return Status::failure(
+                                QStringLiteral("默认视图仍列出本型号不具备的外设: %1").arg(text));
+                    }
+                }
+            }
+            Logger::instance()->info(
+                QStringLiteral("%1 渲染行数 %2（SVD 共 %3 项，判定不存在 %4 项默认隐藏）")
+                    .arg(filterToExisting ? QStringLiteral("默认视图") : QStringLiteral("全量视图"))
+                    .arg(rows)
+                    .arg(statuses.size())
+                    .arg(onChip > 0 ? statuses.size() - onChip : 0));
+
             // Explicit: no port the package does not bond may appear at all.
             {
                 QStringList forbidden;
@@ -492,12 +685,82 @@ Status renderSnapshots(const Options &options, const SvdDevice &device)
                         .arg(forbidden.join(QStringLiteral(", "))));
             }
 
+            // The live column must actually carry timer counters: that is what makes
+            // "is this peripheral running" answerable at a glance.
+            {
+                int expectedLive = 0;
+                for (const auto &peripheral : device.peripherals) {
+                    if (PeripheralRoles::isTimer(peripheral)
+                        && PeripheralRoles::counterRegister(peripheral))
+                        ++expectedLive;
+                }
+                int liveFilled = 0;
+                for (int g = 0; g < widget->topLevelItemCount(); ++g) {
+                    QTreeWidgetItem *group = widget->topLevelItem(g);
+                    for (int c = 0; c < group->childCount(); ++c) {
+                        if (!group->child(c)->text(3).isEmpty())
+                            ++liveFilled;
+                    }
+                }
+                if (liveFilled == 0)
+                    return Status::failure(
+                        QStringLiteral("外设树“实时”列没有任何内容（定时器计数值缺失）"));
+                Logger::instance()->info(
+                    QStringLiteral("外设树实时列: %1 行有数据（定时器共 %2 个）")
+                        .arg(liveFilled)
+                        .arg(expectedLive));
+            }
+
             Logger::instance()->info(
                 QStringLiteral("外设树结构校验通过: %1 行（已隐藏未引出端口）, 未实现 %2, 时钟开 %3, 关 %4")
                     .arg(rows)
                     .arg(markedMissing)
                     .arg(clockOn)
                     .arg(clockOff));
+
+            // Filtered-out peripherals must stay reachable for diagnosis: switch
+            // the combo to "显示: 全部" and they have to come back, greyed.
+            if (filterToExisting) {
+                if (auto *combo = tree.findChild<QComboBox *>()) {
+                    int allIndex = -1;
+                    for (int i = 0; i < combo->count(); ++i) {
+                        if (combo->itemText(i).contains(QStringLiteral("全部"))) {
+                            allIndex = i;
+                            break;
+                        }
+                    }
+                    if (allIndex >= 0) {
+                        combo->setCurrentIndex(allIndex);
+                        int allRows = 0;
+                        int allMissing = 0;
+                        for (int g = 0; g < widget->topLevelItemCount(); ++g) {
+                            QTreeWidgetItem *group = widget->topLevelItem(g);
+                            for (int c = 0; c < group->childCount(); ++c) {
+                                ++allRows;
+                                if (group->child(c)->text(0).contains(QStringLiteral("本芯片未实现")))
+                                    ++allMissing;
+                            }
+                        }
+                        if (allMissing < missingInAll || allRows <= rows)
+                            return Status::failure(
+                                QStringLiteral("切到“全部”后未恢复被筛掉的外设: 行 %1, 未实现 %2/%3")
+                                    .arg(allRows)
+                                    .arg(allMissing)
+                                    .arg(missingInAll));
+
+                        const QString allPath = dir + QStringLiteral("/peripheral-tree-all.png");
+                        QString allError;
+                        if (!saveWidget(&tree, allPath, &allError, QSize(380, 560)))
+                            return Status::failure(
+                                QStringLiteral("渲染全量外设树失败: %1").arg(allError));
+                        written << allPath;
+                        Logger::instance()->info(
+                            QStringLiteral("全量视图: %1 行，其中 %2 行标注“本芯片未实现”")
+                                .arg(allRows)
+                                .arg(allMissing));
+                    }
+                }
+            }
         }
     }
 

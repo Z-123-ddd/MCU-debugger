@@ -68,6 +68,12 @@ public:
     explicit PortGridView(QWidget *parent = nullptr);
 
     void setPorts(const QStringList &portNames);
+
+    /// Forget the drawn pins *and* the port list (used when the target goes away).
+    ///
+    /// setPorts({}) only empties the combo box; the matrix of the last port stayed
+    /// on screen, which looked like live data after a disconnect.
+    void clear();
     void setActivePort(const QString &portName);
     QString activePort() const;
 

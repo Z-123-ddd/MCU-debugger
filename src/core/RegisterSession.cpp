@@ -6,6 +6,7 @@
 
 #include <QDateTime>
 
+#include <algorithm>
 #include <cstring>
 
 namespace mrd {
@@ -17,7 +18,10 @@ constexpr qint64 kReadStaleMs = 1500;
 quint32 composeFromBytes(const QByteArray &data, int byteCount)
 {
     quint32 value = 0;
-    const int n = qMin(byteCount, data.size());
+    // Clamp to the destination: callers pass a whole register *window* length
+    // (tens of bytes) when they just want the first word, and memcpy'ing that
+    // into a quint32 overruns the stack.
+    const int n = qMin(qMin(byteCount, data.size()), int(sizeof(value)));
     std::memcpy(&value, data.constData(), static_cast<size_t>(n));
     return value;
 }
@@ -41,6 +45,7 @@ void RegisterSession::setDevice(const SvdDevice &device)
     m_values.clear();
     m_pendingReads.clear();
     m_history.clear();
+    rebuildRegisterIndex();
     emit deviceChanged();
     emit historyChanged();
 }
@@ -51,6 +56,7 @@ void RegisterSession::clearDevice()
     m_values.clear();
     m_pendingReads.clear();
     m_history.clear();
+    m_registerIndex.clear();
     emit deviceChanged();
     emit historyChanged();
 }
@@ -63,6 +69,21 @@ void RegisterSession::setConnected(bool connected)
         for (auto &v : m_values)
             v.valid = false;
     }
+}
+
+void RegisterSession::rebuildRegisterIndex()
+{
+    m_registerIndex.clear();
+    m_registerIndex.reserve(m_device.totalRegisters());
+    for (const auto &peripheral : m_device.peripherals) {
+        for (const auto &reg : peripheral.registers) {
+            const quint32 address = peripheral.baseAddress + reg.addressOffset;
+            m_registerIndex.append({address, &reg});
+        }
+    }
+    std::sort(m_registerIndex.begin(), m_registerIndex.end(),
+              [](const QPair<quint32, const SvdRegister *> &a,
+                 const QPair<quint32, const SvdRegister *> &b) { return a.first < b.first; });
 }
 
 quint32 RegisterSession::resetValueFor(const SvdRegister &reg) const
@@ -132,6 +153,26 @@ void RegisterSession::applyRead(quint32 address, const QByteArray &data, bool ok
         value.error = error;
     }
     m_values.insert(address, value);
+
+    if (!ok)
+        noteReadFailure(address, error);
+}
+
+void RegisterSession::noteReadFailure(quint32 address, const QString &error)
+{
+    // A failure caused by a dead link is not a register problem: mark the session
+    // unusable so the poll loop stops queueing requests, instead of producing one
+    // "GDB Server 未连接" line per polled address for ever.
+    const bool sessionLost =
+        error.contains(QStringLiteral("未连接"), Qt::CaseInsensitive)
+        || error.contains(QLatin1String("not connected"), Qt::CaseInsensitive)
+        || error.contains(QStringLiteral("探针未打开"), Qt::CaseInsensitive);
+    if (sessionLost && m_connected) {
+        Logger::instance()->warn(
+            QStringLiteral("读取失败且提示未连接，标记会话为断开: %1").arg(error));
+        setConnected(false);
+    }
+    emit readFailed(address, error);
 }
 
 void RegisterSession::setValueLocally(quint32 address, quint32 value)
@@ -185,6 +226,29 @@ void RegisterSession::requestRegisterRead(const SvdPeripheral &peripheral, const
     pending.startMs = QDateTime::currentMSecsSinceEpoch();
     m_pendingReads.insert(requestId, pending);
     m_probe->requestRead(requestId, pending.address, pending.length);
+}
+
+void RegisterSession::requestRawRead(quint32 address)
+{
+    if (!m_probe || !m_connected)
+        return;
+    const quint64 requestId = m_probe->nextRequestId();
+    PendingRead pending;
+    pending.address = address;
+    pending.length = 4;
+    pending.startMs = QDateTime::currentMSecsSinceEpoch();
+    m_pendingReads.insert(requestId, pending);
+    m_probe->requestRead(requestId, address, 4);
+}
+
+void RegisterSession::writeRawWord(quint32 address, quint32 value)
+{
+    if (!m_probe || !m_connected)
+        return;
+    QByteArray data(4, char(0));
+    std::memcpy(data.data(), &value, 4);
+    m_probe->requestWrite(m_probe->nextRequestId(), address, data);
+    Logger::instance()->debug(QStringLiteral("raw write %1 = %2").arg(hexAddr(address), hex32(value)));
 }
 
 void RegisterSession::rememberWrite(quint32 address, quint32 oldValue, bool oldValid)
@@ -276,38 +340,46 @@ void RegisterSession::onReadFinished(quint64 requestId, quint32 address, const Q
     m_pendingReads.erase(pendingIt);
 
     if (!ok) {
-        emit readFailed(address, error);
+        noteReadFailure(address, error);
         return;
     }
 
-    // Split the window into per-register values by walking the device model.
+    // Split the window into per-register values. Only the registers inside the
+    // window are visited: the index is sorted, so both ends are found by bisection
+    // instead of scanning the whole device (1455 registers) per completion.
     quint32 first = address;
     quint32 last = address;
     bool matched = false;
-    for (const auto &peripheral : m_device.peripherals) {
-        for (const auto &reg : peripheral.registers) {
-            const quint32 regAddress = peripheral.baseAddress + reg.addressOffset;
-            if (regAddress < address || regAddress >= address + static_cast<quint32>(data.size()))
-                continue;
-            const int offset = static_cast<int>(regAddress - address);
-            const int byteCount = qMin(reg.byteSize(), data.size() - offset);
-            if (byteCount <= 0)
-                continue;
-            const quint32 value = composeFromBytes(data.mid(offset, byteCount), byteCount);
-            RegisterValue v = m_values.value(regAddress);
-            v.value = value;
-            v.valid = true;
-            v.offline = false;
-            v.error.clear();
-            v.timestampMs = QDateTime::currentMSecsSinceEpoch();
-            v.differsFromReset = (value != reg.resetValue);
-            m_values.insert(regAddress, v);
-            if (!matched) {
-                first = regAddress;
-                matched = true;
-            }
-            last = regAddress;
+    const quint32 windowEnd = address + static_cast<quint32>(data.size());
+    auto it = std::lower_bound(
+        m_registerIndex.begin(), m_registerIndex.end(), address,
+        [](const QPair<quint32, const SvdRegister *> &entry, quint32 wanted) {
+            return entry.first < wanted;
+        });
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    for (; it != m_registerIndex.end() && it->first < windowEnd; ++it) {
+        const quint32 regAddress = it->first;
+        const SvdRegister *reg = it->second;
+        if (!reg)
+            continue;
+        const int offset = static_cast<int>(regAddress - address);
+        const int byteCount = qMin(reg->byteSize(), data.size() - offset);
+        if (byteCount <= 0)
+            continue;
+        const quint32 value = composeFromBytes(data.mid(offset, byteCount), byteCount);
+        RegisterValue v = m_values.value(regAddress);
+        v.value = value;
+        v.valid = true;
+        v.offline = false;
+        v.error.clear();
+        v.timestampMs = now;
+        v.differsFromReset = (value != reg->resetValue);
+        m_values.insert(regAddress, v);
+        if (!matched) {
+            first = regAddress;
+            matched = true;
         }
+        last = regAddress;
     }
 
     if (!matched) {

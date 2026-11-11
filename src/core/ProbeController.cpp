@@ -1,5 +1,7 @@
 #include "core/ProbeController.h"
 
+#include "core/RttClient.h"
+
 #include "core/AppSettings.h"
 #include "core/Logger.h"
 #include "core/JLinkRunner.h"
@@ -116,18 +118,54 @@ void ProbeWorker::doConnect(const QString &chipName)
         if (DeviceIdentifier::database().isEmpty())
             DeviceIdentifier::loadDatabase(&dbError);
         const auto identified = DeviceIdentifier::identify(*m_probe, library(), QString(), probeSerial());
-        if (identified && !identified.value.probeRsChip.isEmpty()
-            && identified.value.probeRsChip.compare(QLatin1String("Cortex-M4"), Qt::CaseInsensitive) != 0) {
-            Logger::instance()->info(QStringLiteral("按 DEV_ID 识别为 %1，重新连接")
-                                         .arg(identified.value.probeRsChip));
-            m_probe->setDevice(identified.value.probeRsChip);
-            const Status reconnect = m_probe->connectTarget();
-            if (!reconnect) {
-                Logger::instance()->warn(QStringLiteral("以 %1 重连失败: %2")
-                                             .arg(identified.value.probeRsChip, reconnect.error));
-            } else {
-                st = reconnect;
+        if (identified)
+            emit earlyIdentified(true, QString(), identified.value);
+        else
+            emit earlyIdentified(false, identified.error, IdentificationResult());
+        // Re-attach with the name J-Link actually accepts. SEGGER ships these parts
+        // inside JLinkARM.dll but spelled without the order-code suffix, so
+        // "N32G455CC" works while "N32G455CCL7"/"N32G455" fail with
+        // "Failed to get index for device name".
+        QString jlinkName;
+        if (identified)
+            jlinkName = identified.value.jlinkDeviceName;
+        if (jlinkName.isEmpty() && identified)
+            jlinkName = identified.value.probeRsChip;
+
+        if (!jlinkName.isEmpty()
+            && jlinkName.compare(QLatin1String("Cortex-M4"), Qt::CaseInsensitive) != 0) {
+            Logger::instance()->debug(QStringLiteral("按 DEV_ID 识别为 %1，以 %2 重新连接")
+                                         .arg(identified.value.probeRsChip, jlinkName));
+            m_probe->setDevice(jlinkName);
+            Status reconnect = m_probe->connectTarget();
+            if (!reconnect && identified) {
+                for (const QString &candidate : identified.value.jlinkDeviceCandidates) {
+                    if (candidate.compare(jlinkName, Qt::CaseInsensitive) == 0)
+                        continue;
+                    m_probe->setDevice(candidate);
+                    reconnect = m_probe->connectTarget();
+                    if (reconnect) {
+                        jlinkName = candidate;
+                        break;
+                    }
+                }
             }
+            if (!reconnect) {
+                // setDevice() already tore the server down, so leaving the session
+                // "connected" here produced a stream of "GDB Server 未连接" reads.
+                Logger::instance()->warn(
+                    QStringLiteral("以 %1 重连失败: %2；退回通用 Cortex-M4 保持会话可用")
+                        .arg(jlinkName, reconnect.error));
+                m_probe->setDevice(QStringLiteral("Cortex-M4"));
+                reconnect = m_probe->connectTarget();
+                if (!reconnect) {
+                    Logger::instance()->error(
+                        QStringLiteral("通用 Cortex-M4 也无法重连: %1").arg(reconnect.error));
+                }
+            }
+            // Whether or not the re-attach worked, `st` must describe the session
+            // that is actually alive now.
+            st = reconnect;
         }
     }
 
@@ -334,6 +372,11 @@ ProbeController::ProbeController(QObject *parent)
         m_info = ProbeInfo();
         emit closed();
     });
+    connect(m_worker, &ProbeWorker::earlyIdentified, this,
+            [this](bool ok, const QString &error, const IdentificationResult &result) {
+                emit earlyIdentified(ok, error, result);
+            }, Qt::QueuedConnection);
+
     connect(m_worker, &ProbeWorker::connectFinished, this,
             [this](bool ok, const QString &error, const ProbeInfo &info) {
                 m_info = info;
@@ -344,6 +387,7 @@ ProbeController::ProbeController(QObject *parent)
     connect(m_worker, &ProbeWorker::writeFinished, this, &ProbeController::writeFinished);
     connect(m_worker, &ProbeWorker::probesListed, this, &ProbeController::probesListed);
     connect(m_worker, &ProbeWorker::deviceTreeScanned, this, &ProbeController::deviceTreeScanned);
+    connect(m_worker, &ProbeWorker::rttLocated, this, &ProbeController::rttLocated);
     connect(m_worker, &ProbeWorker::chipValidated, this, &ProbeController::chipValidated);
     connect(m_worker, &ProbeWorker::cpuStateChanged, this, [this](bool halted, bool ok, const QString &error) {
         if (ok)
@@ -436,9 +480,30 @@ void ProbeController::requestListProbes()
     dispatch([worker = m_worker] { worker->doListProbes(); });
 }
 
+void ProbeWorker::doFindRtt(quint32 hintAddress, quint32 ramStart, quint32 ramSize)
+{
+    if (!m_probe) {
+        emit rttLocated(RttControlBlock(), QStringLiteral("探针未打开"));
+        return;
+    }
+    const auto found = RttClient::find(*m_probe, hintAddress, ramStart, ramSize);
+    if (!found) {
+        emit rttLocated(RttControlBlock(), found.error);
+        return;
+    }
+    emit rttLocated(found.value, QString());
+}
+
 void ProbeController::requestScanDeviceTree(const QString &svdPath)
 {
     dispatch([worker = m_worker, svdPath] { worker->doScanDeviceTree(svdPath); });
+}
+
+void ProbeController::requestFindRtt(quint32 hintAddress, quint32 ramStart, quint32 ramSize)
+{
+    dispatch([worker = m_worker, hintAddress, ramStart, ramSize] {
+        worker->doFindRtt(hintAddress, ramStart, ramSize);
+    });
 }
 
 void ProbeController::requestValidateChip(const QString &chipName)

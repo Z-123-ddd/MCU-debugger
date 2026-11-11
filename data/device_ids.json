@@ -30,10 +30,11 @@
       "mcu": "N32G455",
       "family": "N32G45x",
       "vendor": "Nationstech",
-      "devId": "0x0",
-      "verified": false,
+      "devId": "0x511",
+      "verified": true,
       "svdHint": "N32G455",
-      "probeRsChip": "N32G455"
+      "probeRsChip": "N32G455",
+      "measuredNote": "DEV_ID 0x511 实测于用户的 N32G455 板（IDCODE @0xE0042000 = 0x8F544511，REV_ID 0x8F54，Cortex-M4）"
     },
     {
       "mcu": "N32G457",
@@ -43,6 +44,19 @@
       "verified": false,
       "svdHint": "N32G457",
       "probeRsChip": "N32G457"
+    },
+    {
+      "mcu": "N32H473CC",
+      "family": "N32H47x",
+      "vendor": "Nationstech",
+      "devId": "0x711",
+      "verified": true,
+      "svdHint": "N32H473",
+      "probeRsChip": "N32H473CC",
+      "packageName": "UQFN48",
+      "ioCount": 42,
+      "pinCount": 48,
+      "measuredNote": "DEV_ID 0x711 实测（IDCODE @0xE0042000 = 0xA5384711，REV_ID 0xA538，与 0x712 的 N32H473CE 同 REV_ID）；Flash 256KB / RAM 144KB；GPIO 仅 PA/PB/PC/PH -> 48 脚封装"
     },
     {
       "mcu": "N32H473CE",
