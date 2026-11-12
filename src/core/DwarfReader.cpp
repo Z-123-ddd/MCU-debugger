@@ -122,6 +122,8 @@ constexpr quint64 AT_BYTE_SIZE = 0x0b;
 constexpr quint64 AT_LOW_PC = 0x11;
 constexpr quint64 AT_HIGH_PC = 0x12;
 constexpr quint64 AT_FRAME_BASE = 0x40;
+constexpr quint64 AT_DECL_FILE = 0x3a;
+constexpr quint64 AT_STMT_LIST = 0x10;
 constexpr quint64 AT_COUNT = 0x37;
 constexpr quint64 AT_DATA_MEMBER_LOCATION = 0x38;
 constexpr quint64 AT_DECLARATION = 0x3c;
@@ -356,6 +358,9 @@ struct UnitContext
     int addressSize = 4;
     int version = 4;
     quint64 strOffsetsBase = 0;
+    /// `.debug_line` file-name table for this unit, index 1 = first entry
+    /// (DWARF uses 1-based indices in DW_AT_decl_file).
+    QStringList fileNames;
 };
 
 class Parser
@@ -363,9 +368,11 @@ class Parser
 public:
     Parser(const ElfFile &elf, const QByteArray &info, const QByteArray &abbrev,
            const QByteArray &str, const QByteArray &strOffsets,
-           const QByteArray &debugLoc, const QByteArray &debugFrame)
+           const QByteArray &debugLoc, const QByteArray &debugFrame,
+           const QByteArray &debugLine)
         : m_elf(elf), m_info(info), m_abbrev(abbrev), m_str(str),
-          m_strOffsets(strOffsets), m_debugLoc(debugLoc), m_debugFrame(debugFrame)
+          m_strOffsets(strOffsets), m_debugLoc(debugLoc), m_debugFrame(debugFrame),
+          m_debugLine(debugLine)
     {
         m_le = elf.littleEndian();
     }
@@ -416,6 +423,14 @@ public:
     /// Locate the FDE that covers \a pc: its entry offset (in .debug_frame) and the
     /// CIE offset it references. Returns false when nothing covers the PC.
     bool findFde(quint32 pc, quint64 *fdeEntry, quint64 *cieEntry);
+
+    /// File-name table at  offset in `.debug_line` (DWARF 2-4 prologue format).
+    ///
+    /// Only the prologue is decoded: the reader needs "which source file is index N"
+    /// (for DW_AT_decl_file), not line numbers. Version 5 changed the entry format to
+    /// a self-describing one; it is left unsupported and yields an empty table so
+    /// grouping simply falls back to a flat list rather than guessing.
+    QStringList fileTableAt(quint64 offset);
 
 private:
     static qint64 readSleb(const char **cursor, const char *end);
@@ -478,6 +493,9 @@ private:
     QByteArray m_strOffsets;
     QByteArray m_debugLoc;
     QByteArray m_debugFrame;
+    QByteArray m_debugLine;
+    /// stmt_list offset -> file table, so units sharing a line table parse it once.
+    QHash<quint64, QStringList> m_fileTables;
     QHash<quint32, Cfa> m_cfaCache;
     bool m_le = true;
     QHash<quint64, QHash<quint64, Abbrev>> m_abbrevCache; ///< by abbrev-section offset
@@ -776,6 +794,12 @@ bool Parser::readUnit(Cursor &info, UnitContext *unit, QVector<Die> *dies, quint
             // names of every later DIE depend on it.
             if (spec.name == AT_STR_OFFSETS_BASE)
                 unit->strOffsetsBase = value.u;
+            // The line table holds the file names that DW_AT_decl_file indexes into.
+            // Offset 0 is a *valid* line table (it is the first one in the section),
+            // so the presence of the attribute is what matters, not a non-zero value
+            // -- testing `!= 0` silently dropped the first compilation unit's files.
+            if (spec.name == AT_STMT_LIST)
+                unit->fileNames = fileTableAt(value.u);
         }
         if (!info.ok())
             break;
@@ -1280,6 +1304,11 @@ void Parser::emitVariable(const Die &variable, const UnitContext &unit,
         ++m_variablesNoType;
         return;
     }
+    // Which source file this belongs to: DW_AT_decl_file is a 1-based index into the
+    // unit's line-table file list.
+    const quint64 declFile = variable.u(AT_DECL_FILE, 0);
+    if (declFile > 0 && declFile <= static_cast<quint64>(unit.fileNames.size()))
+        node.sourceFile = unit.fileNames.at(static_cast<int>(declFile) - 1);
     node.linkageName = variable.text(AT_LINKAGE_NAME);
     if (node.linkageName.isEmpty())
         node.linkageName = variable.text(AT_MIPS_LINKAGE_NAME);
@@ -1403,6 +1432,78 @@ qint64 Parser::readSleb(const char **cursor, const char *end)
         result |= -(Q_INT64_C(1) << shift);
     *cursor = p;
     return result;
+}
+
+QStringList Parser::fileTableAt(quint64 offset)
+{
+    if (m_debugLine.isEmpty() || offset >= static_cast<quint64>(m_debugLine.size()))
+        return {};
+    const auto cached = m_fileTables.constFind(offset);
+    if (cached != m_fileTables.constEnd())
+        return cached.value();
+
+    QStringList names;
+    Cursor c{m_debugLine.constData(), static_cast<int>(m_debugLine.size()),
+             static_cast<int>(offset), m_le};
+    const quint64 unitLength = c.readU(4);
+    if (!c.ok() || unitLength == 0 || unitLength == 0xffffffffu)
+        return {};
+    const int version = static_cast<int>(c.readU(2));
+    const quint64 headerLength = c.readU(4);
+    if (!c.ok())
+        return {};
+    // Version 5 rewrote the prologue (directory/file entry formats). Bail out rather
+    // than mis-parse: the caller then shows no grouping.
+    if (version < 1 || version > 4) {
+        m_fileTables.insert(offset, names);
+        return names;
+    }
+
+    c.readU(1);                       // minimum_instruction_length
+    if (version >= 4)
+        c.readU(1);                   // maximum_operations_per_instruction
+    c.readU(1);                       // default_is_stmt
+    c.readU(1);                       // line_base (signed, unused here)
+    c.readU(1);                       // line_range
+    const quint64 opcodeBase = c.readU(1);
+    if (!c.ok() || opcodeBase == 0 || opcodeBase > 32)
+        return {};
+    for (quint64 i = 1; i < opcodeBase; ++i)
+        c.readU(1);                   // standard_opcode_lengths
+
+    // include_directories: NUL-terminated strings, terminated by an empty one.
+    QStringList directories;
+    while (c.ok() && c.remaining() > 0) {
+        const QString dir = c.readCString();
+        if (dir.isEmpty())
+            break;
+        directories << dir;
+    }
+
+    // file_names: { name, dir_index (uleb), mtime (uleb), size (uleb) } until an
+    // empty name. The index is 1-based, so index N maps to names[N-1].
+    while (c.ok() && c.remaining() > 0) {
+        const QString name = c.readCString();
+        if (name.isEmpty())
+            break;
+        const quint64 dirIndex = c.readUleb();
+        c.readUleb();                 // mtime
+        c.readUleb();                 // length
+        // Keep just the base name: the directory is usually a long absolute build
+        // path, and the variable panel is narrow.
+        QString display = name;
+        const int slash = qMax(display.lastIndexOf(QLatin1Char('/')),
+                               display.lastIndexOf(QChar(92)));
+        if (slash >= 0)
+            display = display.mid(slash + 1);
+        Q_UNUSED(dirIndex);
+        Q_UNUSED(directories);
+        names << display;
+    }
+
+    Q_UNUSED(headerLength);
+    m_fileTables.insert(offset, names);
+    return names;
 }
 
 bool Parser::findFde(quint32 pc, quint64 *fdeEntry, quint64 *cieEntry)
@@ -1768,7 +1869,8 @@ bool DwarfReader::cfaAt(const ElfFile &elf, quint32 pc, int *reg, qint32 *offset
     // a frame-only instance is enough here.
     const QByteArray info = elf.sectionData(QStringLiteral(".debug_info"));
     const QByteArray abbrev = elf.sectionData(QStringLiteral(".debug_abbrev"));
-    Parser parser(elf, info, abbrev, QByteArray(), QByteArray(), QByteArray(), frame);
+    Parser parser(elf, info, abbrev, QByteArray(), QByteArray(), QByteArray(), frame,
+                  QByteArray());
     const auto cfa = parser.cfaForPc(pc);
     if (!cfa.valid())
         return false;
@@ -1820,7 +1922,8 @@ Result<DwarfContents> DwarfReader::read(const ElfFile &elf)
 
     const QByteArray debugLoc = elf.sectionData(QStringLiteral(".debug_loc"));
     const QByteArray debugFrame = elf.sectionData(QStringLiteral(".debug_frame"));
-    Parser parser(elf, info, abbrev, str, strOffsets, debugLoc, debugFrame);
+    const QByteArray debugLine = elf.sectionData(QStringLiteral(".debug_line"));
+    Parser parser(elf, info, abbrev, str, strOffsets, debugLoc, debugFrame, debugLine);
     return parser.run();
 }
 

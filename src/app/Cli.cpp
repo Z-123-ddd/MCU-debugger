@@ -2388,23 +2388,67 @@ int runSelftest(const Options &options)
             QString error;
             const bool imported = page.importSymbolFile(axf, &error);
             check(imported, QStringLiteral("ScopePage 能导入 .axf"), error);
-            auto *tree = page.findChild<QTreeWidget *>();
+            // The selector lives in its own dock now, so it is not a child of the page.
+            QTreeWidget *tree = page.variableTree();
+            // Mirrors ScopePage's internal placeholder role (UserRole + 4).
+            constexpr int kPlaceholderRoleProbe = Qt::UserRole + 4;
             check(tree != nullptr, QStringLiteral("找到变量树控件"), QString());
             if (imported && tree) {
                 check(tree->columnCount() == 4,
                       QStringLiteral("变量树有 4 列（变量/类型/地址/大小）"),
                       QStringLiteral("%1 列").arg(tree->columnCount()));
                 check(tree->topLevelItemCount() > 0,
-                      QStringLiteral("树里有顶层变量"),
+                      QStringLiteral("树里有顶层行"),
                       QStringLiteral("%1 个").arg(tree->topLevelItemCount()));
+
+                // Top level is one row per SOURCE FILE (that is what makes a 4000-name
+                // project navigable), with the variables underneath.
+                QTreeWidgetItem *fixtureFile = nullptr;
+                for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+                    QTreeWidgetItem *row = tree->topLevelItem(i);
+                    // Exact match: "symbol_test_b.c" also ends with "symbol_test.c"
+                    // is false, but be explicit so the assertion cannot drift.
+                    if (row->text(0) == QLatin1String("symbol_test.c"))
+                        fixtureFile = row;
+                }
+                check(fixtureFile != nullptr,
+                      QStringLiteral("顶层按源文件分组（找到 symbol_test.c）"),
+                      [tree] {
+                          QStringList names;
+                          for (int i = 0; i < tree->topLevelItemCount() && i < 6; ++i)
+                              names << tree->topLevelItem(i)->text(0);
+                          return names.join(QStringLiteral(", "));
+                      }());
+                if (fixtureFile) {
+                    check(fixtureFile->text(1).contains(QStringLiteral("个变量")),
+                          QStringLiteral("文件行显示变量个数"), fixtureFile->text(1));
+                    check(fixtureFile->childCount() == 1,
+                          QStringLiteral("文件行未展开时只有占位子节点"),
+                          QStringLiteral("%1 个").arg(fixtureFile->childCount()));
+                    fixtureFile->setExpanded(true);
+                    check(fixtureFile->childCount() >= 4,
+                          QStringLiteral("展开文件后列出其中的变量"),
+                          QStringLiteral("%1 个").arg(fixtureFile->childCount()));
+                }
 
                 // Locate g_points: it must be a top-level item with element children,
                 // each of which has member children.
                 QTreeWidgetItem *points = nullptr;
-                for (int i = 0; i < tree->topLevelItemCount(); ++i) {
-                    if (tree->topLevelItem(i)->text(0) == QLatin1String("g_points"))
-                        points = tree->topLevelItem(i);
-                }
+                auto findVariableRow = [&tree](const QString &name) -> QTreeWidgetItem * {
+                    for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+                        QTreeWidgetItem *fileRow = tree->topLevelItem(i);
+                        if (fileRow->childCount() == 1
+                            && fileRow->child(0)->data(0, kPlaceholderRoleProbe).toBool()) {
+                            fileRow->setExpanded(true);
+                        }
+                        for (int j = 0; j < fileRow->childCount(); ++j) {
+                            if (fileRow->child(j)->text(0) == name)
+                                return fileRow->child(j);
+                        }
+                    }
+                    return nullptr;
+                };
+                points = findVariableRow(QStringLiteral("g_points"));
                 check(points != nullptr, QStringLiteral("顶层找到 g_points"),
                       points ? QString() : QStringLiteral("缺失"));
                 if (points) {
@@ -2567,11 +2611,7 @@ int runSelftest(const Options &options)
                 page.applyLocals(0, 0, {});
 
 
-                QTreeWidgetItem *adc = nullptr;
-                for (int i = 0; i < tree->topLevelItemCount(); ++i) {
-                    if (tree->topLevelItem(i)->text(0) == QLatin1String("g_adc_raw"))
-                        adc = tree->topLevelItem(i);
-                }
+                QTreeWidgetItem *adc = findVariableRow(QStringLiteral("g_adc_raw"));
                 if (adc)
                     adc->setExpanded(true); // a leaf: expanding must add nothing
                 check(adc != nullptr && adc->text(1) == QLatin1String("uint16_t[4]")

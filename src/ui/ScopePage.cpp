@@ -6,6 +6,8 @@
 #include "ui/PlotWidget.h"
 
 #include <QApplication>
+
+#include <functional>
 #include <QCheckBox>
 #include <QClipboard>
 #include <QComboBox>
@@ -46,7 +48,15 @@ ScopePage::ScopePage(QWidget *parent)
     connect(m_browseButton, &QPushButton::clicked, this, &ScopePage::onBrowse);
 
     // --- variable list ------------------------------------------------------
-    auto *listGroup = new QGroupBox(QStringLiteral("可采样变量（全局 / 静态）"), this);
+    // Parentless on purpose: MainWindow puts this in a dock so it can be moved,
+    // floated or hidden, and the plot gets the full width of the tab. Owning the
+    // widget here keeps all the tree logic (lazy loading, tri-state, filtering) in
+    // one place instead of splitting it across two classes.
+    m_selectorBox = new QWidget(nullptr);
+    auto *listGroup = new QGroupBox(QStringLiteral("可采样变量（全局 / 静态）"), m_selectorBox);
+    auto *selectorLayout = new QVBoxLayout(m_selectorBox);
+    selectorLayout->setContentsMargins(0, 0, 0, 0);
+    selectorLayout->addWidget(listGroup);
     auto *listLayout = new QVBoxLayout(listGroup);
     listLayout->setContentsMargins(6, 6, 6, 6);
     listLayout->setSpacing(4);
@@ -78,7 +88,8 @@ ScopePage::ScopePage(QWidget *parent)
     m_variableTree->header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
     listLayout->addWidget(m_variableTree, 1);
 
-    root->addWidget(listGroup, 2);
+    // (the selector is shown by MainWindow in a dock, not here)
+
 
     connect(m_filterEdit, &QLineEdit::textChanged, this, &ScopePage::onFilterChanged);
     connect(m_selectAll, &QCheckBox::checkStateChanged, this, [this](Qt::CheckState state) {
@@ -235,6 +246,7 @@ bool ScopePage::importSymbolFile(const QString &path, QString *error)
     m_pathEdit->setToolTip(path);
     rebuildVariableList();
     refreshState();
+    emit symbolsImported();
     emit statusMessage(QStringLiteral("已导入 %1：%2 个变量（DWARF v%3）")
                            .arg(QFileInfo(path).fileName())
                            .arg(m_symbols.variables.size())
@@ -268,8 +280,37 @@ QString childPath(const QString &parent, const QString &name)
     return parent + QLatin1Char('.') + name;
 }
 
+/// Multi-line tooltip for a variable row: the full path plus everything DWARF said
+/// about it. Shared, so a file row's children and an expanded member look identical.
+QString tooltipFor(const VariableNode &node, const QString &fullPath)
+{
+    QStringList tip;
+    tip << fullPath;
+    if (!node.sourceFile.isEmpty())
+        tip << QStringLiteral("文件: %1").arg(node.sourceFile);
+    tip << QStringLiteral("类型: %1（%2）").arg(node.typeLabel(), nodeKindName(node.kind));
+    if (node.kind == NodeKind::Array) {
+        tip << QStringLiteral("元素数: %1，每元素 %2 字节")
+                   .arg(node.elementCount)
+                   .arg(node.elementSize);
+    }
+    if (node.hasAddress && node.address != 0)
+        tip << QStringLiteral("地址: %1").arg(hexAddr(node.address));
+    if (node.byteSize > 0)
+        tip << QStringLiteral("大小: %1 字节").arg(node.byteSize);
+    if (node.samplable())
+        tip << QStringLiteral("采样: %1").arg(scalarKindName(node.scalar));
+    if (node.addressFromSymbol)
+        tip << QStringLiteral("（地址取自链接符号表）");
+    if (node.incomplete)
+        tip << QStringLiteral("（布局不完整：类型仅有声明，或展开已截断）");
+    return tip.join(QChar(10));
+}
+
 /// Marker stored on a placeholder child so it can be recognised and removed.
 constexpr int kPlaceholderRole = Qt::UserRole + 4;
+/// Index into m_groups for a file row, -1 for a variable row.
+constexpr int kFileGroupRole = Qt::UserRole + 5;
 
 } // namespace
 
@@ -302,6 +343,7 @@ QTreeWidgetItem *ScopePage::makeItem(const VariableNode &node, const QString &pa
     item->setData(0, Qt::UserRole + 2, node.isAggregate());
     // Lazy-loading state: has this node's subtree been materialised yet?
     item->setData(0, Qt::UserRole + 3, false);
+    item->setData(0, kFileGroupRole, -1);
 
     // Tooltips are built lazily too -- 6000 multi-line tooltips is megabytes of
     // QString and shows up in the import time for no benefit.
@@ -315,6 +357,30 @@ QTreeWidgetItem *ScopePage::makeItem(const VariableNode &node, const QString &pa
         placeholder->setFlags(Qt::NoItemFlags);
         placeholder->setText(0, QStringLiteral("…"));
     }
+    return item;
+}
+
+QTreeWidgetItem *ScopePage::makeFileItem(const FileGroup &group, int groupIndex)
+{
+    auto *item = new QTreeWidgetItem(m_variableTree);
+    item->setText(0, group.file);
+    item->setText(1, QStringLiteral("%1 个变量").arg(group.variables.size()));
+    item->setText(3, QStringLiteral("%1 个节点").arg(group.nodeCount));
+    item->setData(0, Qt::UserRole, QString());
+    item->setData(0, Qt::UserRole + 2, true); // aggregating: ticking it ticks all
+    item->setData(0, Qt::UserRole + 3, false);
+    item->setData(0, kFileGroupRole, groupIndex);
+    item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+    item->setToolTip(0, QStringLiteral("%1\n%2 个变量 / %3 个节点")
+                            .arg(group.file)
+                            .arg(group.variables.size())
+                            .arg(group.nodeCount));
+
+    // Same lazy trick as an aggregate: one placeholder keeps the arrow drawn.
+    auto *placeholder = new QTreeWidgetItem(item);
+    placeholder->setData(0, kPlaceholderRole, true);
+    placeholder->setFlags(Qt::NoItemFlags);
+    placeholder->setText(0, QStringLiteral("…"));
     return item;
 }
 
@@ -332,6 +398,31 @@ void ScopePage::populateChildren(QTreeWidgetItem *item)
         delete item->takeChild(0);
     }
 
+    // A file row's children are the variables declared in that file; a variable
+    // row's children come from the model tree.
+    // An unset role must mean "not a file row": QVariant::toInt() on an invalid
+    // variant returns 0, which silently treated every other aggregate (the locals
+    // header) as file group #0 and filled it with that file's variables.
+    const QVariant fileRole = item->data(0, kFileGroupRole);
+    const int groupIndex = fileRole.isValid() ? fileRole.toInt() : -1;
+    if (groupIndex >= 0) {
+        if (groupIndex >= m_groups.size())
+            return;
+        const QSignalBlocker fileBlocker(m_variableTree);
+        for (const VariableNode &variable : m_groups.at(groupIndex).variables) {
+            const QString fullPath = childPath(QString(), variable.name);
+            QTreeWidgetItem *childItem = makeItem(variable, fullPath, item);
+            if (variable.children.isEmpty() && variable.samplable()) {
+                childItem->setCheckState(0, m_selectedLeaves.contains(fullPath)
+                                                ? Qt::Checked
+                                                : Qt::Unchecked);
+            }
+            childItem->setToolTip(0, tooltipFor(variable, fullPath));
+        }
+        recomputeAncestors(item->child(0));
+        return;
+    }
+
     const QString path = item->data(0, Qt::UserRole).toString();
     const VariableNode *node = m_nodeByPath.value(path, nullptr);
     if (!node || node->children.isEmpty())
@@ -346,26 +437,7 @@ void ScopePage::populateChildren(QTreeWidgetItem *item)
                                             ? Qt::Checked
                                             : Qt::Unchecked);
         }
-        // Tooltip on demand: only for items that actually exist.
-        QStringList tip;
-        tip << childFullPath;
-        tip << QStringLiteral("类型: %1（%2）").arg(child.typeLabel(), nodeKindName(child.kind));
-        if (child.kind == NodeKind::Array) {
-            tip << QStringLiteral("元素数: %1，每元素 %2 字节")
-                       .arg(child.elementCount)
-                       .arg(child.elementSize);
-        }
-        if (child.hasAddress && child.address != 0)
-            tip << QStringLiteral("地址: %1").arg(hexAddr(child.address));
-        if (child.byteSize > 0)
-            tip << QStringLiteral("大小: %1 字节").arg(child.byteSize);
-        if (child.samplable())
-            tip << QStringLiteral("采样: %1").arg(scalarKindName(child.scalar));
-        if (child.addressFromSymbol)
-            tip << QStringLiteral("（地址取自链接符号表）");
-        if (child.incomplete)
-            tip << QStringLiteral("（布局不完整：类型仅有声明，或展开已截断）");
-        childItem->setToolTip(0, tip.join(QLatin1Char('\n')));
+        childItem->setToolTip(0, tooltipFor(child, childFullPath));
     }
     // Newly created children can flip this node between checked/partial/unchecked.
     recomputeAncestors(item->child(0));
@@ -379,6 +451,34 @@ void ScopePage::rebuildVariableList()
 
     const QString needle = m_filterEdit->text().trimmed();
     m_visibleRoots = m_symbols.filteredRoots(needle);
+
+    // Regroup for display. Grouping is done here rather than in the model because
+    // the filter changes which variables are visible, but the model itself must stay
+    // a plain forest (sampling and the frame layout work off it).
+    {
+        QMap<QString, FileGroup> byFile;
+        std::function<void(const VariableNode &)> add = [&](const VariableNode &node) {
+            const QString key = node.sourceFile.isEmpty() ? QStringLiteral("(未知文件)")
+                                                          : node.sourceFile;
+            FileGroup &group = byFile[key];
+            group.file = key;
+            group.variables.append(node);
+            group.nodeCount += node.totalNodeCount();
+        };
+        for (const VariableNode &root : m_visibleRoots)
+            add(root);
+        m_groups.clear();
+        m_groups.reserve(byFile.size());
+        FileGroup unknown;
+        for (auto it = byFile.constBegin(); it != byFile.constEnd(); ++it) {
+            if (it.key() == QStringLiteral("(未知文件)"))
+                unknown = it.value();
+            else
+                m_groups.append(it.value());
+        }
+        if (unknown.nodeCount > 0)
+            m_groups.append(unknown); // always last
+    }
 
     // Index every visible node by path so a lazy expansion can find its subtree.
     struct Index
@@ -405,6 +505,9 @@ void ScopePage::rebuildVariableList()
         m_localHeader = new QTreeWidgetItem(m_variableTree);
         m_localHeader->setText(0, QStringLiteral("局部变量 @ %1").arg(m_localFunction));
         m_localHeader->setText(1, QStringLiteral("停机时可读"));
+        m_localHeader->setData(0, Qt::UserRole, QString());
+        m_localHeader->setData(0, kFileGroupRole, -1);
+        m_localHeader->setData(0, Qt::UserRole + 3, true); // children are created below
         m_localHeader->setFlags(Qt::ItemIsEnabled);
         m_localHeader->setExpanded(true);
         for (const VariableNode &local : m_localRoots) {
@@ -417,36 +520,27 @@ void ScopePage::rebuildVariableList()
         populateChildren(m_localHeader);
     }
 
-    // Only top-level items are created now; each aggregate gets one placeholder
-    // child. This is the difference between 637 items and 5692.
-    for (const VariableNode &root : m_visibleRoots) {
-        const QString rootPath = childPath(QString(), root.name);
-        QTreeWidgetItem *item = makeItem(root, rootPath, nullptr);
-        if (root.children.isEmpty() && root.samplable()) {
-            item->setCheckState(0, m_selectedLeaves.contains(rootPath) ? Qt::Checked
-                                                                      : Qt::Unchecked);
-        }
-        QStringList tip;
-        tip << item->data(0, Qt::UserRole).toString();
-        tip << QStringLiteral("类型: %1（%2）").arg(root.typeLabel(), nodeKindName(root.kind));
-        if (root.hasAddress && root.address != 0)
-            tip << QStringLiteral("地址: %1").arg(hexAddr(root.address));
-        if (root.byteSize > 0)
-            tip << QStringLiteral("大小: %1 字节").arg(root.byteSize);
-        if (root.samplable())
-            tip << QStringLiteral("采样: %1").arg(scalarKindName(root.scalar));
-        item->setToolTip(0, tip.join(QLatin1Char('\n')));
-    }
+    // Top level is one row per source file; the variables in it are created when the
+    // file is opened. A flat 637-row list of names was unusable; file -> variable is
+    // how the user knows where to look.
+    for (int i = 0; i < m_groups.size(); ++i)
+        makeFileItem(m_groups.at(i), i);
 
-    // A filter that matched inside a root should reveal one level, otherwise the
-    // user sees a collapsed root and cannot tell the search worked.
+    // A filter that matched inside a file should reveal the path to the match,
+    // otherwise the user sees collapsed rows and cannot tell the search worked.
     if (!needle.isEmpty()) {
         for (int i = 0; i < m_variableTree->topLevelItemCount(); ++i) {
             QTreeWidgetItem *item = m_variableTree->topLevelItem(i);
             item->setExpanded(true);
             populateChildren(item);
-            if (item->childCount() == 1)
-                item->child(0)->setExpanded(true);
+            // Show the matched variables themselves (aggregates stay collapsed so a
+            // big struct does not explode the view).
+            for (int j = 0; j < item->childCount(); ++j) {
+                QTreeWidgetItem *child = item->child(j);
+                if (child->data(0, Qt::UserRole + 2).toBool())
+                    continue;
+                child->setHidden(false);
+            }
         }
     }
     Q_UNUSED(blocker);
@@ -602,15 +696,22 @@ void ScopePage::onVariableToggled(QTreeWidgetItem *item, int column)
         // Record the choice against every leaf of this subtree, including the ones
         // whose widgets do not exist yet -- otherwise ticking a collapsed struct
         // would sample nothing.
-        if (const VariableNode *node = m_nodeByPath.value(path, nullptr)) {
-            QStringList leaves;
-            collectLeafPathsAt(*node, path, &leaves);
-            for (const QString &leaf : leaves) {
-                if (state == Qt::Checked)
-                    m_selectedLeaves.insert(leaf);
-                else
-                    m_selectedLeaves.remove(leaf);
+        QStringList leaves;
+        const QVariant fileRole = item->data(0, kFileGroupRole);
+        const int groupIndex = fileRole.isValid() ? fileRole.toInt() : -1;
+        if (groupIndex >= 0 && groupIndex < m_groups.size()) {
+            // A file row: every variable declared in that file.
+            for (const VariableNode &variable : m_groups.at(groupIndex).variables) {
+                collectLeafPathsAt(variable, childPath(QString(), variable.name), &leaves);
             }
+        } else if (const VariableNode *node = m_nodeByPath.value(path, nullptr)) {
+            collectLeafPathsAt(*node, path, &leaves);
+        }
+        for (const QString &leaf : leaves) {
+            if (state == Qt::Checked)
+                m_selectedLeaves.insert(leaf);
+            else
+                m_selectedLeaves.remove(leaf);
         }
     } else if (!aggregate) {
         if (state == Qt::Checked)

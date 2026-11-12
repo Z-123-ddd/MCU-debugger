@@ -65,6 +65,16 @@ int runSymbols(const Options &options)
             .arg(table.variables.size() - fromSymbol)
             .arg(fromSymbol));
 
+    const QVector<FileGroup> files = table.groupedByFile();
+    out(QStringLiteral("    按文件分组: %1 个文件").arg(files.size()));
+    for (int i = 0; i < files.size() && i < 12; ++i) {
+        out(QStringLiteral("      %1  %2 个变量")
+                .arg(files.at(i).file, -32)
+                .arg(files.at(i).variables.size()));
+    }
+    if (files.size() > 12)
+        out(QStringLiteral("      ... 其余 %1 个文件").arg(files.size() - 12));
+
     out(QString());
     out(QStringLiteral("    变量树（%1 个根，%2 个节点）")
             .arg(table.roots.size())

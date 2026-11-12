@@ -180,6 +180,7 @@ void MainWindow::createUi()
     connect(quitAction, &QAction::triggered, this, &QWidget::close);
 
     auto *viewMenu = menuBar()->addMenu(QStringLiteral("视图(&V)"));
+    viewMenu->setObjectName(QStringLiteral("ViewMenu"));
     auto *themeLight = viewMenu->addAction(QStringLiteral("浅色主题"));
     connect(themeLight, &QAction::triggered, this, [this] {
         AppSettings::setTheme(QStringLiteral("light"));
@@ -391,6 +392,30 @@ void MainWindow::createCentralPages()
     m_scopePage = new ScopePage(m_tabs);
     m_tabs->addTab(m_scopePage, QStringLiteral("变量曲线 (J-Scope)"));
     m_scopePage->setProbe(m_probe.get());
+
+    // Variable selection lives in its own dock rather than inside the tab: it is the
+    // tallest thing on the page and would otherwise squeeze the waveform. A dock can
+    // be dragged, floated into a second monitor, or hidden while plotting.
+    m_variableDock = new QDockWidget(QStringLiteral("变量选择"), this);
+    m_variableDock->setObjectName(QStringLiteral("VariableDock"));
+    m_variableDock->setFeatures(QDockWidget::DockWidgetMovable
+                                | QDockWidget::DockWidgetFloatable
+                                | QDockWidget::DockWidgetClosable);
+    m_variableDock->setMinimumWidth(260);
+    m_variableDock->setWidget(m_scopePage->variableSelector());
+    addDockWidget(Qt::LeftDockWidgetArea, m_variableDock);
+    // Show it as a tab next to the peripheral tree, so opening it does not halve the
+    // width available to the middle column.
+    if (auto *treeDock = findChild<QDockWidget *>(QStringLiteral("PeripheralDock")))
+        tabifyDockWidget(treeDock, m_variableDock);
+    m_variableDock->hide(); // nothing to select before a symbol file is imported
+    if (auto *viewMenu = findChild<QMenu *>(QStringLiteral("ViewMenu")))
+        viewMenu->addAction(m_variableDock->toggleViewAction());
+    connect(m_scopePage, &ScopePage::symbolsImported, this, [this] {
+        // First import: reveal the selector, since that is the next thing to do.
+        if (m_variableDock)
+            m_variableDock->show();
+    });
     connect(m_scopePage, &ScopePage::statusMessage, this, [this](const QString &text) {
         statusBar()->showMessage(text, 5000);
     });

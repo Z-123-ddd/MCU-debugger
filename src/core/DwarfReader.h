@@ -65,6 +65,14 @@ struct VariableNode
     int elementSize = 0;    ///< scalar width, or the array's element width
     int elementCount = 1;   ///< array extent (1 for non-arrays)
 
+    /// Source file this variable was declared in, from DWARF's line table
+    /// (`DW_AT_decl_file` resolved through the CU's file-name table).
+    ///
+    /// Present because a flat list of 4000 names is unusable on a real project:
+    /// grouping by file is how every debugger's watch window stays navigable.
+    /// Empty when the compiler emitted no line table (or DWARF v5, whose table
+    /// format this reader does not decode).
+    QString sourceFile;
     QString linkageName;    ///< mangled name, roots only (pairs with .symtab)
     bool addressFromSymbol = false;
     /// Set when the layout could not be read (a forward declaration, or the

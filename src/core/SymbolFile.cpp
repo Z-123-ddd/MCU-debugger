@@ -142,6 +142,36 @@ QVector<VariableNode> SymbolTable::filteredRoots(const QString &needle) const
     return out;
 }
 
+QVector<FileGroup> SymbolTable::groupedByFile() const
+{
+    QMap<QString, FileGroup> byFile;
+    for (const VariableNode &root : roots) {
+        const QString key = root.sourceFile.isEmpty() ? QStringLiteral("(未知文件)")
+                                                      : root.sourceFile;
+        FileGroup &group = byFile[key];
+        group.file = key;
+        group.variables.append(root);
+        group.nodeCount += root.totalNodeCount();
+    }
+
+    // Keep "(未知文件)" last so a real grouping is never buried, and sort the rest.
+    QVector<FileGroup> out;
+    out.reserve(byFile.size());
+    FileGroup unknown;
+    for (auto it = byFile.constBegin(); it != byFile.constEnd(); ++it) {
+        if (it.key() == QStringLiteral("(未知文件)"))
+            unknown = it.value();
+        else
+            out.append(it.value());
+    }
+    std::sort(out.begin(), out.end(), [](const FileGroup &a, const FileGroup &b) {
+        return a.file.compare(b.file, Qt::CaseInsensitive) < 0;
+    });
+    if (unknown.nodeCount > 0)
+        out.append(unknown);
+    return out;
+}
+
 bool SymbolTable::frameBaseAt(quint32 pc, int *reg, qint32 *offset) const
 {
     const FunctionScope *scope = functionContaining(pc);

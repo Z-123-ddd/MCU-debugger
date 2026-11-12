@@ -3,6 +3,7 @@
 #include "core/DwarfReader.h"
 #include "core/Result.h"
 
+#include <QMap>
 #include <QString>
 #include <QVector>
 
@@ -38,6 +39,17 @@ struct WatchVariable
     int span() const { return elementSize * elementCount; }
 };
 
+/// One source file and the variables declared in it.
+///
+/// Real projects scatter thousands of globals over hundreds of files; a flat list is
+/// unusable. This is the grouping every debugger's watch window uses.
+struct FileGroup
+{
+    QString file;                    ///< base name ("axis.cpp"), empty for unknown
+    QVector<VariableNode> variables;
+    int nodeCount = 0;
+};
+
 /// Everything a symbol file tells us, resolved and merged.
 struct SymbolTable
 {
@@ -70,6 +82,11 @@ struct SymbolTable
     /// armclang states it directly (usually register 13 = SP, offset 0); GCC points
     /// at the CFA, whose rule changes inside the function, so it is read from
     /// `.debug_frame` for this exact PC.
+    /// Variables grouped by the source file they were declared in (name order,
+    /// address order inside each). Entries without file information land in a
+    /// trailing "(未知文件)" group.
+    QVector<FileGroup> groupedByFile() const;
+
     bool frameBaseAt(quint32 pc, int *reg, qint32 *offset) const;
 
     const FunctionScope *functionContaining(quint32 pc) const;

@@ -48,6 +48,13 @@ public:
     /// Load an ELF and populate the variable list. Returns false on failure.
     bool importSymbolFile(const QString &path, QString *error = nullptr);
     bool hasSymbols() const { return m_symbols.isValid(); }
+
+    /// The variable selector (filter + tree), owned by this page but shown by the
+    /// main window in a dock so it can float and does not squeeze the plot.
+    QWidget *variableSelector() const { return m_selectorBox; }
+
+    /// Test hook: the tree itself (it lives inside the selector dock, not the page).
+    QTreeWidget *variableTree() const { return m_variableTree; }
     QString symbolPath() const { return m_symbols.sourcePath; }
 
     /// Test/benchmark hook: apply a filter without going through the debounce.
@@ -63,6 +70,8 @@ public:
 
 signals:
     void statusMessage(const QString &text);
+    /// A symbol file was loaded: the selector has content worth showing.
+    void symbolsImported();
     /// Asking for locals: keeps the QAction/shortcut wiring free of direct calls.
     void localsRefreshRequested();
 
@@ -90,6 +99,8 @@ private:
     /// expand arrow without us building the subtree yet.
     QTreeWidgetItem *makeItem(const VariableNode &node, const QString &path,
                               QTreeWidgetItem *parent);
+    /// Top-level row for one source file; its variables are created on expansion.
+    QTreeWidgetItem *makeFileItem(const FileGroup &group, int groupIndex);
     /// Set  state on every checkbox below  item.
     static void setSubtreeChecked(QTreeWidgetItem *item, Qt::CheckState state);
     /// Recompute tri-state from the children, walking up to the root.
@@ -110,6 +121,10 @@ private:
     QVector<VariableNode> m_visibleRoots;
     /// path -> node, so a lazy expansion can find its subtree without a search.
     QHash<QString, const VariableNode *> m_nodeByPath;
+    /// Files shown in the tree, in display order. Top-level rows are files and their
+    /// children are the variables declared in them -- the layout every debugger's
+    /// watch window uses, and the only way 4000 names stay navigable.
+    QVector<FileGroup> m_groups;
     /// Locals of the function the core is halted in (empty when running).
     QVector<VariableNode> m_localRoots;
     /// Name of the function those locals belong to, for the section label.
@@ -137,6 +152,7 @@ private:
 
     QLineEdit *m_pathEdit = nullptr;
     QPushButton *m_browseButton = nullptr;
+    QWidget *m_selectorBox = nullptr;
     QLineEdit *m_filterEdit = nullptr;
     QTreeWidget *m_variableTree = nullptr;
     QCheckBox *m_selectAll = nullptr;
