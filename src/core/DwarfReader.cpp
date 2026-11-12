@@ -56,6 +56,8 @@ constexpr quint64 TAG_POINTER_TYPE = 0x0f;
 constexpr quint64 TAG_COMPILE_UNIT = 0x11;
 constexpr quint64 TAG_STRUCTURE_TYPE = 0x13;
 constexpr quint64 TAG_TYPEDEF = 0x16;
+constexpr quint64 TAG_CLASS_TYPE = 0x02;
+constexpr quint64 TAG_NAMESPACE = 0x39;
 constexpr quint64 TAG_UNION_TYPE = 0x17;
 constexpr quint64 TAG_SUBRANGE_TYPE = 0x21;
 constexpr quint64 TAG_BASE_TYPE = 0x24;
@@ -75,6 +77,8 @@ constexpr quint64 AT_ENCODING = 0x3e;
 constexpr quint64 AT_UPPER_BOUND = 0x2f;
 constexpr quint64 AT_LOWER_BOUND = 0x22;
 constexpr quint64 AT_TYPE = 0x49;
+constexpr quint64 AT_LINKAGE_NAME = 0x6e;
+constexpr quint64 AT_MIPS_LINKAGE_NAME = 0x2007;
 constexpr quint64 AT_STR_OFFSETS_BASE = 0x72;
 
 constexpr quint64 FORM_ADDR = 0x01;
@@ -255,6 +259,7 @@ struct FormValue
 struct Die
 {
     quint64 offset = 0;
+    quint64 parent = 0; ///< enclosing DIE (0 at CU level)
     quint64 tag = 0;
     QHash<quint64, FormValue> attrs;
 
@@ -291,9 +296,10 @@ class Parser
 {
 public:
     Parser(const ElfFile &elf, const QByteArray &info, const QByteArray &abbrev,
-           const QByteArray &str, const QByteArray &strOffsets)
+           const QByteArray &str, const QByteArray &strOffsets,
+           const QByteArray &debugLoc)
         : m_elf(elf), m_info(info), m_abbrev(abbrev), m_str(str),
-          m_strOffsets(strOffsets)
+          m_strOffsets(strOffsets), m_debugLoc(debugLoc)
     {
         m_le = elf.littleEndian();
     }
@@ -319,6 +325,37 @@ private:
     const Die *dieAt(quint64 offset) const;
 
     void emitVariable(const Die &variable, const UnitContext &unit, QVector<DwarfVariable> *out);
+
+    /// Address from a `DW_AT_location` location list in `.debug_loc`.
+    ///
+    /// A compiler may put a variable's address in a location list instead of an
+    /// inline `DW_OP_addr`. For a statically allocated variable the list holds one
+    /// range whose expression is exactly `DW_OP_addr`, so the answer is simply the
+    /// first such entry. Entries describing registers or frame offsets belong to
+    /// locals and are skipped -- those have no fixed address by nature.
+    quint32 addressFromLocationList(quint64 listOffset, const UnitContext &unit);
+
+    /// "ns::Class::name" for a C++ variable, so two same-named statics in
+    /// different namespaces stay distinguishable in the list.
+    QString qualifiedName(quint64 dieOffset, const QString &leaf) const;
+
+    /// Element count of an array DIE (1 when the extent cannot be determined).
+    int arrayExtent(quint64 arrayTypeOffset) const;
+
+    /// C++ types are often referenced by a forward declaration DIE in one CU while
+    /// the definition lives in another. `m_typeDefinitions` maps a type name to the
+    /// DIE that actually carries the layout.
+    QHash<QString, const Die *> m_typeDefinitions;
+
+    /// Struct/class/union DIE that owns the layout for  typeOffset, following
+    /// typedefs and forward declarations.
+    const Die *layoutOf(quint64 typeOffset) const;
+
+    /// Per-object budget for struct/array expansion, so one huge object cannot
+    /// produce a hundred thousand rows. It is reset for every top-level variable:
+    /// a file-wide budget gets consumed by the first few big objects, which made
+    /// later ones (ODrive's `controllers`) vanish entirely.
+    int m_expansionBudget = 0;
     void expandComposite(const Die &variable, const QString &baseName, quint64 typeOffset,
                          quint32 baseAddress, int depth, QVector<DwarfVariable> *out);
 
@@ -327,6 +364,7 @@ private:
     QByteArray m_abbrev;
     QByteArray m_str;
     QByteArray m_strOffsets;
+    QByteArray m_debugLoc;
     bool m_le = true;
     QHash<quint64, QHash<quint64, Abbrev>> m_abbrevCache; ///< by abbrev-section offset
     QHash<quint64, Die> m_dies;                            ///< by absolute offset
@@ -336,6 +374,16 @@ private:
     /// reconstructed while walking -- it cannot be found by scanning.
     QHash<quint64, QVector<Die>> m_children;
     int m_dwarfVersion = 0;
+
+    // Diagnostics: a CU that fails is currently skipped silently, which makes a
+    // nearly-empty result look like "the file has no variables".
+    int m_unitsSeen = 0;
+    int m_unitsFailed = 0;
+    int m_variablesSeen = 0;
+    int m_variablesNoAddress = 0;
+    int m_variablesNoType = 0;
+    int m_compositesSkipped = 0;
+    QStringList m_failures;
 };
 
 bool Parser::parseAbbrevTable(quint64 offset, QHash<quint64, Abbrev> *out)
@@ -617,12 +665,16 @@ bool Parser::readUnit(Cursor &info, UnitContext *unit, QVector<Die> *dies, quint
         }
         if (!info.ok())
             break;
-        if (!ancestors.isEmpty())
+        if (!ancestors.isEmpty()) {
+            die.parent = ancestors.last();
             m_children[ancestors.last()].append(die);
+        }
         if (abbrev.children)
             ancestors.append(die.offset);
         dies->append(die);
         m_dies.insert(die.offset, die);
+        if (die.tag == TAG_VARIABLE)
+            ++m_variablesSeen;
     }
 
     *nextOffset = static_cast<quint64>(unitEnd);
@@ -630,10 +682,108 @@ bool Parser::readUnit(Cursor &info, UnitContext *unit, QVector<Die> *dies, quint
     return info.ok();
 }
 
+quint32 Parser::addressFromLocationList(quint64 listOffset, const UnitContext &unit)
+{
+    if (m_debugLoc.isEmpty() || listOffset >= static_cast<quint64>(m_debugLoc.size()))
+        return 0;
+
+    Cursor c{m_debugLoc.constData(), static_cast<int>(m_debugLoc.size()),
+             static_cast<int>(listOffset), m_le};
+    const quint64 maxAddress = unit.addressSize >= 4 ? 0xFFFFFFFFull
+                                                     : ((Q_UINT64_C(1) << (unit.addressSize * 8)) - 1);
+    quint64 base = 0;
+    // A list is a sequence of [begin, end, uint16 len, expr]; (0,0) ends it and
+    // (maxAddress, base) sets the base other entries are relative to.
+    for (int guard = 0; guard < 4096; ++guard) {
+        const quint64 begin = c.readU(unit.addressSize);
+        const quint64 end = c.readU(unit.addressSize);
+        if (!c.ok())
+            return 0;
+        if (begin == 0 && end == 0)
+            return 0; // end of list, nothing static here
+        if (begin == maxAddress) {
+            base = end;
+            continue;
+        }
+        const quint64 length = c.readU(2);
+        if (!c.ok())
+            return 0;
+        const QByteArray expr = c.readBytes(static_cast<int>(length));
+        if (!c.ok())
+            return 0;
+        if (expr.size() >= 1 + unit.addressSize
+            && static_cast<quint8>(expr.at(0)) == OP_ADDR) {
+            const uchar *b = reinterpret_cast<const uchar *>(expr.constData() + 1);
+            quint64 value = 0;
+            if (m_le) {
+                for (int i = unit.addressSize - 1; i >= 0; --i)
+                    value = (value << 8) | b[i];
+            } else {
+                for (int i = 0; i < unit.addressSize; ++i)
+                    value = (value << 8) | b[i];
+            }
+            // Some producers store the address relative to a base entry.
+            if (base != 0 && value < base)
+                value += base;
+            return static_cast<quint32>(value);
+        }
+        // Not an address (register or frame offset): a local, so keep looking for a
+        // static entry -- there is at most one per variable in practice.
+    }
+    return 0;
+}
+
+QString Parser::qualifiedName(quint64 dieOffset, const QString &leaf) const
+{
+    QStringList scope;
+    quint64 cursor = dieOffset;
+    for (int depth = 0; depth < 16; ++depth) {
+        const Die *die = dieAt(cursor);
+        if (!die || die->parent == 0)
+            break;
+        const Die *parent = dieAt(die->parent);
+        if (!parent)
+            break;
+        // Only C++ scopes that name the variable; other DIEs are skipped so the
+        // path stays readable.
+        if (parent->tag == TAG_NAMESPACE || parent->tag == TAG_CLASS_TYPE
+            || parent->tag == TAG_STRUCTURE_TYPE || parent->tag == TAG_UNION_TYPE) {
+            const QString name = parent->text(AT_NAME);
+            if (!name.isEmpty())
+                scope.prepend(name);
+        }
+        cursor = die->parent;
+    }
+    if (scope.isEmpty())
+        return leaf;
+    return scope.join(QStringLiteral("::")) + QStringLiteral("::") + leaf;
+}
+
 const Die *Parser::dieAt(quint64 offset) const
 {
     const auto it = m_dies.constFind(offset);
     return it == m_dies.constEnd() ? nullptr : &it.value();
+}
+
+int Parser::arrayExtent(quint64 arrayTypeOffset) const
+{
+    const Die *die = dieAt(arrayTypeOffset);
+    if (!die || die->tag != TAG_ARRAY_TYPE)
+        return 1;
+    if (die->has(AT_COUNT))
+        return qMax(1, static_cast<int>(die->u(AT_COUNT, 1)));
+    if (die->has(AT_UPPER_BOUND))
+        return qMax(1, static_cast<int>(die->s(AT_UPPER_BOUND, 0)) + 1);
+    // The usual place is a child DW_TAG_subrange_type.
+    for (const Die &child : m_children.value(arrayTypeOffset)) {
+        if (child.tag != TAG_SUBRANGE_TYPE)
+            continue;
+        if (child.has(AT_COUNT))
+            return qMax(1, static_cast<int>(child.u(AT_COUNT, 1)));
+        if (child.has(AT_UPPER_BOUND))
+            return qMax(1, static_cast<int>(child.s(AT_UPPER_BOUND, 0)) + 1);
+    }
+    return 1;
 }
 
 Parser::TypeInfo Parser::resolveType(quint64 typeOffset, int depth)
@@ -715,27 +865,7 @@ Parser::TypeInfo Parser::resolveType(quint64 typeOffset, int depth)
     case TAG_ARRAY_TYPE: {
         const quint64 elementType = die->u(AT_TYPE, 0);
         TypeInfo element = resolveType(elementType, depth + 1);
-        // The extent lives on a child DW_TAG_subrange_type (either DW_AT_count or
-        // DW_AT_upper_bound); some producers put it on the array DIE itself.
-        int count = 0;
-        if (die->has(AT_COUNT))
-            count = static_cast<int>(die->u(AT_COUNT, 1));
-        else if (die->has(AT_UPPER_BOUND))
-            count = static_cast<int>(die->s(AT_UPPER_BOUND, 0)) + 1;
-        if (count <= 0) {
-            for (const Die &child : m_children.value(typeOffset)) {
-                if (child.tag != TAG_SUBRANGE_TYPE)
-                    continue;
-                if (child.has(AT_COUNT))
-                    count = static_cast<int>(child.u(AT_COUNT, 0));
-                else if (child.has(AT_UPPER_BOUND))
-                    count = static_cast<int>(child.s(AT_UPPER_BOUND, -1)) + 1;
-                if (count > 0)
-                    break;
-            }
-        }
-        if (count <= 0)
-            count = 1;
+        const int count = arrayExtent(typeOffset);
         info = element;
         info.elementCount = count * element.elementCount;
         info.elementTypeRef = elementType;
@@ -747,14 +877,27 @@ Parser::TypeInfo Parser::resolveType(quint64 typeOffset, int depth)
     }
     case TAG_STRUCTURE_TYPE:
     case TAG_UNION_TYPE:
+    case TAG_CLASS_TYPE: {
+        // A C++ forward declaration ("class Controller;" as DW_TAG_class_type with
+        // DW_AT_declaration) has no size and no children. Following it to the real
+        // definition is what makes `controllers` -- and every other C++ object --
+        // resolvable at all.
+        const Die *definition = die;
+        if (die->u(AT_DECLARATION, 0) != 0 || die->u(AT_BYTE_SIZE, 0) == 0) {
+            if (const Die *found = m_typeDefinitions.value(die->text(AT_NAME)); found)
+                definition = found;
+        }
         info.kind = ScalarKind::Composite;
-        info.display = die->text(AT_NAME);
-        if (info.display.isEmpty())
-            info.display = die->tag == TAG_UNION_TYPE ? QStringLiteral("union")
-                                                      : QStringLiteral("struct");
-        info.totalSize = static_cast<int>(die->u(AT_BYTE_SIZE, 0));
+        info.display = definition->text(AT_NAME);
+        if (info.display.isEmpty()) {
+            info.display = definition->tag == TAG_UNION_TYPE ? QStringLiteral("union")
+                                                             : QStringLiteral("struct");
+        }
+        info.totalSize = static_cast<int>(definition->u(AT_BYTE_SIZE, 0));
         info.elementSize = info.totalSize;
+        info.elementTypeRef = definition->offset;
         break;
+    }
     default:
         info.kind = ScalarKind::Unknown;
         break;
@@ -768,8 +911,49 @@ Parser::TypeInfo Parser::resolveType(quint64 typeOffset, int depth)
 void Parser::expandComposite(const Die &variable, const QString &baseName, quint64 typeOffset,
                              quint32 baseAddress, int depth, QVector<DwarfVariable> *out)
 {
-    if (depth > 3)
+    // Nested C++ objects are deep (ODrive keeps everything under
+    // controllers[].axis.controller.config…), so allow a few more levels than a
+    // flat C struct would need, while the budget stops runaway expansion.
+    if (depth > 8 || m_expansionBudget <= 0)
         return;
+
+    // An *array of structs* is common (controllers[], axis[], motor[]). The plain
+    // "resolve to a struct" walk below cannot represent it, which is why a 14 KB
+    // `controllers` object produced no rows at all.
+    {
+        quint64 probe = typeOffset;
+        for (int i = 0; i < 8; ++i) {
+            const Die *d = dieAt(probe);
+            if (!d)
+                break;
+            if (d->tag == TAG_ARRAY_TYPE) {
+                const quint64 elementType = d->u(AT_TYPE, 0);
+                const TypeInfo element = resolveType(elementType, depth + 1);
+                if (element.kind != ScalarKind::Composite)
+                    return; // scalar arrays are one row, handled by the caller
+                const int count = qMin(arrayExtent(probe), 16);
+                const int stride = element.elementSize > 0 ? element.elementSize
+                                                          : (count > 0 ? 1 : 1);
+                for (int index = 0; index < count && m_expansionBudget > 0; ++index) {
+                    expandComposite(variable,
+                                    QStringLiteral("%1[%2]").arg(baseName).arg(index),
+                                    elementType,
+                                    static_cast<quint32>(baseAddress + index * stride),
+                                    depth + 1, out);
+                }
+                return;
+            }
+            if (d->tag == TAG_TYPEDEF || d->tag == TAG_CONST_TYPE
+                || d->tag == TAG_VOLATILE_TYPE) {
+                probe = d->u(AT_TYPE, 0);
+                if (probe == 0)
+                    break;
+                continue;
+            }
+            break;
+        }
+    }
+
     const Die *type = dieAt(typeOffset);
     if (!type)
         return;
@@ -808,9 +992,11 @@ void Parser::expandComposite(const Die &variable, const QString &baseName, quint
                             static_cast<quint32>(baseAddress + memberOffset), depth + 1, out);
             continue;
         }
+        if (m_expansionBudget <= 0)
+            return;
+        --m_expansionBudget;
         DwarfVariable entry;
         entry.name = fullName;
-        entry.member = memberName;
         entry.typeDisplay = info.display;
         entry.kind = info.kind;
         entry.address = static_cast<quint32>(baseAddress + memberOffset);
@@ -833,11 +1019,13 @@ void Parser::emitVariable(const Die &variable, const UnitContext &unit,
 
     const quint64 typeOffset = variable.u(AT_TYPE, 0);
     const TypeInfo info = resolveType(typeOffset, 0);
-    if (info.kind == ScalarKind::Unknown && info.elementSize <= 0)
+    if (info.kind == ScalarKind::Unknown && info.elementSize <= 0) {
+        ++m_variablesNoType;
         return;
+    }
 
     // A fixed address is only present for statically allocated variables; locals
-    // carry a location list or a frame-relative expression instead.
+    // carry a frame-relative expression or a register location instead.
     quint32 address = 0;
     bool hasAddress = false;
     if (variable.has(AT_LOCATION)) {
@@ -856,27 +1044,44 @@ void Parser::emitVariable(const Die &variable, const UnitContext &unit,
             }
             address = value;
             hasAddress = (value != 0);
+        } else if (!loc.isBlock && loc.u != 0) {
+            // DW_FORM_sec_offset: a location list in .debug_loc. On the ODrive
+            // firmware most statics land here rather than in an inline DW_OP_addr.
+            const quint32 listed = addressFromLocationList(loc.u, unit);
+            if (listed != 0) {
+                address = listed;
+                hasAddress = true;
+            }
         }
-        // DW_OP_addrx needs .debug_addr, which this reader does not load; leave the
-        // address empty and SymbolFile fills it in from .symtab.
+        // DW_OP_addrx would need .debug_addr; when present the address is left
+        // empty and SymbolFile recovers it from the linker symbol.
     }
 
     if (info.kind == ScalarKind::Composite) {
-        if (!hasAddress)
+        if (!hasAddress) {
+            ++m_compositesSkipped;
             return; // members have no meaning without a base address
-        expandComposite(variable, name, typeOffset, address, 0, out);
+        }
+        m_expansionBudget = 3000;
+        expandComposite(variable, qualifiedName(variable.offset, name), typeOffset, address, 0,
+                        out);
         return;
     }
 
     DwarfVariable entry;
-    entry.name = name;
+    entry.name = qualifiedName(variable.offset, name);
     entry.typeDisplay = info.display;
     entry.kind = info.kind;
     entry.address = address;
     entry.hasAddress = hasAddress;
+    entry.linkageName = variable.text(AT_LINKAGE_NAME);
+    if (entry.linkageName.isEmpty())
+        entry.linkageName = variable.text(AT_MIPS_LINKAGE_NAME);
     entry.elementSize = info.elementSize;
     entry.elementCount = info.elementCount;
     entry.totalSize = info.totalSize;
+    if (!hasAddress)
+        ++m_variablesNoAddress;
     out->append(entry);
 }
 
@@ -888,12 +1093,22 @@ Result<QVector<DwarfVariable>> Parser::run()
 
     Cursor info{m_info.constData(), static_cast<int>(m_info.size()), 0, m_le};
     QVector<DwarfVariable> variables;
+    // Every unit is kept until the end: type resolution needs all of them.
+    QVector<QPair<UnitContext, QVector<Die>>> units;
 
     while (info.ok() && info.pos + 4 <= info.size) {
         UnitContext unit;
         QVector<Die> dies;
         quint64 next = 0;
+        ++m_unitsSeen;
         if (!readUnit(info, &unit, &dies, &next)) {
+            ++m_unitsFailed;
+            if (m_failures.size() < 8) {
+                m_failures << QStringLiteral("offset 0x%1, 读到 0x%2, %3 个 DIE")
+                                  .arg(info.pos > 0 ? info.pos : 0, 0, 16)
+                                  .arg(next, 0, 16)
+                                  .arg(dies.size());
+            }
             if (!info.ok())
                 break;
             // A corrupt unit: skip to where its length said it ends.
@@ -901,23 +1116,67 @@ Result<QVector<DwarfVariable>> Parser::run()
                 info.pos = static_cast<int>(next);
             continue;
         }
-        for (const Die &die : dies) {
-            if (die.tag == TAG_VARIABLE)
-                emitVariable(die, unit, &variables);
-        }
-        if (next <= static_cast<quint64>(info.pos))
+        units.append(qMakePair(unit, dies));
+        // readUnit already advanced the cursor to this unit's end, so comparing
+        // `next` against info.pos stopped after the FIRST compilation unit -- on a
+        // 107-CU C++ image that silently discarded 106 of them, and the caller saw
+        // "the file has 3 variables".
+        if (next == 0 || next > static_cast<quint64>(m_info.size()))
             break;
         info.pos = static_cast<int>(next);
+    }
+
+    // Pass 1b: index the type *definitions* by name.
+    //
+    // C++ references types through forward declarations as often as through
+    // definitions -- `controllers` is typed `Controller[1]` where the Controller DIE
+    // in that unit is a bare declaration. Resolving a variable must therefore be
+    // able to look the layout up across the whole file, which is only possible once
+    // every unit has been read.
+    for (const auto &unit : units) {
+        for (const Die &die : unit.second) {
+            if (die.tag != TAG_STRUCTURE_TYPE && die.tag != TAG_UNION_TYPE
+                && die.tag != TAG_CLASS_TYPE) {
+                continue;
+            }
+            if (die.u(AT_DECLARATION, 0) != 0 || die.u(AT_BYTE_SIZE, 0) == 0)
+                continue; // a declaration, not a layout
+            const QString name = die.text(AT_NAME);
+            if (name.isEmpty())
+                continue;
+            // Keep the first real definition: later duplicates describe the same
+            // type and would only make the result order-dependent.
+            if (!m_typeDefinitions.contains(name))
+                m_typeDefinitions.insert(name, &die);
+        }
+    }
+
+    // Pass 2: emit variables now that every type is reachable.
+    for (const auto &unit : units) {
+        for (const Die &die : unit.second) {
+            if (die.tag == TAG_VARIABLE)
+                emitVariable(die, unit.first, &variables);
+        }
     }
 
     if (!info.ok() && variables.isEmpty())
         return Result<QVector<DwarfVariable>>::failure(
             QStringLiteral("DWARF 解析失败（数据被截断或格式不支持）"));
 
-    Logger::instance()->debug(QStringLiteral("DWARF: 版本 %1，%2 个 DIE，%3 个可采样变量")
-                                  .arg(m_dwarfVersion)
-                                  .arg(m_dies.size())
-                                  .arg(variables.size()));
+    Logger::instance()->debug(
+        QStringLiteral("DWARF: 版本 %1，%2 个 CU（失败 %3），%4 个 DIE，"
+                       "%5 个变量 DIE，%6 个可采样（无地址 %7，无类型 %8，结构体缺地址 %9）")
+            .arg(m_dwarfVersion)
+            .arg(m_unitsSeen)
+            .arg(m_unitsFailed)
+            .arg(m_dies.size())
+            .arg(m_variablesSeen)
+            .arg(variables.size())
+            .arg(m_variablesNoAddress)
+            .arg(m_variablesNoType)
+            .arg(m_compositesSkipped));
+    for (const QString &failure : m_failures)
+        Logger::instance()->debug(QStringLiteral("DWARF CU 失败: %1").arg(failure));
     return Result<QVector<DwarfVariable>>::success(variables);
 }
 
@@ -948,7 +1207,8 @@ Result<QVector<DwarfVariable>> DwarfReader::readVariables(const ElfFile &elf)
         return Result<QVector<DwarfVariable>>::failure(
             QStringLiteral("ELF 中没有 .debug_abbrev，无法解析 DWARF"));
 
-    Parser parser(elf, info, abbrev, str, strOffsets);
+    const QByteArray debugLoc = elf.sectionData(QStringLiteral(".debug_loc"));
+    Parser parser(elf, info, abbrev, str, strOffsets, debugLoc);
     return parser.run();
 }
 

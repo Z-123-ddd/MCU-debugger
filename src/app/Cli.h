@@ -40,6 +40,8 @@ struct Options
     QString portName;
     /// --log <path>: log file (also enabled by default in AppDataLocation)
     QString logPath;
+    /// --symbols <path>: list the variables an .axf/.elf exposes (no hardware).
+    QString symbolPath;
     QStringList errors;
 };
 
@@ -52,6 +54,11 @@ int runSelftest(const Options &options);
 
 /// Time the GUI refresh path per poll; prints ms per stage.
 int runBench(const Options &options);
+
+/// `--symbols <file>`: parse a Keil .axf / ELF and list its sampleable variables.
+/// Needs no hardware, so it doubles as a way to check a symbol file before
+/// connecting.
+int runSymbols(const Options &options);
 
 /// `--probe-info`: load the J-Link DLL, print version/firmware/SN, try to connect.
 int runProbeInfo(const Options &options);

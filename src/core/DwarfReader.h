@@ -36,6 +36,11 @@ struct DwarfVariable
     int elementCount = 1;///< >1 for arrays
     int totalSize = 0;
     QString member;      ///< struct member path ("x" in "g_point.x"), empty for plain
+    /// Mangled symbol name (`DW_AT_linkage_name`). This is what the linker's
+    /// `.symtab` calls the variable, so it is the only reliable way to pair a
+    /// C++ DWARF entry with its load address -- the DWARF name is demangled
+    /// ("endpoint_id") while the symbol is "_ZL11endpoint_id".
+    QString linkageName;
 
     bool drawable() const
     {

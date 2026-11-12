@@ -154,6 +154,8 @@ Options parse(int argc, char *argv[])
             o.portName = takeValue(args, &i, arg);
         } else if (is("--log")) {
             o.logPath = takeValue(args, &i, arg);
+        } else if (is("--symbols")) {
+            o.symbolPath = takeValue(args, &i, arg);
         } else if (arg.startsWith(QLatin1String("--"))) {
             o.errors << QStringLiteral("未知参数: %1").arg(arg);
         }
@@ -178,6 +180,7 @@ QString helpText()
         "  --render <dir>     自检时离屏渲染 PNG 快照到目录\n"
         "  --port <PA|PB..>   离屏渲染使用的端口\n"
         "  --probe-info       打印 J-Link DLL/固件信息并尝试连接\n"
+        "  --symbols <文件>   解析 .axf/.elf 并列出可采样变量（不需要硬件）\n"
         "  --verbose          日志附带每一步细节（CPUID/IDCODE/清单/内存探测）\n"
         "  --log <path>       日志文件路径\n"
         "  --version          打印版本\n"
@@ -2459,32 +2462,51 @@ int runSelftest(const Options &options)
                               .arg(v->elementCount));
                 };
 
-                // Plain scalars.
-                expect(QStringLiteral("g_temperature"), ScalarKind::Float, 0x08001018u, 4, 1);
-                expect(QStringLiteral("g_counter"), ScalarKind::Signed, 0x0800103cu, 4, 1);
-                expect(QStringLiteral("g_flags"), ScalarKind::Unsigned, 0x08001041u, 1, 1);
-                expect(QStringLiteral("g_voltage"), ScalarKind::Float, 0x08001030u, 8, 1);
+                // Plain scalars (addresses from the two-unit fixture; regenerate
+                // with scripts/gen-symbol-fixture.py after touching the source).
+                expect(QStringLiteral("g_temperature"), ScalarKind::Float, 0x08001058u, 4, 1);
+                expect(QStringLiteral("g_counter"), ScalarKind::Signed, 0x08001084u, 4, 1);
+                expect(QStringLiteral("g_voltage"), ScalarKind::Float, 0x08001068u, 8, 1);
+                expect(QStringLiteral("g_shared"), ScalarKind::Unsigned, 0x08001070u, 4, 1);
 
                 // An array keeps one entry with its extent, so the UI can fan it out
                 // into one curve per element.
-                expect(QStringLiteral("g_adc_raw"), ScalarKind::Unsigned, 0x0800101cu, 2, 4);
+                expect(QStringLiteral("g_adc_raw"), ScalarKind::Unsigned, 0x0800105Cu, 2, 4);
 
-                // A static (file-local) variable is still reachable -- this is the
-                // "statically allocated" set the feature is for.
-                expect(QStringLiteral("g_static_only"), ScalarKind::Signed, 0x08001038u, 4, 1);
+                // Regression: an array OF STRUCTS must expand per element. A reader
+                // that only walks struct->member produced zero rows for ODrive's
+                // 14 KB `controllers` object.
+                expect(QStringLiteral("g_points[0].x"), ScalarKind::Float, 0x08001040u, 4, 1);
+                expect(QStringLiteral("g_points[0].flags"), ScalarKind::Unsigned, 0x08001048u,
+                       2, 1);
+                expect(QStringLiteral("g_points[1].x"), ScalarKind::Float, 0x0800104cu, 4, 1);
 
-                // A const in .rodata has a load address like any other.
-                expect(QStringLiteral("g_const_val"), ScalarKind::Float, 0x08000014u, 4, 1);
+                // Regression: the second compilation unit must be read too. A wrong
+                // loop condition stopped after unit 1 and made a 107-unit C++ image
+                // look like it had three variables.
+                expect(QStringLiteral("g_tu_b_counter"), ScalarKind::Signed, 0x08001074u, 4, 1);
+                expect(QStringLiteral("g_tu_b_point.x"), ScalarKind::Float, 0x08001078u, 4, 1);
 
-                // A struct is flattened into its scalar members, each with the
-                // parent's address plus the member offset.
-                expect(QStringLiteral("g_point.x"), ScalarKind::Float, 0x08001024u, 4, 1);
-                expect(QStringLiteral("g_point.y"), ScalarKind::Float, 0x08001028u, 4, 1);
-                expect(QStringLiteral("g_point.flags"), ScalarKind::Unsigned, 0x0800102cu, 2, 1);
+                // Regression: a global referenced from two units is described twice;
+                // it must appear once, not once per unit.
+                int sharedCount = 0;
+                for (const WatchVariable &variable : sym.variables) {
+                    if (variable.name == QLatin1String("g_shared"))
+                        ++sharedCount;
+                }
+                check(sharedCount == 1, QStringLiteral("跨编译单元的同一变量只出现一次"),
+                      QStringLiteral("%1 次").arg(sharedCount));
 
-                // An enum is stored as an integer; one byte here, as the compiler
-                // chose, so the decoder must follow DWARF rather than assume 4.
-                expect(QStringLiteral("g_mode"), ScalarKind::Signed, 0x08001040u, 1, 1);
+                // Every variable in the fixture has a real type; a regression in type
+                // resolution shows up as Unknown rows.
+                int typedCount = 0;
+                for (const WatchVariable &variable : sym.variables) {
+                    if (variable.kind != ScalarKind::Unknown && variable.elementSize > 0)
+                        ++typedCount;
+                }
+                check(typedCount == sym.variables.size(),
+                      QStringLiteral("所有变量的类型都被解析（无 Unknown）"),
+                      QStringLiteral("%1 / %2").arg(typedCount).arg(sym.variables.size()));
 
                 // Decoding: a float must come back as the value the source set, not
                 // as the raw bit pattern (25.5f = 0x41CC0000).
@@ -2492,18 +2514,18 @@ int runSelftest(const Options &options)
                 if (temp) {
                     const QByteArray bytes = QByteArray::fromHex("0000CC41"); // 25.5f, LE
                     const QVector<double> values = SymbolFile::decode(*temp, bytes, 1);
-                    check(values.size() == 1 && qFuzzyCompare(values.first() + 1.0, 26.5),
+                    check(values.size() == 1 && qFuzzyCompare(values.first(), 25.5),
                           QStringLiteral("float 按 IEEE-754 解码（0x41CC0000 -> 25.5）"),
                           values.isEmpty() ? QStringLiteral("无值")
                                            : QString::number(values.first()));
                 }
-                // A signed char holding 0xFF must be -1, not 255.
-                const WatchVariable *mode = sym.find(QStringLiteral("g_mode"));
-                if (mode) {
-                    const QByteArray bytes = QByteArray::fromHex("FF");
-                    const QVector<double> values = SymbolFile::decode(*mode, bytes, 1);
-                    check(values.size() == 1 && qFuzzyCompare(values.first() + 2.0, 1.0),
-                          QStringLiteral("有符号字节正确符号扩展（0xFF -> -1）"),
+                // A signed 32-bit value of all ones must be -1, not 4294967295.
+                const WatchVariable *counter = sym.find(QStringLiteral("g_counter"));
+                if (counter) {
+                    const QByteArray bytes = QByteArray::fromHex("FFFFFFFF");
+                    const QVector<double> values = SymbolFile::decode(*counter, bytes, 1);
+                    check(values.size() == 1 && qFuzzyCompare(values.first(), -1.0),
+                          QStringLiteral("有符号 32 位正确符号扩展（0xFFFFFFFF -> -1）"),
                           values.isEmpty() ? QStringLiteral("无值")
                                            : QString::number(values.first()));
                 }

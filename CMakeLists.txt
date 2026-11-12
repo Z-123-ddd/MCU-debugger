@@ -87,6 +87,7 @@ set(APP_SOURCES
     src/app/Cli.cpp
     src/app/Render.cpp
     src/app/ProbeInfo.cpp
+    src/app/Symbols.cpp
 )
 
 set(UI_SOURCES

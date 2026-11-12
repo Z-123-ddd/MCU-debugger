@@ -5,6 +5,7 @@
 
 #include <QFileInfo>
 #include <QHash>
+#include <QSet>
 
 #include <algorithm>
 #include <cmath>
@@ -165,18 +166,27 @@ Result<SymbolTable> SymbolFile::load(const QString &path)
             watch.elementCount = dv.elementCount > 0 ? dv.elementCount : 1;
             watch.totalSize = dv.totalSize;
             watch.address = dv.address;
+            watch.linkageName = dv.linkageName;
 
             // The DWARF location expression is authoritative when it gave an
             // address; otherwise consult the linker symbol of the same name.
             if (dv.hasAddress && dv.address != 0) {
                 watch.address = dv.address;
             } else {
-                const ElfSymbol *sym = symbols.value(dv.name, nullptr);
-                if (!sym && dv.name.contains(QLatin1Char('.'))) {
-                    // Struct member: the parent's address plus the member offset are
-                    // already baked into dv.address by the DWARF reader, so a missing
-                    // parent symbol only matters for the whole-variable case.
-                    sym = nullptr;
+                // The mangled name is what .symtab uses. Matching on the demangled
+                // DWARF name silently fails for every C++ variable ("endpoint_id"
+                // vs "_ZL11endpoint_id"), which is why a C++ image appeared to have
+                // almost no variables at all.
+                const ElfSymbol *sym = nullptr;
+                if (!dv.linkageName.isEmpty())
+                    sym = symbols.value(dv.linkageName, nullptr);
+                if (!sym)
+                    sym = symbols.value(dv.name, nullptr);
+                if (!sym) {
+                    // Namespaced C++ statics: drop the scope and try the tail.
+                    const int scopeEnd = dv.name.lastIndexOf(QStringLiteral("::"));
+                    if (scopeEnd >= 0)
+                        sym = symbols.value(dv.name.mid(scopeEnd + 2), nullptr);
                 }
                 if (sym) {
                     watch.address = sym->value;
@@ -242,6 +252,29 @@ Result<SymbolTable> SymbolFile::load(const QString &path)
                       return a.address < b.address;
                   return a.name < b.name;
               });
+
+    // Every compilation unit repeats the DIEs of the types it references, so the
+    // same global can be described several times. Same name at the same address is
+    // the same object; keep one. (Two variables that merely share an address keep
+    // both rows -- the linker can merge globals, but then their names differ.)
+    {
+        QVector<WatchVariable> unique;
+        unique.reserve(table.variables.size());
+        QSet<QString> seen;
+        for (const WatchVariable &variable : table.variables) {
+            const QString key = variable.name + QLatin1Char('@')
+                + QString::number(variable.address);
+            if (seen.contains(key))
+                continue;
+            seen.insert(key);
+            unique.append(variable);
+        }
+        if (unique.size() != table.variables.size()) {
+            Logger::instance()->debug(QStringLiteral("符号文件: 去重 %1 条（同一变量被多个 CU 重复描述）")
+                                          .arg(table.variables.size() - unique.size()));
+        }
+        table.variables = unique;
+    }
 
     Logger::instance()->debug(QStringLiteral("符号文件: %1，DWARF v%2，%3 个变量%4")
                                   .arg(info.fileName())

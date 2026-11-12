@@ -22,6 +22,7 @@ struct WatchVariable
     int elementSize = 0;
     int elementCount = 1;
     int totalSize = 0;
+    QString linkageName;             ///< mangled name, used to pair with .symtab
     bool addressFromSymbol = false; ///< address came from .symtab, not DWARF
 
     bool usable() const { return address != 0 && elementSize > 0 && elementCount > 0; }

@@ -31,7 +31,12 @@ import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-SOURCE = ROOT / "data" / "test" / "symbol_test.c"
+# Two translation units: a single-CU fixture cannot catch "only the first unit was
+# read" or "a forward declaration was not followed to its definition".
+SOURCES = [
+    ROOT / "data" / "test" / "symbol_test.c",
+    ROOT / "data" / "test" / "symbol_test_b.c",
+]
 OUTPUT = ROOT / "data" / "test" / "symbol_test.axf"
 
 # Preferred order: an on-PATH cross toolchain, then the workspace-local one the
@@ -64,8 +69,9 @@ def main() -> int:
     parser.add_argument("--toolchain-dir", help="directory holding arm-none-eabi-gcc")
     args = parser.parse_args()
 
-    if not SOURCE.exists():
-        print(f"[ERROR] source missing: {SOURCE}", file=sys.stderr)
+    missing = [str(source) for source in SOURCES if not source.exists()]
+    if missing:
+        print("[ERROR] source missing: " + ", ".join(missing), file=sys.stderr)
         return 1
 
     gcc = find_gcc(args.toolchain_dir)
@@ -83,8 +89,8 @@ def main() -> int:
         "-g", "-gdwarf-4", "-O0",
         "-nostdlib", "-nostartfiles",
         "-Wl,-Ttext=0x08000000", "-Wl,-e,main",
-        "-o", str(OUTPUT), str(SOURCE),
-    ]
+        "-o", str(OUTPUT),
+    ] + [str(source) for source in SOURCES]
     print("[..] " + " ".join(command))
     result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0:

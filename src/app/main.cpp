@@ -98,6 +98,8 @@ int main(int argc, char *argv[])
         return mrd::cli::runSelftest(options);
     if (options.bench)
         return mrd::cli::runBench(options);
+    if (!options.symbolPath.isEmpty())
+        return mrd::cli::runSymbols(options);
     if (options.probeInfo)
         return mrd::cli::runProbeInfo(options);
 
