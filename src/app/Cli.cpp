@@ -2390,6 +2390,11 @@ int runSelftest(const Options &options)
             check(imported, QStringLiteral("ScopePage 能导入 .axf"), error);
             // The selector lives in its own dock now, so it is not a child of the page.
             QTreeWidget *tree = page.variableTree();
+            // Expanding through the widget is not enough: children are created by the
+            // page's own handler, so go through it.
+            auto populateChildrenForTest = [&page](const QString &, QTreeWidgetItem *row) {
+                page.expandForTest(row);
+            };
             // Mirrors ScopePage's internal placeholder role (UserRole + 4).
             constexpr int kPlaceholderRoleProbe = Qt::UserRole + 4;
             check(tree != nullptr, QStringLiteral("找到变量树控件"), QString());
@@ -2429,6 +2434,33 @@ int runSelftest(const Options &options)
                     check(fixtureFile->childCount() >= 4,
                           QStringLiteral("展开文件后列出其中的变量"),
                           QStringLiteral("%1 个").arg(fixtureFile->childCount()));
+
+                    // The reported bug: a function-scope variable (`match_indx`) was
+                    // invisible because only globals were listed. A file row must also
+                    // carry the functions defined in it -- the fixture's locals live in
+                    // symbol_test_b.c, so look there.
+                    QTreeWidgetItem *localsFile = nullptr;
+                    for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+                        if (tree->topLevelItem(i)->text(0) == QLatin1String("symbol_test_b.c"))
+                            localsFile = tree->topLevelItem(i);
+                    }
+                    check(localsFile != nullptr,
+                          QStringLiteral("找到含局部变量的文件行 symbol_test_b.c"), QString());
+                    bool hasFunctionRow = false;
+                    if (localsFile) {
+                        localsFile->setExpanded(true);
+                        page.expandForTest(localsFile);
+                        for (int j = 0; j < localsFile->childCount(); ++j) {
+                            if (localsFile->child(j)->text(1).startsWith(
+                                    QStringLiteral("函数"))) {
+                                hasFunctionRow = true;
+                            }
+                        }
+                    }
+                    check(hasFunctionRow,
+                          QStringLiteral("文件行下同时列出函数（局部变量入口）"),
+                          localsFile ? QStringLiteral("%1 个子行").arg(localsFile->childCount())
+                                     : QString());
                 }
 
                 // Locate g_points: it must be a top-level item with element children,
@@ -2577,18 +2609,30 @@ int runSelftest(const Options &options)
                     withSp[13] = fakeSp;
                     page.applyLocals(fakeSp, compute->lowPc + 2, withSp);
 
-                    // The locals section must appear at the top of the tree.
-                    bool headerFound = false;
-                    int localRows = 0;
-                    for (int i = 0; i < tree->topLevelItemCount(); ++i) {
-                        QTreeWidgetItem *item = tree->topLevelItem(i);
-                        if (item->text(0).startsWith(QStringLiteral("局部变量"))) {
-                            headerFound = true;
-                            localRows = item->childCount();
+                    // Locals now live under file -> function, which is where a user
+                    // would look for them (and where `match_indx` was missing).
+                    QTreeWidgetItem *funcRow = nullptr;
+                    for (int i = 0; i < tree->topLevelItemCount() && !funcRow; ++i) {
+                        QTreeWidgetItem *fileRow = tree->topLevelItem(i);
+                        fileRow->setExpanded(true);
+                        populateChildrenForTest(QString(), fileRow);
+                        for (int j = 0; j < fileRow->childCount(); ++j) {
+                            if (fileRow->child(j)->text(0).contains(
+                                    QStringLiteral("tu_b_compute"))) {
+                                funcRow = fileRow->child(j);
+                                break;
+                            }
                         }
                     }
-                    check(headerFound, QStringLiteral("树上出现「局部变量」分区"), QString());
-                    check(localRows == 3, QStringLiteral("分区下列出 3 个局部变量"),
+                    check(funcRow != nullptr,
+                          QStringLiteral("树上按 文件 → 函数 列出局部变量所属函数"),
+                          funcRow ? QString() : QStringLiteral("未找到 tu_b_compute"));
+                    int localRows = 0;
+                    if (funcRow) {
+                        funcRow->setExpanded(true);
+                        localRows = funcRow->childCount();
+                    }
+                    check(localRows == 3, QStringLiteral("函数下列出 3 个局部变量"),
                           QStringLiteral("%1 个").arg(localRows));
 
                     // Every address must equal frameBase + stackOffset, and sit in
@@ -2607,6 +2651,47 @@ int runSelftest(const Options &options)
                           QStringLiteral("局部变量地址 = 帧基址 + 偏移，且落在 RAM 内"),
                           details.join(QStringLiteral(" ")));
                 }
+                // --- class members (a third category, not globals or locals) -----
+                // Reported: `index_found_` etc. were invisible. They are members of
+                // `Encoder`, which has no absolute address unless an instance exists,
+                // so they were only reachable through `encoders[0]` -- never from the
+                // file that defines the class.
+                check(!symPage.types.isEmpty(),
+                      QStringLiteral("提取到类型定义（class/struct 含成员）"),
+                      QStringLiteral("%1 个").arg(symPage.types.size()));
+                const QVector<TypeDecl> pointTypes =
+                    symPage.typesInFile(QStringLiteral("symbol_test.c"));
+                const TypeDecl *pointType = nullptr;
+                for (const TypeDecl &type : pointTypes) {
+                    if (type.name == QLatin1String("Point"))
+                        pointType = &type;
+                }
+                check(pointType != nullptr,
+                      QStringLiteral("按文件能查到类型 Point"),
+                      QStringLiteral("%1 个类型").arg(pointTypes.size()));
+                if (pointType) {
+                    check(pointType->members.size() == 3,
+                          QStringLiteral("Point 有 3 个成员"),
+                          QStringLiteral("%1 个").arg(pointType->members.size()));
+                    // Offsets are what make a member locatable inside an instance.
+                    bool offsetsOk = pointType->members.size() == 3
+                        && pointType->members.at(0).name == QLatin1String("x")
+                        && pointType->members.at(0).byteOffset == 0
+                        && pointType->members.at(1).byteOffset == 4
+                        && pointType->members.at(2).byteOffset == 8;
+                    check(offsetsOk,
+                          QStringLiteral("成员偏移正确（x=0, y=4, flags=8）"),
+                          pointType->members.size() == 3
+                              ? QStringLiteral("%1=+%2 %3=+%4 %5=+%6")
+                                    .arg(pointType->members.at(0).name)
+                                    .arg(pointType->members.at(0).byteOffset)
+                                    .arg(pointType->members.at(1).name)
+                                    .arg(pointType->members.at(1).byteOffset)
+                                    .arg(pointType->members.at(2).name)
+                                    .arg(pointType->members.at(2).byteOffset)
+                              : QString());
+                }
+
                 // Reset the page so the later plot test sees a clean state.
                 page.applyLocals(0, 0, {});
 

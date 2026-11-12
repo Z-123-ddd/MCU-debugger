@@ -966,6 +966,73 @@ error_mapping_table_axis[1].internal_error_code   0x08038570
 
 最终：**3 个 → 2450 个变量**，地址与 `arm-none-eabi-nm` 逐一核对一致。
 
+#### 变量有三种，不是一种：全局 / 局部 / 类成员
+
+这是一个反复踩到的问题，值得写清楚——报「这个变量没有」的，多数不是解析失败，而是
+它压根不属于「全局变量」这一类：
+
+| 类别 | DWARF 表示 | 地址 | 出现在树里 |
+|---|---|---|---|
+| 全局 / 静态 | `DW_TAG_variable`（文件作用域） | 链接时固定 | ✓ |
+| **函数局部** | `DW_TAG_variable` 挂在 `DW_TAG_subprogram` 下 | 帧基址 + 偏移，停机才有 | ✓（在函数下） |
+| **类成员** | `DW_TAG_member` 挂在 `class`/`struct` 下 | 只能 `实例 + 偏移` | ✓（在类型下） |
+
+##### 函数局部变量（`match_indx` 这类）
+
+`match_indx` 是 `update_sec_enc_offset()` 里的局部变量。它之前完全没被收进来，因为
+**9285 个局部变量用的是 location list，只有 1226 个是内联 `DW_OP_fbreg`**，而我只处理
+了后者。
+
+location list 必须**在停机那个 PC 上求值**——同一个变量在不同代码区间可能在寄存器里，
+也可能在栈上。所以不能导入时算好，要等读到 SP/PC 再解：
+
+```
+encoder.cpp
+  update_sec_enc_offset       函数 · 12 个局部变量
+    match_indx                int32_t     0x2000A11A
+```
+
+顺带修了两件事：
+- **参数也是局部变量**，但它们是 `DW_TAG_formal_parameter`，不是 `DW_TAG_variable`；
+  漏了这条会让「参数全在栈上」的函数看起来空着。
+- **函数名缺失**：armclang 在 22942/49480 个 subprogram 上不写 `DW_AT_name`。现在按
+  `linkage_name`（做了 Itanium demangle）→ `specification` → `abstract_origin` 回退，
+  实在没有才显示 `(匿名函数 @地址)`。否则全都挤在一个「(匿名函数)」里。
+
+##### 类成员（`index_found_` / `is_ready_` 这类）
+
+它们是 `class Encoder` 的成员，既不是全局也不是局部。**成员没有独立地址**，
+只有 `实例 + 偏移` 才有意义。
+
+原来的实现只在展开某个全局实例时才看得到它们（`encoders[0].index_found_`），
+所以打开 `encoder.cpp` 找一个 `Encoder` 的成员是找不到的——它跟着**实例**走，
+而实例声明在别的文件里。
+
+现在按文件额外列出**该文件定义的类型**：
+
+```
+encoder.hpp
+  class Encoder               class · 63 个成员
+    index_found_              bool        +1098      1 B
+    is_ready_                 bool        +1099      1 B
+    shadow_count_             int32_t     +1100      4 B
+```
+
+成员显示的是**实例内偏移**而不是地址，因为地址取决于你关心哪个实例。它们不可勾选
+（勾一个没有地址的东西没有意义）。如果你要采样，仍然走实例那条路
+（`encoders[0].index_found_` 是真实地址 `0x2000A11A`）。
+
+两个实现细节：
+- `typedef struct { ... } Point;` 的**匿名结构体没有 `DW_AT_name`**，只有 typedef 名。
+  这个写法在 C 里到处都是，不处理就会整类丢失。
+- 文件行的列表取**并集**（有变量的 ∪ 有函数的 ∪ 有类型的）。之前只取有变量的文件，
+  于是 `encoder.hpp` 这种「只定义类型」的头文件根本没有行，`Encoder` 自然无处可见。
+
+##### 文件顺序
+
+有变量的文件在前，其次有函数的，最后只定义类型的头文件——否则字母序会把
+`__bit_reference` 这类 libc++ 内部头文件排到 `adc.c` 前面。
+
 #### 变量按源文件分组；选择面板独立成窗
 
 一列 4000 个变量名没法用——你不知道该去哪找。现在树的顶层是**源文件**，文件下面是

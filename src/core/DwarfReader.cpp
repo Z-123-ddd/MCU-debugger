@@ -1,5 +1,6 @@
 #include "core/DwarfReader.h"
 
+#include "core/HexUtil.h"
 #include "core/Logger.h"
 
 #include <QHash>
@@ -7,6 +8,49 @@
 
 #include <algorithm>
 #include <cstring>
+
+namespace {
+
+/// Readable form of a mangled name, for functions whose DWARF entry has no
+/// DW_AT_name. armclang omits the name on inlined copies (22942 of 49480
+/// subprograms in the ODrive image), which is how a local ended up under
+/// "(anonymous)" with no way to tell one from another.
+///
+/// Only the Itanium components used by C++ ARM builds are handled: `_Z`, then a run
+/// of `<length><identifier>` pieces with `N`/`E` nesting markers and one-letter
+/// qualifier codes skipped. Anything unrecognised yields an empty string rather than
+/// a half-mangled guess.
+QString readableSymbolName(const QString &linkage)
+{
+    if (!linkage.startsWith(QLatin1String("_Z")))
+        return QString();
+    QStringList parts;
+    int i = 2;
+    while (i < linkage.size()) {
+        const QChar c = linkage.at(i);
+        if (c == QLatin1Char('N') || c == QLatin1Char('E')) {
+            ++i;
+            continue;
+        }
+        if (c.isDigit()) {
+            int j = i;
+            while (j < linkage.size() && linkage.at(j).isDigit())
+                ++j;
+            bool ok = false;
+            const int length = linkage.mid(i, j - i).toInt(&ok);
+            if (!ok || length <= 0 || j + length > linkage.size())
+                return QString();
+            parts << linkage.mid(j, length);
+            i = j + length;
+            continue;
+        }
+        ++i; // qualifier code (L, St, ...)
+    }
+    return parts.join(QStringLiteral("::"));
+}
+
+} // namespace
+
 
 namespace mrd {
 
@@ -50,6 +94,8 @@ QString nodeKindName(NodeKind kind)
         return QStringLiteral("指针");
     case NodeKind::Enum:
         return QStringLiteral("枚举");
+    case NodeKind::Function:
+        return QStringLiteral("函数");
     }
     return QStringLiteral("未知");
 }
@@ -58,9 +104,11 @@ int VariableNode::leafCount() const
 {
     if (children.isEmpty()) {
         // A stack-relative local is displayable before it is addressable.
+        // A local is displayable before it is addressable: either its address is a
+        // frame offset, or it is a location list that resolves once the core halts.
         const bool decodable = samplable()
-            || (stackRelative && elementSize > 0 && scalar != ScalarKind::Unknown
-                && scalar != ScalarKind::Composite);
+            || ((stackRelative || locListOffset != 0) && elementSize > 0
+                && scalar != ScalarKind::Unknown && scalar != ScalarKind::Composite);
         return decodable ? qMax(1, elementCount) : 0;
     }
     int total = 0;
@@ -133,6 +181,8 @@ constexpr quint64 AT_LOWER_BOUND = 0x22;
 constexpr quint64 AT_TYPE = 0x49;
 constexpr quint64 AT_BIT_SIZE = 0x0d;
 constexpr quint64 AT_LINKAGE_NAME = 0x6e;
+constexpr quint64 AT_SPECIFICATION = 0x47;
+constexpr quint64 AT_ABSTRACT_ORIGIN = 0x31;
 constexpr quint64 AT_MIPS_LINKAGE_NAME = 0x2007;
 constexpr quint64 AT_STR_OFFSETS_BASE = 0x72;
 
@@ -435,9 +485,15 @@ public:
 private:
     static qint64 readSleb(const char **cursor, const char *end);
 
-    /// Add one local's subtree with `stackRelative` set (address resolved later).
+    /// Add one local's subtree, recording how its address is obtained.
     void emitLocal(const Die &variable, qint32 frameOffset, int registerNumber,
-                   const UnitContext &unit, FunctionScope *scope);
+                   const UnitContext &unit, FunctionScope *scope,
+                   quint32 locListOffset = 0);
+
+    /// Turn one local's DW_AT_location into a node: an inline expression is decoded
+    /// now, a location list is recorded for evaluation at the halt PC.
+    void collectLocalDie(const Die &die, const UnitContext &unit, FunctionScope *scope,
+                         int frameRegister, quint32 cfaFde);
 
     /// Build one subtree: a struct becomes a node with member children, an array a
     /// node with element children, a scalar a leaf. Returns false when the type is
@@ -1393,9 +1449,8 @@ LocalLocation decodeLocalLocation(const QByteArray &expr, bool littleEndian)
 } // namespace
 
 void Parser::emitLocal(const Die &variable, qint32 frameOffset, int registerNumber,
-                       const UnitContext &unit, FunctionScope *scope)
+                       const UnitContext &unit, FunctionScope *scope, quint32 locListOffset)
 {
-    Q_UNUSED(unit);
     const QString name = variable.text(AT_NAME);
     if (name.isEmpty() || !scope)
         return;
@@ -1407,8 +1462,16 @@ void Parser::emitLocal(const Die &variable, qint32 frameOffset, int registerNumb
     VariableNode node;
     if (!buildNode(name, typeOffset, 0, false, 0, &node))
         return;
-    node.stackRelative = true;
+    // armclang writes DW_AT_decl_file on the variable, not on the subprogram, so the
+    // file has to be taken from here for the tree to place the local correctly.
+    const quint64 declFile = variable.u(AT_DECL_FILE, 0);
+    if (declFile > 0 && declFile <= static_cast<quint64>(unit.fileNames.size()))
+        node.sourceFile = unit.fileNames.at(static_cast<int>(declFile) - 1);
+    // A list-based location is not usable until resolved at the halt PC; the offset
+    // is kept so applyLocals can ask .debug_loc then.
+    node.stackRelative = (locListOffset == 0);
     node.stackOffset = frameOffset;
+    node.locListOffset = locListOffset;
     if (registerNumber >= 0)
         node.address = static_cast<quint32>(registerNumber); // reused as reg index
     scope->locals.append(node);
@@ -1662,6 +1725,28 @@ Parser::Cfa Parser::cfaForPc(quint32 pc)
     return result;
 }
 
+void Parser::collectLocalDie(const Die &die, const UnitContext &unit, FunctionScope *scope,
+                             int frameRegister, quint32 cfaFde)
+{
+    const FormValue loc = die.value(AT_LOCATION);
+    if (loc.isBlock) {
+        // A single expression: decoded right away.
+        const LocalLocation location = decodeLocalLocation(loc.bytes, m_le);
+        if (location.usable
+            && (location.inRegister || frameRegister >= 0 || cfaFde != 0)) {
+            emitLocal(die, location.frameOffset,
+                      location.inRegister ? location.registerNumber : -1, unit, scope);
+        }
+        return;
+    }
+
+    // A location list. This is the common case for locals in a real build (9285 vs
+    // 1226 inline expressions in the ODrive image) and it cannot be evaluated before
+    // the PC is known, so the offset is remembered and resolved at display time.
+    if (loc.u != 0)
+        emitLocal(die, 0, -1, unit, scope, static_cast<quint32>(loc.u));
+}
+
 void Parser::collectFunction(const Die &subprogram, const UnitContext &unit,
                             QVector<FunctionScope> *out)
 {
@@ -1701,9 +1786,32 @@ void Parser::collectFunction(const Die &subprogram, const UnitContext &unit,
     }
 
     FunctionScope scope;
-    scope.name = qualifiedName(subprogram.offset, subprogram.text(AT_NAME));
-    if (scope.name.isEmpty())
-        scope.name = QStringLiteral("(匿名函数)");
+    // Name resolution order: the source name, then the mangled one (demangled),
+    // then whatever a separate declaration/definition DIE says. Without this most
+    // armclang functions land in one indistinguishable "(匿名函数)" bucket.
+    QString funcName = subprogram.text(AT_NAME);
+    if (funcName.isEmpty())
+        funcName = readableSymbolName(subprogram.text(AT_LINKAGE_NAME));
+    if (funcName.isEmpty()) {
+        for (const quint64 attr : {AT_SPECIFICATION, AT_ABSTRACT_ORIGIN}) {
+            const quint64 ref = subprogram.u(attr, 0);
+            if (ref == 0)
+                continue;
+            const Die *target = dieAt(ref);
+            if (!target)
+                continue;
+            funcName = target->text(AT_NAME);
+            if (funcName.isEmpty())
+                funcName = readableSymbolName(target->text(AT_LINKAGE_NAME));
+            if (!funcName.isEmpty())
+                break;
+        }
+    }
+    scope.name = qualifiedName(subprogram.offset, funcName);
+    if (scope.name.isEmpty()) {
+        // Still nameless: include the address so two entries stay distinguishable.
+        scope.name = QStringLiteral("(匿名函数 @%1)").arg(hexAddr(static_cast<quint32>(lowPc)));
+    }
     scope.lowPc = static_cast<quint32>(lowPc);
     scope.highPc = static_cast<quint32>(highPc);
     scope.frameBaseRegister = frameRegister;
@@ -1727,20 +1835,24 @@ void Parser::collectFunction(const Die &subprogram, const UnitContext &unit,
             for (const Die &inner : m_children.value(child.offset)) {
                 if (inner.tag != TAG_VARIABLE && inner.tag != TAG_FORMAL_PARAMETER)
                     continue;
-                const LocalLocation location =
-                    decodeLocalLocation(inner.value(AT_LOCATION).bytes, m_le);
-                if (location.usable
-                && (location.inRegister || frameRegister >= 0 || cfaFde != 0)) {
-                    emitLocal(inner, location.frameOffset,
-                              location.inRegister ? location.registerNumber : -1, unit,
-                              &scope);
-                }
+                collectLocalDie(inner, unit, &scope, frameRegister, cfaFde);
             }
         }
     }
 
-    if (!scope.locals.isEmpty())
+    if (!scope.locals.isEmpty()) {
+        // The subprogram often carries no decl_file (armclang writes it per
+        // variable), so fall back to the file the locals came from.
+        if (scope.sourceFile.isEmpty()) {
+            for (const VariableNode &local : scope.locals) {
+                if (!local.sourceFile.isEmpty()) {
+                    scope.sourceFile = local.sourceFile;
+                    break;
+                }
+            }
+        }
         out->append(scope);
+    }
 }
 
 Result<DwarfContents> Parser::run()
@@ -1753,6 +1865,8 @@ Result<DwarfContents> Parser::run()
     QVector<VariableNode> variables;
     // Every unit is kept until the end: type resolution needs all of them.
     QVector<QPair<UnitContext, QVector<Die>>> units;
+    /// Type definitions collected in pass 1b (per-file type index).
+    QVector<TypeDecl> m_types;
 
     while (info.ok() && info.pos + 4 <= info.size) {
         UnitContext unit;
@@ -1784,6 +1898,22 @@ Result<DwarfContents> Parser::run()
         info.pos = static_cast<int>(next);
     }
 
+    // Typedef names for anonymous aggregates.
+    //
+    // `typedef struct { ... } Point;` gives the struct DIE no DW_AT_name at all, so
+    // the type index would skip it -- and that spelling is everywhere in C code.
+    QHash<quint64, QString> typedefNames;
+    for (const auto &unit : units) {
+        for (const Die &die : unit.second) {
+            if (die.tag != TAG_TYPEDEF)
+                continue;
+            const quint64 target = die.u(AT_TYPE, 0);
+            const QString name = die.text(AT_NAME);
+            if (target != 0 && !name.isEmpty() && !typedefNames.contains(target))
+                typedefNames.insert(target, name);
+        }
+    }
+
     // Pass 1b: index the type *definitions* by name.
     //
     // C++ references types through forward declarations as often as through
@@ -1799,13 +1929,52 @@ Result<DwarfContents> Parser::run()
             }
             if (die.u(AT_DECLARATION, 0) != 0 || die.u(AT_BYTE_SIZE, 0) == 0)
                 continue; // a declaration, not a layout
-            const QString name = die.text(AT_NAME);
-            if (name.isEmpty())
-                continue;
+            QString name = die.text(AT_NAME);
+            if (name.isEmpty()) {
+                // Anonymous aggregate: it is only usable through its typedef name.
+                name = typedefNames.value(die.offset);
+                if (name.isEmpty())
+                    continue;
+            }
             // Keep the first real definition: later duplicates describe the same
             // type and would only make the result order-dependent.
-            if (!m_typeDefinitions.contains(name))
+            if (!m_typeDefinitions.contains(name)) {
                 m_typeDefinitions.insert(name, &die);
+                // Also record it for the per-file type index, so a member such as
+                // `Encoder::index_found_` is findable from the file that defines the
+                // class, not only through whichever file declares an instance.
+                TypeDecl type;
+                type.name = name;
+                type.kind = die.tag == TAG_UNION_TYPE
+                    ? QStringLiteral("union")
+                    : (die.tag == TAG_CLASS_TYPE ? QStringLiteral("class")
+                                                 : QStringLiteral("struct"));
+                type.byteSize = static_cast<int>(die.u(AT_BYTE_SIZE, 0));
+                const quint64 typeDeclFile = die.u(AT_DECL_FILE, 0);
+                if (typeDeclFile > 0
+                    && typeDeclFile <= static_cast<quint64>(unit.first.fileNames.size())) {
+                    type.sourceFile =
+                        unit.first.fileNames.at(static_cast<int>(typeDeclFile) - 1);
+                }
+                for (const Die &member : m_children.value(die.offset)) {
+                    if (member.tag != TAG_MEMBER)
+                        continue;
+                    const QString memberName = member.text(AT_NAME);
+                    if (memberName.isEmpty())
+                        continue;
+                    TypeMember info;
+                    info.name = memberName;
+                    info.byteOffset = static_cast<int>(member.s(AT_DATA_MEMBER_LOCATION, 0));
+                    const TypeInfo memberType = resolveType(member.u(AT_TYPE, 0), 1);
+                    info.typeLabel = memberType.display;
+                    info.byteSize = memberType.elementSize;
+                    type.members.append(info);
+                    if (type.members.size() >= 512)
+                        break; // keep one huge class from dominating the index
+                }
+                if (!type.members.isEmpty())
+                    m_types.append(type);
+            }
         }
     }
 
@@ -1855,10 +2024,83 @@ Result<DwarfContents> Parser::run()
     DwarfContents contents;
     contents.globals = variables;
     contents.functions = functions;
+    contents.types = m_types;
     return Result<DwarfContents>::success(contents);
 }
 
 } // namespace
+
+DwarfReader::LocalLoc DwarfReader::localAt(const ElfFile &elf, quint32 pc, quint32 listOffset)
+{
+    LocalLoc out;
+    const QByteArray loc = elf.sectionData(QStringLiteral(".debug_loc"));
+    if (loc.isEmpty() || listOffset >= static_cast<quint64>(loc.size()))
+        return out;
+
+    // MCU targets are 32-bit and so is VariableNode::address, so an address-sized
+    // field is 4 bytes.
+    constexpr int kAddrSize = 4;
+    Cursor c{loc.constData(), static_cast<int>(loc.size()), static_cast<int>(listOffset),
+             elf.littleEndian()};
+    const quint64 maxAddress = 0xFFFFFFFFull;
+
+    auto readExpression = [&](const QByteArray &expr) {
+        if (expr.isEmpty())
+            return;
+        const uchar *b = reinterpret_cast<const uchar *>(expr.constData());
+        const quint8 op = b[0];
+        if (op == OP_ADDR && expr.size() >= 1 + kAddrSize) {
+            quint64 value = 0;
+            if (elf.littleEndian()) {
+                for (int i = kAddrSize - 1; i >= 0; --i)
+                    value = (value << 8) | b[1 + i];
+            } else {
+                for (int i = 0; i < kAddrSize; ++i)
+                    value = (value << 8) | b[1 + i];
+            }
+            out.usable = true;
+            out.absolute = true;
+            out.address = static_cast<quint32>(value);
+            return;
+        }
+        if (op == OP_CALL_FRAME_CFA) {
+            // The value sits at the CFA; the caller supplies the CFA offset.
+            out.usable = true;
+            out.inRegister = false;
+            out.offset = 0;
+            return;
+        }
+        const LocalLocation decoded = decodeLocalLocation(expr, elf.littleEndian());
+        if (decoded.usable) {
+            out.usable = true;
+            out.inRegister = decoded.inRegister;
+            out.reg = decoded.registerNumber;
+            out.offset = decoded.frameOffset;
+        }
+    };
+
+    for (int guard = 0; guard < 8192; ++guard) {
+        const quint64 begin = c.readU(kAddrSize);
+        const quint64 end = c.readU(kAddrSize);
+        if (!c.ok())
+            return out;
+        if (begin == 0 && end == 0)
+            return out; // end of list: nothing covers this PC
+        if (begin == maxAddress)
+            continue; // base-address entry
+        const quint64 length = c.readU(2);
+        if (!c.ok())
+            return out;
+        const QByteArray expr = c.readBytes(static_cast<int>(length));
+        if (!c.ok())
+            return out;
+        if (pc < begin || pc >= end)
+            continue; // a range that does not contain the halt PC
+        readExpression(expr);
+        return out;
+    }
+    return out;
+}
 
 bool DwarfReader::cfaAt(const ElfFile &elf, quint32 pc, int *reg, qint32 *offset)
 {

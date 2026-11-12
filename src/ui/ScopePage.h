@@ -55,6 +55,8 @@ public:
 
     /// Test hook: the tree itself (it lives inside the selector dock, not the page).
     QTreeWidget *variableTree() const { return m_variableTree; }
+    /// Test hook: materialise one row's children the way an expand click does.
+    void expandForTest(QTreeWidgetItem *item) { populateChildren(item); }
     QString symbolPath() const { return m_symbols.sourcePath; }
 
     /// Test/benchmark hook: apply a filter without going through the debounce.
@@ -125,12 +127,24 @@ private:
     /// children are the variables declared in them -- the layout every debugger's
     /// watch window uses, and the only way 4000 names stay navigable.
     QVector<FileGroup> m_groups;
-    /// Locals of the function the core is halted in (empty when running).
-    QVector<VariableNode> m_localRoots;
-    /// Name of the function those locals belong to, for the section label.
-    QString m_localFunction;
-    /// Set while the locals section exists, so it can be removed cleanly.
-    QTreeWidgetItem *m_localHeader = nullptr;
+    /// Functions with locals, per source file. Shown under each file so a local like
+    /// `match_indx` is findable at all -- it is not a global and never appears in the
+    /// "globals/statics" list.
+    QMap<QString, QVector<VariableNode>> m_functionsByFile;
+    /// Every file worth a row: the union of files that declare a variable, define a
+    /// function with locals, or define a type. Using only the variable files hid
+    /// headers entirely -- `Encoder` is defined in one, so its members were
+    /// unreachable from the tree.
+    QStringList m_allFiles;
+    /// The FileGroup backing each top-level row, in row order (created rows must not
+    /// dangle, so they are copied here rather than pointing into m_groups).
+    QVector<FileGroup> m_fileRowGroups;
+    /// Resolved addresses of the halted function's locals, keyed by tree path.
+    /// Filled by applyLocals; empty while the core runs (locals have no address then).
+    QHash<QString, quint32> m_localAddr;
+    /// Name of the function those addresses belong to.
+    QString m_resolvedFunction;
+
     RttControlBlock m_rtt;
     bool m_attached = false;
 

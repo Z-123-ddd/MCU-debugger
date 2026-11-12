@@ -142,6 +142,21 @@ QVector<VariableNode> SymbolTable::filteredRoots(const QString &needle) const
     return out;
 }
 
+QVector<TypeDecl> SymbolTable::typesInFile(const QString &file) const
+{
+    QVector<TypeDecl> out;
+    for (const TypeDecl &type : types) {
+        const QString key = type.sourceFile.isEmpty() ? QStringLiteral("(未知文件)")
+                                                      : type.sourceFile;
+        if (key == file)
+            out.append(type);
+    }
+    std::sort(out.begin(), out.end(), [](const TypeDecl &a, const TypeDecl &b) {
+        return a.name.compare(b.name, Qt::CaseInsensitive) < 0;
+    });
+    return out;
+}
+
 QVector<FileGroup> SymbolTable::groupedByFile() const
 {
     QMap<QString, FileGroup> byFile;
@@ -388,6 +403,7 @@ Result<SymbolTable> SymbolFile::load(const QString &path)
         // Locals travel with their function: their address is frame-relative and
         // only meaningful while the core sits inside that function.
         table.functions = dwarfResult.value.functions;
+        table.types = dwarfResult.value.types;
     }
 
     // DWARF absent or unusable: fall back to the symbol table alone. Types become

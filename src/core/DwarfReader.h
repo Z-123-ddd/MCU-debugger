@@ -38,6 +38,8 @@ enum class NodeKind
     Class,
     Pointer,
     Enum,
+    /// A function, shown so its locals can be listed under it.
+    Function,
 };
 
 QString nodeKindName(NodeKind kind);
@@ -61,6 +63,12 @@ struct VariableNode
     /// time instead of baking in an address that would be stale immediately.
     qint32 stackOffset = 0;
     bool stackRelative = false;
+    /// `.debug_loc` offset when the location is a list rather than one expression.
+    ///
+    /// This is the common case for locals (9285 in the ODrive image vs 1226 inline
+    /// `DW_OP_fbreg`), and a list has to be evaluated at the halt PC: different
+    /// ranges put the same variable in a register or on the stack.
+    quint32 locListOffset = 0;
     int byteSize = 0;       ///< total bytes this node spans
     int elementSize = 0;    ///< scalar width, or the array's element width
     int elementCount = 1;   ///< array extent (1 for non-arrays)
@@ -117,6 +125,34 @@ struct VariableNode
     int totalNodeCount() const;
 };
 
+/// One member of a class/struct type, as declared in the source.
+///
+/// A member has no absolute address: it only exists inside an instance
+/// (`encoders[0].index_found_`). The offset is what makes it locatable once an
+/// instance is known, and it is what lets the UI explain where the data lives.
+struct TypeMember
+{
+    QString name;
+    QString typeLabel;
+    int byteOffset = 0;
+    int byteSize = 0;
+};
+
+/// A class/struct/union *definition* and its members.
+///
+/// Listed per source file so a user opening `encoder.cpp` can see that `Encoder`
+/// has `index_found_`, instead of hunting for whichever file happens to declare an
+/// instance. Members of a type are reference data: they exist only through an
+/// object, so they are shown with an offset rather than an address.
+struct TypeDecl
+{
+    QString name;
+    QString kind;        ///< "class" / "struct" / "union"
+    QString sourceFile;  ///< where the type is defined
+    int byteSize = 0;
+    QVector<TypeMember> members;
+};
+
 /// One function that has local variables, as DWARF describes it.
 ///
 /// Locals cannot be sampled like globals: they only exist while the core is halted
@@ -125,6 +161,9 @@ struct VariableNode
 struct FunctionScope
 {
     QString name;          ///< qualified: "Axis::run_control"
+    /// Source file the function was defined in (`DW_AT_decl_file`), so the variable
+    /// tree can place its locals under the right file.
+    QString sourceFile;
     quint32 lowPc = 0;
     quint32 highPc = 0;    ///< exclusive end
     int frameBaseRegister = -1; ///< -1 when DWARF did not give a usable register
@@ -149,6 +188,8 @@ struct DwarfContents
 {
     QVector<VariableNode> globals;
     QVector<FunctionScope> functions;
+    /// Type definitions with their members, for the per-file type index.
+    QVector<TypeDecl> types;
 };
 
 /// Extract every statically allocated variable from an ELF image's DWARF, as a
@@ -177,6 +218,24 @@ public:
     /// CFA rule at \a pc, read from `.debug_frame`: `CFA = registers[reg] + offset`.
     /// Returns false when the section is missing (armclang's DW_OP_reg13 style does
     /// not need it) or the PC is not covered.
+    /// Where a local lives when the core is halted at some PC.
+    struct LocalLoc
+    {
+        bool usable = false;
+        bool inRegister = false; ///< value is in registers[reg]
+        bool absolute = false;   ///< the expression was a plain DW_OP_addr
+        int reg = -1;
+        qint32 offset = 0;
+        quint32 address = 0;     ///< when absolute
+    };
+
+    /// Resolve the `.debug_loc` entry covering the given PC.
+    ///
+    /// A location list is a sequence of [begin, end, expr] ranges. Only the entry
+    /// containing the halted PC is valid, and different ranges legitimately put the
+    /// same variable in a register or on the stack, so this cannot be pre-computed.
+    static LocalLoc localAt(const ElfFile &elf, quint32 pc, quint32 listOffset);
+
     static bool cfaAt(const ElfFile &elf, quint32 pc, int *reg, qint32 *offset);
 
     /// DWARF version found in `.debug_info` (0 when absent). Diagnostics only.

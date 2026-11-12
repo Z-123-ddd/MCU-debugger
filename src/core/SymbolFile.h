@@ -60,6 +60,12 @@ struct SymbolTable
     QVector<WatchVariable> variables;
     /// Functions with locals, so the UI can resolve "which locals exist at this PC".
     QVector<FunctionScope> functions;
+    /// Class/struct definitions with their members, grouped per file by the UI.
+    ///
+    /// These have no address: a member only exists inside an instance. They are
+    /// listed so a user opening `encoder.cpp` can see that `Encoder` has
+    /// `index_found_`, instead of having to find whichever file declares an instance.
+    QVector<TypeDecl> types;
     /// The image itself, kept so `.debug_frame` can be re-read at any PC (the CFA
     /// rule is PC-dependent). ElfFile holds implicitly-shared byte arrays, so this
     /// is a cheap handle rather than a 4 MB copy.
@@ -82,6 +88,9 @@ struct SymbolTable
     /// armclang states it directly (usually register 13 = SP, offset 0); GCC points
     /// at the CFA, whose rule changes inside the function, so it is read from
     /// `.debug_frame` for this exact PC.
+    /// Types defined in  file (empty name = the unknown-file bucket).
+    QVector<TypeDecl> typesInFile(const QString &file) const;
+
     /// Variables grouped by the source file they were declared in (name order,
     /// address order inside each). Entries without file information land in a
     /// trailing "(未知文件)" group.

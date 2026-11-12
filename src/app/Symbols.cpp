@@ -67,13 +67,43 @@ int runSymbols(const Options &options)
 
     const QVector<FileGroup> files = table.groupedByFile();
     out(QStringLiteral("    按文件分组: %1 个文件").arg(files.size()));
-    for (int i = 0; i < files.size() && i < 12; ++i) {
+    const int fileLimit = options.verbose ? files.size() : 12;
+    for (int i = 0; i < files.size() && i < fileLimit; ++i) {
         out(QStringLiteral("      %1  %2 个变量")
                 .arg(files.at(i).file, -32)
                 .arg(files.at(i).variables.size()));
     }
-    if (files.size() > 12)
-        out(QStringLiteral("      ... 其余 %1 个文件").arg(files.size() - 12));
+    if (files.size() > fileLimit)
+        out(QStringLiteral("      ... 其余 %1 个文件").arg(files.size() - fileLimit));
+
+    out(QStringLiteral("    类型定义: %1 个（含成员的 class/struct/union）")
+            .arg(table.types.size()));
+
+    // Functions with locals: the reason `match_indx` and friends were invisible is
+    // that they are function-scope data, not globals.
+    int localTotal = 0;
+    for (const FunctionScope &scope : table.functions)
+        localTotal += scope.localCount();
+    out(QStringLiteral("    函数局部变量: %1 个函数 / %2 个局部变量")
+            .arg(table.functions.size())
+            .arg(localTotal));
+    if (options.verbose) {
+        for (int i = 0; i < table.functions.size(); ++i) {
+            const FunctionScope &scope = table.functions.at(i);
+            QStringList names;
+            for (const VariableNode &local : scope.locals) {
+                names << QStringLiteral("%1:%2").arg(local.name, local.typeLabel());
+                if (names.size() >= 6) {
+                    names << QStringLiteral("…");
+                    break;
+                }
+            }
+            out(QStringLiteral("      %1  [%2]  %3")
+                    .arg(scope.name.left(38), -38)
+                    .arg(scope.sourceFile.left(18), -18)
+                    .arg(names.join(QStringLiteral(", "))));
+        }
+    }
 
     out(QString());
     out(QStringLiteral("    变量树（%1 个根，%2 个节点）")
@@ -186,10 +216,29 @@ int runBenchScope(const Options &options)
         return 1;
     }
     const qint64 importMs = timer.elapsed();
-    auto *tree = page.findChild<QTreeWidget *>();
+    // The selector lives in its own container (so a dock can adopt it), which means
+    // it is not a child of the page: findChild() would return nullptr and report an
+    // empty panel even when the model is full.
+    QTreeWidget *tree = page.variableTree();
     out(QStringLiteral("    导入面板(懒加载): %1 ms（实际创建 %2 个顶层行）")
             .arg(importMs)
-            .arg(tree ? tree->topLevelItemCount() : 0));
+            .arg(tree ? tree->topLevelItemCount() : -1));
+    if (tree) {
+        QStringList names;
+        for (int i = 0; i < tree->topLevelItemCount() && i < 5; ++i)
+            names << QStringLiteral("%1(%2)")
+                         .arg(tree->topLevelItem(i)->text(0))
+                         .arg(tree->topLevelItem(i)->childCount());
+        out(QStringLiteral("    顶层样例: %1").arg(names.join(QStringLiteral(" | "))));
+        // Expand the first file row and report what appeared.
+        if (tree->topLevelItemCount() > 0) {
+            QTreeWidgetItem *first = tree->topLevelItem(0);
+            first->setExpanded(true);
+            out(QStringLiteral("    展开 \"%1\" 后: %2 行")
+                    .arg(first->text(0))
+                    .arg(first->childCount()));
+        }
+    }
 
     // Expand everything, which is what the old eager build did up front.
     if (tree) {
@@ -210,6 +259,61 @@ int runBenchScope(const Options &options)
         }
         const qint64 expandMs = timer.elapsed();
         out(QStringLiteral("    全展开(旧行为)  : %1 ms").arg(expandMs));
+    }
+
+    // Does a local like `match_indx` (the reported case) actually appear under its
+    // file now? This is the assertion the user cares about, so verify it end to end.
+    if (tree) {
+        const QString needle = QStringLiteral("match_indx");
+        bool found = false;
+        QString where;
+        for (int i = 0; i < tree->topLevelItemCount() && !found; ++i) {
+            QTreeWidgetItem *fileRow = tree->topLevelItem(i);
+            if (fileRow->text(0) != QLatin1String("encoder.cpp"))
+                continue;
+            fileRow->setExpanded(true);
+            for (int j = 0; j < fileRow->childCount() && !found; ++j) {
+                QTreeWidgetItem *funcRow = fileRow->child(j);
+                funcRow->setExpanded(true);
+                for (int k = 0; k < funcRow->childCount(); ++k) {
+                    if (funcRow->child(k)->text(0) == needle) {
+                        found = true;
+                        where = QStringLiteral("%1 / %2")
+                                    .arg(fileRow->text(0), funcRow->text(0));
+                        break;
+                    }
+                }
+            }
+        }
+        out(QStringLiteral("    局部变量 match_indx: %1")
+                .arg(found ? QStringLiteral("在 %1 下").arg(where)
+                           : QStringLiteral("未找到")));
+
+        // Class members: `index_found_` is an Encoder member, so it belongs under the
+        // file that DEFINES Encoder, as well as under any instance of it.
+        bool memberFound = false;
+        QString memberWhere;
+        for (int i = 0; i < tree->topLevelItemCount() && !memberFound; ++i) {
+            QTreeWidgetItem *fileRow = tree->topLevelItem(i);
+            fileRow->setExpanded(true);
+            page.expandForTest(fileRow);
+            for (int j = 0; j < fileRow->childCount(); ++j) {
+                QTreeWidgetItem *typeRow = fileRow->child(j);
+                if (typeRow->text(0) != QLatin1String("Encoder"))
+                    continue;
+                for (int k = 0; k < typeRow->childCount(); ++k) {
+                    if (typeRow->child(k)->text(0) == QLatin1String("index_found_")) {
+                        memberFound = true;
+                        memberWhere = QStringLiteral("%1 → Encoder → index_found_ (%2)")
+                                          .arg(fileRow->text(0),
+                                               typeRow->child(k)->text(2));
+                        break;
+                    }
+                }
+            }
+        }
+        out(QStringLiteral("    类成员 index_found_: %1")
+                .arg(memberFound ? memberWhere : QStringLiteral("未找到")));
     }
 
     // Filtering: it used to rebuild the whole tree per keystroke.

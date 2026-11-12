@@ -7,6 +7,7 @@
 
 #include <QApplication>
 
+#include <algorithm>
 #include <functional>
 #include <QCheckBox>
 #include <QClipboard>
@@ -311,6 +312,19 @@ QString tooltipFor(const VariableNode &node, const QString &fullPath)
 constexpr int kPlaceholderRole = Qt::UserRole + 4;
 /// Index into m_groups for a file row, -1 for a variable row.
 constexpr int kFileGroupRole = Qt::UserRole + 5;
+/// Raw VariableNode pointer for rows whose node is not in m_nodeByPath (function
+/// rows under a file). Valid because the tree is rebuilt whenever the model changes.
+constexpr int kNodePtrRole = Qt::UserRole + 6;
+
+const VariableNode *nodeOf(const QTreeWidgetItem *item)
+{
+    if (!item)
+        return nullptr;
+    const QVariant v = item->data(0, kNodePtrRole);
+    if (!v.isValid())
+        return nullptr;
+    return reinterpret_cast<const VariableNode *>(v.value<qulonglong>());
+}
 
 } // namespace
 
@@ -336,8 +350,18 @@ QTreeWidgetItem *ScopePage::makeItem(const VariableNode &node, const QString &pa
     auto *item = parent ? new QTreeWidgetItem(parent) : new QTreeWidgetItem(m_variableTree);
     item->setText(0, node.name);
     item->setText(1, node.typeLabel());
-    item->setText(2, node.hasAddress && node.address != 0 ? hexAddr(node.address)
-                                                          : QString());
+    // A local's address is only known while the core is halted in its function, so
+    // it comes from the resolved map rather than from the node.
+    quint32 shownAddress = node.address;
+    bool hasShownAddress = node.hasAddress && node.address != 0;
+    if (!hasShownAddress && (node.stackRelative || node.locListOffset != 0)) {
+        const auto it = m_localAddr.constFind(path);
+        if (it != m_localAddr.constEnd()) {
+            shownAddress = it.value();
+            hasShownAddress = shownAddress != 0;
+        }
+    }
+    item->setText(2, hasShownAddress ? hexAddr(shownAddress) : QString());
     item->setText(3, node.byteSize > 0 ? QStringLiteral("%1 B").arg(node.byteSize) : QString());
     item->setData(0, Qt::UserRole, path);
     item->setData(0, Qt::UserRole + 2, node.isAggregate());
@@ -347,7 +371,12 @@ QTreeWidgetItem *ScopePage::makeItem(const VariableNode &node, const QString &pa
 
     // Tooltips are built lazily too -- 6000 multi-line tooltips is megabytes of
     // QString and shows up in the import time for no benefit.
-    item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+    // Locals and function rows are not sampleable: a local's address changes with
+    // the stack, so ticking it would produce a curve of nonsense.
+    const bool selectable = node.kind != NodeKind::Function && !node.stackRelative
+        && node.locListOffset == 0;
+    item->setFlags(item->flags()
+                   | (selectable ? Qt::ItemIsUserCheckable : Qt::NoItemFlags));
 
     if (node.isAggregate()) {
         // A placeholder child makes Qt draw the expand arrow without us building
@@ -406,10 +435,14 @@ void ScopePage::populateChildren(QTreeWidgetItem *item)
     const QVariant fileRole = item->data(0, kFileGroupRole);
     const int groupIndex = fileRole.isValid() ? fileRole.toInt() : -1;
     if (groupIndex >= 0) {
-        if (groupIndex >= m_groups.size())
+        // Rows are built from the union of files (variables + functions + types), so
+        // the index refers to m_fileRowGroups, not to m_groups -- using m_groups here
+        // showed one file's variables under another file's row.
+        if (groupIndex >= m_fileRowGroups.size())
             return;
         const QSignalBlocker fileBlocker(m_variableTree);
-        for (const VariableNode &variable : m_groups.at(groupIndex).variables) {
+        const FileGroup &group = m_fileRowGroups.at(groupIndex);
+        for (const VariableNode &variable : group.variables) {
             const QString fullPath = childPath(QString(), variable.name);
             QTreeWidgetItem *childItem = makeItem(variable, fullPath, item);
             if (variable.children.isEmpty() && variable.samplable()) {
@@ -419,12 +452,72 @@ void ScopePage::populateChildren(QTreeWidgetItem *item)
             }
             childItem->setToolTip(0, tooltipFor(variable, fullPath));
         }
+
+        // Types defined in this file, with their members.
+        //
+        // Members have no address of their own (only an offset inside an instance),
+        // so they are not tickable -- but they are the reason someone opens
+        // `encoder.cpp` in the first place: `Encoder::index_found_` must be visible
+        // here, not only under whichever file declares a global instance.
+        const QVector<TypeDecl> types = m_symbols.typesInFile(group.file);
+        for (const TypeDecl &type : types) {
+            auto *typeItem = new QTreeWidgetItem(item);
+            typeItem->setText(0, type.name);
+            typeItem->setText(1, QStringLiteral("%1 · %2 个成员").arg(type.kind)
+                                     .arg(type.members.size()));
+            typeItem->setText(3, type.byteSize > 0
+                                     ? QStringLiteral("%1 B").arg(type.byteSize)
+                                     : QString());
+            typeItem->setFlags(Qt::ItemIsEnabled);
+            typeItem->setToolTip(
+                0, QStringLiteral("%1 %2\n%3 个成员，共 %4 字节\n"
+                                  "成员没有独立地址，只能通过实例访问（例如 encoders[0]）")
+                       .arg(type.kind, type.name)
+                       .arg(type.members.size())
+                       .arg(type.byteSize));
+            // Members are created up front: there are at most 512 and they are
+            // plain rows, so lazily loading them would cost more than it saves.
+            for (const TypeMember &member : type.members) {
+                auto *memberItem = new QTreeWidgetItem(typeItem);
+                memberItem->setText(0, member.name);
+                memberItem->setText(1, member.typeLabel);
+                memberItem->setText(2, QStringLiteral("+%1").arg(member.byteOffset));
+                memberItem->setText(3, member.byteSize > 0
+                                         ? QStringLiteral("%1 B").arg(member.byteSize)
+                                         : QString());
+                memberItem->setFlags(Qt::ItemIsEnabled);
+                memberItem->setToolTip(
+                    0, QStringLiteral("%1::%2\n类型: %3\n实例内偏移: +%4 字节\n"
+                                      "（成员随实例存在，同一类型的不同实例各有自己的副本）")
+                           .arg(type.name, member.name, member.typeLabel)
+                           .arg(member.byteOffset));
+            }
+        }
+
+        // Then the functions of this file, so their locals are reachable.
+        QVector<VariableNode> &functions = m_functionsByFile[group.file];
+        for (VariableNode &function : functions) {
+            const QString funcPath = childPath(QString(), function.name);
+            QTreeWidgetItem *funcItem = makeItem(function, funcPath, item);
+            funcItem->setData(0, kNodePtrRole,
+                              QVariant::fromValue<qulonglong>(
+                                  static_cast<qulonglong>(reinterpret_cast<quintptr>(&function))));
+            funcItem->setText(1, QStringLiteral("函数 · %1 个局部变量")
+                                     .arg(function.children.size()));
+            funcItem->setToolTip(
+                0, QStringLiteral("%1()\n%2 个局部变量\n只在停机且停在该函数内时可读")
+                       .arg(function.name)
+                       .arg(function.children.size()));
+        }
         recomputeAncestors(item->child(0));
         return;
     }
 
     const QString path = item->data(0, Qt::UserRole).toString();
-    const VariableNode *node = m_nodeByPath.value(path, nullptr);
+    // A function row is not in m_nodeByPath; it carries its own pointer.
+    const VariableNode *node = nodeOf(item);
+    if (!node)
+        node = m_nodeByPath.value(path, nullptr);
     if (!node || node->children.isEmpty())
         return;
 
@@ -494,37 +587,89 @@ void ScopePage::rebuildVariableList()
     };
     for (const VariableNode &root : m_visibleRoots)
         Index::run(root, QString(), &m_nodeByPath);
-    // Locals are indexed under the "(局部)" prefix used for their items.
-    for (const VariableNode &local : m_localRoots)
-        Index::run(local, QStringLiteral("(局部)"), &m_nodeByPath);
 
-    // Locals of the halted function go on top, in their own labelled section: they
-    // are not globals and their addresses change as soon as the core runs again.
-    m_localHeader = nullptr;
-    if (!m_localRoots.isEmpty()) {
-        m_localHeader = new QTreeWidgetItem(m_variableTree);
-        m_localHeader->setText(0, QStringLiteral("局部变量 @ %1").arg(m_localFunction));
-        m_localHeader->setText(1, QStringLiteral("停机时可读"));
-        m_localHeader->setData(0, Qt::UserRole, QString());
-        m_localHeader->setData(0, kFileGroupRole, -1);
-        m_localHeader->setData(0, Qt::UserRole + 3, true); // children are created below
-        m_localHeader->setFlags(Qt::ItemIsEnabled);
-        m_localHeader->setExpanded(true);
-        for (const VariableNode &local : m_localRoots) {
-            const QString path = childPath(QStringLiteral("(局部)"), local.name);
-            QTreeWidgetItem *item = makeItem(local, path, m_localHeader);
-            item->setToolTip(0, QStringLiteral("%1\n地址 = 帧基址 + 偏移，仅在停机时有效")
-                                    .arg(path));
+    // Functions with locals, grouped by their source file. These are NOT in the model
+    // forest (that is globals/statics only), which is exactly why a local such as
+    // `match_indx` was unfindable: it is function-scope data.
+    m_functionsByFile.clear();
+    for (const FunctionScope &scope : m_symbols.functions) {
+        if (scope.locals.isEmpty())
+            continue;
+        const QString file = scope.sourceFile.isEmpty() ? QStringLiteral("(未知文件)")
+                                                        : scope.sourceFile;
+        VariableNode functionNode;
+        functionNode.name = scope.name;
+        functionNode.typeName = QStringLiteral("函数");
+        functionNode.kind = NodeKind::Function;
+        functionNode.children = scope.locals;
+        functionNode.sourceFile = scope.sourceFile;
+        m_functionsByFile[file].append(functionNode);
+    }
+
+    // The row list is a union: files with variables, files with functions, and files
+    // that only define types (headers). Leaving headers out made `Encoder` -- and
+    // therefore `index_found_` -- unreachable from the tree.
+    {
+        QSet<QString> files;
+        for (const FileGroup &group : m_groups)
+            files.insert(group.file);
+        for (auto it = m_functionsByFile.constBegin(); it != m_functionsByFile.constEnd();
+             ++it) {
+            files.insert(it.key());
         }
-        // Populate one level so the user sees the values without clicking.
-        populateChildren(m_localHeader);
+        for (const TypeDecl &type : m_symbols.types) {
+            files.insert(type.sourceFile.isEmpty() ? QStringLiteral("(未知文件)")
+                                                   : type.sourceFile);
+        }
+        m_allFiles = QStringList(files.constBegin(), files.constEnd());
+        // Order: files that declare variables first, then files with functions, then
+        // headers that only define types. Alphabetical order alone pushed libc++
+        // internals like `__bit_reference` above `adc.c`, which is backwards for a
+        // user looking for their own code.
+        QSet<QString> withVariables;
+        for (const FileGroup &group : m_groups) {
+            if (!group.variables.isEmpty())
+                withVariables.insert(group.file);
+        }
+        QSet<QString> withFunctions;
+        for (auto it = m_functionsByFile.constBegin(); it != m_functionsByFile.constEnd();
+             ++it) {
+            if (!it.value().isEmpty())
+                withFunctions.insert(it.key());
+        }
+        std::sort(m_allFiles.begin(), m_allFiles.end(),
+                  [&](const QString &a, const QString &b) {
+                      const int rankA = withVariables.contains(a) ? 0
+                          : (withFunctions.contains(a) ? 1 : 2);
+                      const int rankB = withVariables.contains(b) ? 0
+                          : (withFunctions.contains(b) ? 1 : 2);
+                      if (rankA != rankB)
+                          return rankA < rankB;
+                      return a.compare(b, Qt::CaseInsensitive) < 0;
+                  });
+        // "(未知文件)" always last so a real grouping is never buried.
+        const QString unknown = QStringLiteral("(未知文件)");
+        if (m_allFiles.removeAll(unknown) > 0)
+            m_allFiles.append(unknown);
     }
 
     // Top level is one row per source file; the variables in it are created when the
     // file is opened. A flat 637-row list of names was unusable; file -> variable is
     // how the user knows where to look.
-    for (int i = 0; i < m_groups.size(); ++i)
-        makeFileItem(m_groups.at(i), i);
+    for (const QString &file : m_allFiles) {
+        // Find the variables group for this file (may be absent for a header).
+        FileGroup empty;
+        empty.file = file;
+        const FileGroup *group = &empty;
+        for (const FileGroup &candidate : m_groups) {
+            if (candidate.file == file) {
+                group = &candidate;
+                break;
+            }
+        }
+        m_fileRowGroups.append(*group);
+        makeFileItem(m_fileRowGroups.last(), m_fileRowGroups.size() - 1);
+    }
 
     // A filter that matched inside a file should reveal the path to the match,
     // otherwise the user sees collapsed rows and cannot tell the search worked.
@@ -775,8 +920,8 @@ void ScopePage::onRegistersRead(const QVector<quint32> &registers, bool ok, cons
 
 void ScopePage::applyLocals(quint32 sp, quint32 pc, const QVector<quint32> &registers)
 {
-    m_localRoots.clear();
-    m_localFunction.clear();
+    m_localAddr.clear();
+    m_resolvedFunction.clear();
     if (!m_symbols.isValid() || pc == 0) {
         rebuildVariableList();
         return;
@@ -789,40 +934,74 @@ void ScopePage::applyLocals(quint32 sp, quint32 pc, const QVector<quint32> &regi
         return;
     }
 
-    m_localFunction = scope->name;
-
     // The frame base is "register + offset". armclang gives register 13 with offset
     // 0; GCC points at the CFA, whose offset changes with the prologue, so it is
-    // evaluated for the *current* PC rather than the function entry.
+    // evaluated for the *current* PC rather than at the function entry.
     int frameRegister = -1;
     qint32 frameOffset = 0;
-    if (!m_symbols.frameBaseAt(pc, &frameRegister, &frameOffset)) {
-        emit statusMessage(
-            QStringLiteral("无法确定 %1 的帧基址（缺 .debug_frame），局部变量地址不可信")
-                .arg(scope->name));
-        rebuildVariableList();
-        return;
-    }
-    const quint32 base =
+    const bool haveFrameBase = m_symbols.frameBaseAt(pc, &frameRegister, &frameOffset);
+    const quint32 frameBase =
         static_cast<quint32>(static_cast<qint32>((frameRegister >= 0
                                                   && frameRegister < registers.size())
                                                      ? registers.at(frameRegister)
                                                      : sp)
-                             + frameOffset);
+                             + (haveFrameBase ? frameOffset : 0));
+
+    // Resolve every local of this function. A location list is evaluated at the halt
+    // PC (different ranges put the same variable in a register or on the stack), so
+    // this cannot be done at import time.
+    const QString funcPath = childPath(QString(), scope->name);
+    int resolved = 0;
     for (const VariableNode &local : scope->locals) {
-        VariableNode copy = local;
-        if (copy.stackRelative) {
-            copy.address = static_cast<quint32>(static_cast<qint32>(base) + copy.stackOffset);
-            copy.hasAddress = true;
-            copy.stackRelative = false;
+        const QString localPath = childPath(funcPath, local.name);
+        quint32 address = 0;
+        if (local.locListOffset != 0) {
+            const DwarfReader::LocalLoc loc =
+                DwarfReader::localAt(m_symbols.source, pc, local.locListOffset);
+            if (!loc.usable)
+                continue;
+            if (loc.absolute)
+                address = loc.address;
+            else if (loc.inRegister && loc.reg >= 0 && loc.reg < registers.size())
+                address = registers.at(loc.reg) + static_cast<quint32>(loc.offset);
+            else
+                address = static_cast<quint32>(static_cast<qint32>(frameBase) + loc.offset);
+        } else if (local.stackRelative) {
+            address = static_cast<quint32>(static_cast<qint32>(frameBase) + local.stackOffset);
+        } else {
+            continue;
         }
-        m_localRoots.append(copy);
+        if (address == 0)
+            continue;
+        m_localAddr.insert(localPath, address);
+        ++resolved;
     }
 
+    m_resolvedFunction = scope->name;
     rebuildVariableList();
-    emit statusMessage(QStringLiteral("局部变量：%1 内有 %2 个（SP=%3，PC=%4）")
+
+    // Open the file and function rows so the locals are actually visible.
+    for (int i = 0; i < m_variableTree->topLevelItemCount(); ++i) {
+        QTreeWidgetItem *fileRow = m_variableTree->topLevelItem(i);
+        if (!scope->sourceFile.isEmpty() && fileRow->text(0) != scope->sourceFile)
+            continue;
+        fileRow->setExpanded(true);
+        populateChildren(fileRow);
+        for (int j = 0; j < fileRow->childCount(); ++j) {
+            QTreeWidgetItem *child = fileRow->child(j);
+            if (child->text(0) == scope->name) {
+                child->setExpanded(true);
+                break;
+            }
+        }
+        if (!scope->sourceFile.isEmpty())
+            break;
+    }
+
+    emit statusMessage(QStringLiteral("局部变量：%1 内 %2/%3 个地址已解析（SP=%4，PC=%5）")
                            .arg(scope->name)
-                           .arg(m_localRoots.size())
+                           .arg(resolved)
+                           .arg(scope->locals.size())
                            .arg(hexAddr(sp), hexAddr(pc)));
 }
 
