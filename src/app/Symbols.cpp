@@ -2,10 +2,12 @@
 
 #include "core/DwarfReader.h"
 #include "core/ElfFile.h"
+#include "core/HexUtil.h"
 #include "core/Logger.h"
 #include "core/SymbolFile.h"
 
 #include <QHash>
+#include <QStringList>
 
 #include <cstdio>
 
@@ -61,21 +63,77 @@ int runSymbols(const Options &options)
             .arg(fromSymbol));
 
     out(QString());
-    out(QStringLiteral("    变量                       类型                    类别      地址        大小"));
-    out(QStringLiteral("    -------------------------  ----------------------  ----------  -----"));
-    const int limit = options.verbose ? table.variables.size() : 40;
-    for (int i = 0; i < table.variables.size() && i < limit; ++i) {
+    out(QStringLiteral("    变量树（%1 个根，%2 个节点）")
+            .arg(table.roots.size())
+            .arg([&table] {
+                int nodes = 0;
+                for (const VariableNode &root : table.roots)
+                    nodes += root.totalNodeCount();
+                return nodes;
+            }()));
+
+    // Print the tree the way the UI shows it: nesting by indentation, arrays with
+    // their extent in the type label and their elements as children.
+    const bool showAll = options.verbose;
+    int printedRoots = 0;
+    int hiddenRoots = 0;
+
+    struct Printer
+    {
+        static void print(const VariableNode &node, int depth, bool showAll,
+                          int *budget, int *hidden)
+        {
+            if (*budget <= 0) {
+                ++*hidden;
+                return;
+            }
+            --*budget;
+            QStringList bits;
+            bits << QStringLiteral("%1%2").arg(QString(depth * 2, QLatin1Char(' ')), node.name);
+            bits << node.typeLabel();
+            if (node.hasAddress && node.address != 0)
+                bits << hexAddr(node.address);
+            if (node.byteSize > 0)
+                bits << QStringLiteral("%1 B").arg(node.byteSize);
+            if (node.incomplete)
+                bits << QStringLiteral("[无布局]");
+            const QString line = bits.join(QStringLiteral("  "));
+            out(QStringLiteral("    %1").arg(line));
+            Q_UNUSED(showAll);
+            for (const VariableNode &child : node.children)
+                print(child, depth + 1, showAll, budget, hidden);
+        }
+    };
+
+    // Non-verbose output stops after a screenful so the listing stays readable.
+    int budget = showAll ? 1 << 30 : 60;
+    for (const VariableNode &root : table.roots) {
+        if (budget <= 0) {
+            ++hiddenRoots;
+            continue;
+        }
+        ++printedRoots;
+        Printer::print(root, 0, showAll, &budget, &hiddenRoots);
+    }
+    if (hiddenRoots > 0) {
+        out(QStringLiteral("    ... 其余 %1 个节点省略（--verbose 显示全部）").arg(hiddenRoots));
+    }
+
+    // The flattened view is what sampling and the firmware snippet use; showing one
+    // entry proves the two views agree.
+    out(QString());
+    out(QStringLiteral("    可采样叶子（扁平，%1 条）:").arg(table.variables.size()));
+    for (int i = 0; i < table.variables.size() && i < (showAll ? 12 : 6); ++i) {
         const WatchVariable &variable = table.variables.at(i);
-        out(QStringLiteral("    %1  %2  %3  %4  %5 B")
-                .arg(variable.name, -25)
-                .arg(variable.typeLabel.left(22), -22)
-                .arg(scalarKindName(variable.kind), -7)
+        out(QStringLiteral("      %1  %2  %3  %4 B")
+                .arg(variable.name, -34)
+                .arg(variable.typeLabel.left(18), -18)
                 .arg(variable.addressLabel(), -10)
                 .arg(variable.span()));
     }
-    if (table.variables.size() > limit)
-        out(QStringLiteral("    ... 其余 %1 个省略（--verbose 显示全部）")
-                .arg(table.variables.size() - limit));
+    if (table.variables.size() > (showAll ? 12 : 6))
+        out(QStringLiteral("      ... 其余 %1 条省略")
+                .arg(table.variables.size() - (showAll ? 12 : 6)));
 
     return 0;
 }

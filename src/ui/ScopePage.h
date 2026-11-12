@@ -3,6 +3,8 @@
 #include "core/SampleCollector.h"
 #include "core/SymbolFile.h"
 
+#include <QSet>
+#include <QTimer>
 #include <QWidget>
 
 class QCheckBox;
@@ -64,6 +66,8 @@ private slots:
 private:
     void rebuildVariableList();
     QVector<WatchVariable> selectedVariables() const;
+    /// Dotted names of every ticked leaf currently in the tree.
+    QSet<QString> selectedLeafNames() const;
     void updateControls();
     void refreshState();
     QString firmwareSnippet() const;
@@ -74,6 +78,8 @@ private:
     bool m_attached = false;
 
     SampleCollector m_collector;
+    /// Coalesces the burst of itemChanged signals an auto-tristate parent produces.
+    QTimer m_selectionTimer;
 
     QLineEdit *m_pathEdit = nullptr;
     QPushButton *m_browseButton = nullptr;

@@ -51,6 +51,97 @@ QVector<WatchVariable> SymbolTable::filtered(const QString &needle) const
     return out;
 }
 
+void SymbolTable::collectLeaves(const VariableNode &node, const QString &prefix,
+                                QVector<WatchVariable> *out)
+{
+    if (!out)
+        return;
+    // Dotted path from the root, so a leaf is addressable by name even though the
+    // tree itself only stores local names. Array elements use the C spelling
+    // (`g_points[1].x`), which is what the user sees in the tree.
+    // Array elements are spelled `g_points[0]`, not `g_points.[0]`, so the path
+    // matches what the user would write in C.
+    QString path;
+    if (prefix.isEmpty())
+        path = node.name;
+    else if (node.name.startsWith(QLatin1Char('[')))
+        path = prefix + node.name;
+    else
+        path = prefix + QLatin1Char('.') + node.name;
+
+    if (node.children.isEmpty()) {
+        if (!node.samplable())
+            return;
+        WatchVariable watch;
+        watch.name = path;
+        watch.typeLabel = node.typeLabel();
+        watch.kind = node.scalar;
+        watch.address = node.address;
+        watch.elementSize = node.elementSize;
+        // A scalar array is one entity with an extent: the plot fans it out into one
+        // curve per element, so it must not become N separate leaves.
+        watch.elementCount = node.kind == NodeKind::Array ? qMax(1, node.elementCount) : 1;
+        watch.totalSize = node.byteSize > 0 ? node.byteSize
+                                            : watch.elementSize * watch.elementCount;
+        watch.addressFromSymbol = node.addressFromSymbol;
+        out->append(watch);
+        return;
+    }
+
+    for (const VariableNode &child : node.children)
+        collectLeaves(child, path, out);
+}
+
+namespace {
+
+/// Does any node in this subtree match the needle?
+bool subtreeMatches(const VariableNode &node, const QString &needle)
+{
+    if (node.name.contains(needle, Qt::CaseInsensitive)
+        || node.typeLabel().contains(needle, Qt::CaseInsensitive)
+        || node.typeName.contains(needle, Qt::CaseInsensitive)) {
+        return true;
+    }
+    for (const VariableNode &child : node.children) {
+        if (subtreeMatches(child, needle))
+            return true;
+    }
+    return false;
+}
+
+/// Keep only the branches leading to a match. A match on a parent keeps its whole
+/// subtree (otherwise filtering for `config` would show the field but hide its
+/// contents, which defeats the purpose).
+VariableNode pruneTree(const VariableNode &node, const QString &needle)
+{
+    if (!subtreeMatches(node, needle))
+        return VariableNode(); // caller drops empty names
+    VariableNode copy = node;
+    copy.children.clear();
+    for (const VariableNode &child : node.children) {
+        VariableNode kept = pruneTree(child, needle);
+        if (!kept.name.isEmpty())
+            copy.children.append(kept);
+    }
+    copy.incomplete = copy.incomplete || (!node.children.isEmpty() && copy.children.isEmpty());
+    return copy;
+}
+
+} // namespace
+
+QVector<VariableNode> SymbolTable::filteredRoots(const QString &needle) const
+{
+    if (needle.trimmed().isEmpty())
+        return roots;
+    QVector<VariableNode> out;
+    for (const VariableNode &root : roots) {
+        VariableNode kept = pruneTree(root, needle);
+        if (!kept.name.isEmpty())
+            out.append(kept);
+    }
+    return out;
+}
+
 QStringList SymbolFile::fileFilters()
 {
     return {QStringLiteral("Keil 符号文件 (*.axf *.elf *.out)"),
@@ -154,66 +245,80 @@ Result<SymbolTable> SymbolFile::load(const QString &path)
 
     const QHash<QString, const ElfSymbol *> symbols = indexSymbols(elf.symbols());
 
-    // Primary source: DWARF knows names, types and sizes.
-    const auto dwarfResult = DwarfReader::readVariables(elf);
+    // Primary source: DWARF knows names, types, sizes and the nesting.
+    auto dwarfResult = DwarfReader::readVariables(elf);
     if (dwarfResult) {
-        for (const DwarfVariable &dv : dwarfResult.value) {
-            WatchVariable watch;
-            watch.name = dv.name;
-            watch.typeLabel = dv.typeLabel();
-            watch.kind = dv.kind;
-            watch.elementSize = dv.elementSize;
-            watch.elementCount = dv.elementCount > 0 ? dv.elementCount : 1;
-            watch.totalSize = dv.totalSize;
-            watch.address = dv.address;
-            watch.linkageName = dv.linkageName;
-
-            // The DWARF location expression is authoritative when it gave an
-            // address; otherwise consult the linker symbol of the same name.
-            if (dv.hasAddress && dv.address != 0) {
-                watch.address = dv.address;
-            } else {
-                // The mangled name is what .symtab uses. Matching on the demangled
-                // DWARF name silently fails for every C++ variable ("endpoint_id"
-                // vs "_ZL11endpoint_id"), which is why a C++ image appeared to have
+        // Resolve each root's base address, then shift its whole subtree by the
+        // same delta. Children were built as `parentBase + memberOffset`, so when
+        // the parent base was unknown they hold plain offsets and adding the real
+        // base makes them absolute -- which is exactly what the shift does.
+        for (VariableNode &root : dwarfResult.value) {
+            quint32 oldBase = root.address;
+            if (!root.hasAddress || root.address == 0) {
+                // The mangled name is what .symtab uses. Matching the demangled
+                // DWARF name fails for every C++ variable ("endpoint_id" vs
+                // "_ZL11endpoint_id"), which once made a C++ image look like it had
                 // almost no variables at all.
+                const QString leafName = root.name.section(QStringLiteral("::"), -1);
                 const ElfSymbol *sym = nullptr;
-                if (!dv.linkageName.isEmpty())
-                    sym = symbols.value(dv.linkageName, nullptr);
+                if (!root.linkageName.isEmpty())
+                    sym = symbols.value(root.linkageName, nullptr);
                 if (!sym)
-                    sym = symbols.value(dv.name, nullptr);
-                if (!sym) {
-                    // Namespaced C++ statics: drop the scope and try the tail.
-                    const int scopeEnd = dv.name.lastIndexOf(QStringLiteral("::"));
-                    if (scopeEnd >= 0)
-                        sym = symbols.value(dv.name.mid(scopeEnd + 2), nullptr);
-                }
-                if (sym) {
-                    watch.address = sym->value;
-                    watch.addressFromSymbol = true;
-                    table.usedSymbolFallback = true;
-                    if (watch.totalSize <= 0 && sym->size > 0)
-                        watch.totalSize = static_cast<int>(sym->size);
-                    // A symbol's size covers the whole array; the element count then
-                    // follows from the element width.
-                    if (watch.elementSize > 0 && watch.elementCount <= 1 && sym->size > 0) {
-                        const int deduced = static_cast<int>(sym->size) / watch.elementSize;
-                        if (deduced > 1)
-                            watch.elementCount = deduced;
-                    }
+                    sym = symbols.value(root.name, nullptr);
+                if (!sym)
+                    sym = symbols.value(leafName, nullptr);
+                if (!sym)
+                    continue; // no address anywhere: a local or an extern
+                root.address = sym->value;
+                root.hasAddress = true;
+                root.addressFromSymbol = true;
+                table.usedSymbolFallback = true;
+                if (root.byteSize <= 0 && sym->size > 0)
+                    root.byteSize = static_cast<int>(sym->size);
+                // A symbol's size covers the whole array; the element count follows
+                // from the element width when DWARF did not state it.
+                if (root.kind == NodeKind::Array && root.elementSize > 0
+                    && root.elementCount <= 1 && sym->size > 0) {
+                    const int deduced = static_cast<int>(sym->size) / root.elementSize;
+                    if (deduced > 1)
+                        root.elementCount = deduced;
                 }
             }
+            if (root.address < 0x1000)
+                continue; // a mis-parsed location expression: not a real address
 
-            if (!watch.usable())
-                continue;
-            // Reject addresses that cannot be RAM/Flash: a location expression the
-            // reader mis-parsed would otherwise show up as a "variable" at 0x0.
-            if (watch.address < 0x1000)
-                continue;
-            if (watch.totalSize <= 0)
-                watch.totalSize = watch.elementSize * watch.elementCount;
-            table.variables.append(watch);
+            // Propagate the resolved base down to every child.
+            const qint64 delta = static_cast<qint64>(root.address)
+                - static_cast<qint64>(oldBase);
+            if (delta != 0) {
+                struct Shift
+                {
+                    static void apply(VariableNode &node, qint64 by)
+                    {
+                        if (node.hasAddress || node.address != 0) {
+                            node.address = static_cast<quint32>(
+                                static_cast<qint64>(node.address) + by);
+                            node.hasAddress = true;
+                        }
+                        for (VariableNode &child : node.children)
+                            apply(child, by);
+                    }
+                };
+                for (VariableNode &child : root.children)
+                    Shift::apply(child, delta);
+            }
+            if (root.byteSize <= 0) {
+                // A declaration-only aggregate still occupies the symbol's bytes.
+                int span = root.elementSize * qMax(1, root.elementCount);
+                if (span > 0)
+                    root.byteSize = span;
+            }
+            table.roots.append(root);
         }
+
+        // Flatten for sampling / frame layout / the firmware snippet.
+        for (const VariableNode &root : table.roots)
+            SymbolTable::collectLeaves(root, QString(), &table.variables);
     }
 
     // DWARF absent or unusable: fall back to the symbol table alone. Types become
@@ -235,6 +340,20 @@ Result<SymbolTable> SymbolFile::load(const QString &path)
             watch.addressFromSymbol = true;
             if (!watch.usable() || watch.address < 0x1000)
                 continue;
+
+            VariableNode node;
+            node.name = watch.name;
+            node.typeName = watch.typeLabel;
+            node.scalar = watch.kind;
+            node.kind = watch.elementCount > 1 ? NodeKind::Array : NodeKind::Scalar;
+            node.address = watch.address;
+            node.hasAddress = true;
+            node.byteSize = watch.totalSize;
+            node.elementSize = watch.elementSize;
+            node.elementCount = watch.elementCount;
+            node.addressFromSymbol = true;
+            node.incomplete = true; // no type information at all
+            table.roots.append(node);
             table.variables.append(watch);
         }
         table.usedSymbolFallback = true;
@@ -274,6 +393,29 @@ Result<SymbolTable> SymbolFile::load(const QString &path)
                                           .arg(table.variables.size() - unique.size()));
         }
         table.variables = unique;
+    }
+
+    // The tree needs the same treatment: a global described by three units would
+    // otherwise appear three times in the variable list, which is what the UI shows.
+    // Deduplicating the leaves alone is not enough once the tree is the primary view.
+    {
+        QVector<VariableNode> unique;
+        unique.reserve(table.roots.size());
+        QSet<QString> seen;
+        for (const VariableNode &root : table.roots) {
+            const QString key = root.name + QLatin1Char('@')
+                + QString::number(root.address);
+            if (seen.contains(key))
+                continue;
+            seen.insert(key);
+            unique.append(root);
+        }
+        if (unique.size() != table.roots.size()) {
+            Logger::instance()->debug(
+                QStringLiteral("符号文件: 树上去重 %1 个根（同一变量被多个 CU 重复描述）")
+                    .arg(table.roots.size() - unique.size()));
+        }
+        table.roots = unique;
     }
 
     Logger::instance()->debug(QStringLiteral("符号文件: %1，DWARF v%2，%3 个变量%4")

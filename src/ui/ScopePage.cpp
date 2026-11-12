@@ -132,6 +132,11 @@ ScopePage::ScopePage(QWidget *parent)
         updateControls();
     });
 
+    // One re-evaluation after a burst of checkbox changes settles.
+    m_selectionTimer.setSingleShot(true);
+    m_selectionTimer.setInterval(0);
+    connect(&m_selectionTimer, &QTimer::timeout, this, &ScopePage::onSampleSettingsChanged);
+
     updateControls();
     refreshState();
 }
@@ -234,35 +239,135 @@ void ScopePage::onBrowse()
 void ScopePage::rebuildVariableList()
 {
     m_variableTree->clear();
-    const QString needle = m_filterEdit->text();
-    const QVector<WatchVariable> visible = m_symbols.filtered(needle);
-    const bool filterChanged = !needle.trimmed().isEmpty();
+    const QString needle = m_filterEdit->text().trimmed();
 
-    for (const WatchVariable &variable : visible) {
-        auto *item = new QTreeWidgetItem(m_variableTree);
-        item->setText(0, variable.name);
-        item->setText(1, variable.typeLabel);
-        item->setText(2, variable.addressLabel());
-        item->setText(3, QStringLiteral("%1 B").arg(variable.span()));
-        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-        item->setCheckState(0, Qt::Unchecked);
-        item->setData(0, Qt::UserRole, variable.name);
-        // Re-applying the filter should not silently change the selection: restore
-        // whatever the user had ticked before.
-        for (const WatchVariable &chosen : m_collector.variables()) {
-            if (chosen.name == variable.name) {
-                item->setCheckState(0, Qt::Checked);
-                break;
+    // The tree keeps the source shape: a struct expands into its members, an array
+    // into its elements. Filtering prunes the branches instead of flattening them,
+    // so the hierarchy the user is reading survives a search.
+    const QVector<VariableNode> roots = m_symbols.filteredRoots(needle);
+    const QSet<QString> selected = selectedLeafNames();
+
+    // Building the whole tree can be thousands of items; suspend the checkbox
+    // signals while doing it, or every item would trigger a re-evaluation.
+    const QSignalBlocker blocker(m_variableTree);
+
+    struct Builder
+    {
+        ScopePage *page = nullptr;
+        QTreeWidget *tree = nullptr;
+        const QSet<QString> *selected = nullptr;
+        const QString *needle = nullptr;
+
+        void build(const VariableNode &node, QTreeWidgetItem *parent, const QString &prefix)
+        {
+            // Same spelling as the flat path so a selection maps back to a
+            // WatchVariable by name.
+            QString path;
+            if (prefix.isEmpty())
+                path = node.name;
+            else if (node.name.startsWith(QLatin1Char('[')))
+                path = prefix + node.name;
+            else
+                path = prefix + QLatin1Char('.') + node.name;
+
+            auto *item = parent ? new QTreeWidgetItem(parent) : new QTreeWidgetItem(tree);
+            // Members and array elements read better without repeating the parent,
+            // so only the local name is shown; the tooltip carries the full path.
+            item->setText(0, node.name);
+            item->setText(1, node.typeLabel());
+            item->setText(2, node.hasAddress && node.address != 0
+                                 ? hexAddr(node.address)
+                                 : QString());
+            item->setText(3, node.byteSize > 0 ? QStringLiteral("%1 B").arg(node.byteSize)
+                                               : QString());
+
+            QStringList tip;
+            tip << path;
+            tip << QStringLiteral("类型: %1（%2）").arg(node.typeLabel(), nodeKindName(node.kind));
+            if (node.kind == NodeKind::Array)
+                tip << QStringLiteral("元素数: %1，每元素 %2 字节")
+                           .arg(node.elementCount)
+                           .arg(node.elementSize);
+            if (node.hasAddress && node.address != 0)
+                tip << QStringLiteral("地址: %1").arg(hexAddr(node.address));
+            if (node.byteSize > 0)
+                tip << QStringLiteral("大小: %1 字节").arg(node.byteSize);
+            if (node.samplable())
+                tip << QStringLiteral("采样: %1").arg(scalarKindName(node.scalar));
+            if (node.addressFromSymbol)
+                tip << QStringLiteral("（地址取自链接符号表）");
+            if (node.incomplete)
+                tip << QStringLiteral("（布局不完整：类型仅有声明，或展开已截断）");
+            item->setToolTip(0, tip.join(QLatin1Char('\n')));
+
+            item->setData(0, Qt::UserRole, path);
+            item->setData(0, Qt::UserRole + 1, node.samplable());
+            item->setData(0, Qt::UserRole + 2, node.isAggregate());
+
+            if (node.isAggregate()) {
+                // Ticking an aggregate ticks everything under it: Qt does the
+                // propagation when the item is auto-tristate.
+                item->setFlags(item->flags() | Qt::ItemIsUserCheckable
+                               | Qt::ItemIsAutoTristate);
+            } else {
+                item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
             }
+            item->setCheckState(0, selected->contains(path) ? Qt::Checked : Qt::Unchecked);
+
+            // Array elements and members start collapsed: an ODrive build has
+            // thousands of nodes and expanding everything would freeze the view.
+            item->setExpanded(false);
+
+            for (const VariableNode &child : node.children)
+                build(child, item, path);
         }
-        item->setToolTip(0, QStringLiteral("%1\n类型: %2\n地址: %3\n大小: %4 字节%5")
-                                .arg(variable.name, variable.typeLabel, variable.addressLabel())
-                                .arg(variable.span())
-                                .arg(variable.addressFromSymbol
-                                         ? QStringLiteral("\n（地址取自链接符号表）")
-                                         : QString()));
+    } builder{this, m_variableTree, &selected, &needle};
+
+    for (const VariableNode &root : roots)
+        builder.build(root, nullptr, QString());
+
+    // Recompute the aggregate states bottom-up. Qt's auto-tristate keeps them in
+    // sync while the user clicks, but during construction the children are created
+    // after the parent's own state was set -- so a restored selection would show
+    // fully-unticked parents above ticked leaves.
+    struct Sync
+    {
+        static void run(QTreeWidgetItem *item)
+        {
+            if (!item || item->childCount() == 0)
+                return;
+            for (int i = 0; i < item->childCount(); ++i)
+                run(item->child(i));
+            int checked = 0;
+            int partial = 0;
+            for (int i = 0; i < item->childCount(); ++i) {
+                const Qt::CheckState state = item->child(i)->checkState(0);
+                if (state == Qt::Checked)
+                    ++checked;
+                else if (state == Qt::PartiallyChecked)
+                    ++partial;
+            }
+            // Only aggregates carry a checkbox of their own; a leaf's state was set
+            // above and must not be touched here.
+            if ((item->flags() & Qt::ItemIsAutoTristate) == 0)
+                return;
+            if (checked == item->childCount())
+                item->setCheckState(0, Qt::Checked);
+            else if (checked == 0 && partial == 0)
+                item->setCheckState(0, Qt::Unchecked);
+            else
+                item->setCheckState(0, Qt::PartiallyChecked);
+        }
+    };
+    for (int i = 0; i < m_variableTree->topLevelItemCount(); ++i)
+        Sync::run(m_variableTree->topLevelItem(i));
+
+    // A filter that matched something inside a collapsed root should reveal it.
+    if (!needle.isEmpty()) {
+        for (int i = 0; i < m_variableTree->topLevelItemCount(); ++i)
+            m_variableTree->topLevelItem(i)->setExpanded(true);
     }
-    Q_UNUSED(filterChanged);
+    Q_UNUSED(blocker);
 }
 
 void ScopePage::onFilterChanged(const QString &text)
@@ -271,23 +376,46 @@ void ScopePage::onFilterChanged(const QString &text)
     rebuildVariableList();
 }
 
+QSet<QString> ScopePage::selectedLeafNames() const
+{
+    // Every visible leaf that is ticked. Aggregates are auto-tristate, so a parent
+    // tick has already propagated down to its leaves.
+    QSet<QString> names;
+    struct Walker
+    {
+        static void walk(const QTreeWidgetItem *item, QSet<QString> *out)
+        {
+            if (!item)
+                return;
+            const bool leaf = item->childCount() == 0;
+            if (leaf && item->checkState(0) == Qt::Checked)
+                out->insert(item->data(0, Qt::UserRole).toString());
+            for (int i = 0; i < item->childCount(); ++i)
+                walk(item->child(i), out);
+        }
+    };
+    for (int i = 0; i < m_variableTree->topLevelItemCount(); ++i)
+        Walker::walk(m_variableTree->topLevelItem(i), &names);
+    return names;
+}
+
 void ScopePage::onVariableToggled(QTreeWidgetItem *item, int column)
 {
     Q_UNUSED(item);
     Q_UNUSED(column);
-    onSampleSettingsChanged();
+    // Auto-tristate fires this once per changed child, so a "select all" on a big
+    // struct would otherwise rebuild the frame layout hundreds of times. Coalesce.
+    if (!m_selectionTimer.isActive())
+        m_selectionTimer.start();
 }
 
 QVector<WatchVariable> ScopePage::selectedVariables() const
 {
+    const QSet<QString> names = selectedLeafNames();
     QVector<WatchVariable> chosen;
-    for (int i = 0; i < m_variableTree->topLevelItemCount(); ++i) {
-        const QTreeWidgetItem *item = m_variableTree->topLevelItem(i);
-        if (item->checkState(0) != Qt::Checked)
-            continue;
-        const QString name = item->data(0, Qt::UserRole).toString();
-        if (const WatchVariable *variable = m_symbols.find(name))
-            chosen.append(*variable);
+    for (const WatchVariable &variable : m_symbols.variables) {
+        if (names.contains(variable.name))
+            chosen.append(variable);
     }
     // Frame order must match the generated firmware snippet, so keep it stable and
     // sorted by address rather than by click order.

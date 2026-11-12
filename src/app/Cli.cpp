@@ -25,6 +25,9 @@
 #include "core/RttClient.h"
 #include "core/SampleHistory.h"
 #include "ui/PlotWidget.h"
+#include "ui/ScopePage.h"
+
+#include <QTreeWidget>
 #include "core/SymbolFile.h"
 #include "core/SvdLibrary.h"
 #include "core/SvdParser.h"
@@ -2367,6 +2370,105 @@ int runSelftest(const Options &options)
         }
     }
 
+    // --- the variable list is a real tree, not a flat column ----------------
+    // Reported: structs and arrays were flattened into `g_points[0].x` strings, so
+    // the list lost the shape of the source. This drives the actual ScopePage so the
+    // QTreeWidget hierarchy is what gets checked, not just the model.
+    {
+        out(QString());
+        out(QStringLiteral("--- 变量列表层级（真实控件） ---"));
+
+        const QString axf = ResourcePaths::find(QStringLiteral("test/symbol_test.axf"));
+        ScopePage page;
+        if (axf.isEmpty()) {
+            check(false, QStringLiteral("找到测试用 .axf"), QString());
+        } else {
+            QString error;
+            const bool imported = page.importSymbolFile(axf, &error);
+            check(imported, QStringLiteral("ScopePage 能导入 .axf"), error);
+            auto *tree = page.findChild<QTreeWidget *>();
+            check(tree != nullptr, QStringLiteral("找到变量树控件"), QString());
+            if (imported && tree) {
+                check(tree->columnCount() == 4,
+                      QStringLiteral("变量树有 4 列（变量/类型/地址/大小）"),
+                      QStringLiteral("%1 列").arg(tree->columnCount()));
+                check(tree->topLevelItemCount() > 0,
+                      QStringLiteral("树里有顶层变量"),
+                      QStringLiteral("%1 个").arg(tree->topLevelItemCount()));
+
+                // Locate g_points: it must be a top-level item with element children,
+                // each of which has member children.
+                QTreeWidgetItem *points = nullptr;
+                for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+                    if (tree->topLevelItem(i)->text(0) == QLatin1String("g_points"))
+                        points = tree->topLevelItem(i);
+                }
+                check(points != nullptr, QStringLiteral("顶层找到 g_points"),
+                      points ? QString() : QStringLiteral("缺失"));
+                if (points) {
+                    check(points->text(1) == QLatin1String("Point[2]"),
+                          QStringLiteral("数组以 Point[2] 显示"), points->text(1));
+                    check(points->childCount() == 2,
+                          QStringLiteral("g_points 下挂 2 个元素节点"),
+                          QStringLiteral("%1 个").arg(points->childCount()));
+                    check(!points->isExpanded() || points->childCount() == 2,
+                          QStringLiteral("默认折叠（不展开成千上万节点）"), QString());
+                    if (points->childCount() == 2) {
+                        QTreeWidgetItem *element = points->child(0);
+                        check(element->text(0) == QLatin1String("[0]"),
+                              QStringLiteral("元素节点显示为 [0]"), element->text(0));
+                        check(element->childCount() == 3,
+                              QStringLiteral("元素节点下是 3 个结构体成员"),
+                              QStringLiteral("%1 个").arg(element->childCount()));
+                        if (element->childCount() == 3) {
+                            // Members show their local name; the full path lives in
+                            // the tooltip so the column stays readable.
+                            check(element->child(0)->text(0) == QLatin1String("x"),
+                                  QStringLiteral("成员显示本地名 x"),
+                                  element->child(0)->text(0));
+                            check(element->child(0)->toolTip(0).contains(
+                                      QStringLiteral("g_points[0].x")),
+                                  QStringLiteral("成员 tooltip 带完整路径"),
+                                  element->child(0)->toolTip(0));
+                            check(element->child(0)->text(1) == QLatin1String("float"),
+                                  QStringLiteral("成员类型显示 float"),
+                                  element->child(0)->text(1));
+                        }
+                        // Checking the array must tick every leaf below it: Qt's
+                        // auto-tristate does the propagation.
+                        element->setCheckState(0, Qt::Checked);
+                        check(points->checkState(0) == Qt::PartiallyChecked,
+                              QStringLiteral("勾选一个元素后父节点为半选"),
+                              QStringLiteral("%1").arg(int(points->checkState(0))));
+                        points->setCheckState(0, Qt::Checked);
+                        bool allTicked = true;
+                        for (int i = 0; i < points->childCount(); ++i) {
+                            for (int j = 0; j < points->child(i)->childCount(); ++j) {
+                                if (points->child(i)->child(j)->checkState(0) != Qt::Checked)
+                                    allTicked = false;
+                            }
+                        }
+                        check(allTicked, QStringLiteral("勾选父节点带动全部叶子"), QString());
+                    }
+                }
+
+                // A scalar array stays one row with its extent (not 4 element rows).
+                QTreeWidgetItem *adc = nullptr;
+                for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+                    if (tree->topLevelItem(i)->text(0) == QLatin1String("g_adc_raw"))
+                        adc = tree->topLevelItem(i);
+                }
+                check(adc != nullptr && adc->text(1) == QLatin1String("uint16_t[4]")
+                          && adc->childCount() == 0,
+                      QStringLiteral("标量数组显示为 uint16_t[4] 且不分子节点"),
+                      adc ? QStringLiteral("%1，%2 个子节点")
+                                .arg(adc->text(1))
+                                .arg(adc->childCount())
+                          : QStringLiteral("缺失"));
+            }
+        }
+    }
+
     // --- plot rendering ------------------------------------------------------
     // A rasterising smoke test: the waveform is hand-drawn, so a bad path or a
     // division by a zero span would crash on the first repaint rather than show up
@@ -2507,6 +2609,104 @@ int runSelftest(const Options &options)
                 check(typedCount == sym.variables.size(),
                       QStringLiteral("所有变量的类型都被解析（无 Unknown）"),
                       QStringLiteral("%1 / %2").arg(typedCount).arg(sym.variables.size()));
+
+                // --- the tree keeps the source shape -------------------------
+                // Reported: the list showed everything as one flat column of
+                // `g_points[0].x` strings. The model now carries the nesting, so a
+                // struct is a node with member children and an array a node with
+                // element children -- check that, not just the leaf names.
+                auto findRoot = [&sym](const QString &name) -> const VariableNode * {
+                    for (const VariableNode &root : sym.roots) {
+                        if (root.name == name)
+                            return &root;
+                    }
+                    return nullptr;
+                };
+
+                const VariableNode *points = findRoot(QStringLiteral("g_points"));
+                check(points != nullptr, QStringLiteral("树上找到 g_points"),
+                      points ? QString() : QStringLiteral("缺失"));
+                if (points) {
+                    check(points->kind == NodeKind::Array,
+                          QStringLiteral("g_points 是数组节点"),
+                          nodeKindName(points->kind));
+                    check(points->elementCount == 2,
+                          QStringLiteral("g_points 元素数为 2"),
+                          QStringLiteral("%1").arg(points->elementCount));
+                    check(points->typeLabel() == QLatin1String("Point[2]"),
+                          QStringLiteral("数组类型显示为 Point[2]"), points->typeLabel());
+                    check(points->children.size() == 2,
+                          QStringLiteral("数组展开为 2 个元素子节点"),
+                          QStringLiteral("%1 个").arg(points->children.size()));
+                    if (points->children.size() == 2) {
+                        const VariableNode &first = points->children.first();
+                        check(first.name == QLatin1String("[0]"),
+                              QStringLiteral("元素节点命名为 [0]"), first.name);
+                        check(first.kind == NodeKind::Struct,
+                              QStringLiteral("元素节点是结构体"), nodeKindName(first.kind));
+                        check(first.children.size() == 3,
+                              QStringLiteral("元素下有 3 个成员"),
+                              QStringLiteral("%1 个").arg(first.children.size()));
+                        if (first.children.size() == 3) {
+                            check(first.children.at(0).name == QLatin1String("x")
+                                      && first.children.at(2).name == QLatin1String("flags"),
+                                  QStringLiteral("成员顺序与源码一致 (x, y, flags)"),
+                                  QStringLiteral("%1, %2, %3")
+                                      .arg(first.children.at(0).name,
+                                           first.children.at(1).name,
+                                           first.children.at(2).name));
+                        }
+                        // Element 1 must be offset by the struct size, not by 1.
+                        check(points->children.at(1).address == 0x0800104cu,
+                              QStringLiteral("第二个元素按结构体大小偏移"),
+                              hexAddr(points->children.at(1).address));
+                    }
+                }
+
+                // A scalar array stays one node (with its extent) instead of
+                // exploding into elements: the plot fans it out into curves.
+                const VariableNode *adcRoot = findRoot(QStringLiteral("g_adc_raw"));
+                check(adcRoot != nullptr, QStringLiteral("树上找到 g_adc_raw"),
+                      adcRoot ? QString() : QStringLiteral("缺失"));
+                if (adcRoot) {
+                    check(adcRoot->kind == NodeKind::Array && adcRoot->elementCount == 4,
+                          QStringLiteral("标量数组保留元素数 4"),
+                          QStringLiteral("%1 x%2").arg(nodeKindName(adcRoot->kind))
+                              .arg(adcRoot->elementCount));
+                    check(adcRoot->children.isEmpty(),
+                          QStringLiteral("标量数组不展开逐元素子节点"),
+                          QStringLiteral("%1 个").arg(adcRoot->children.size()));
+                    check(adcRoot->typeLabel() == QLatin1String("uint16_t[4]"),
+                          QStringLiteral("标量数组类型显示为 uint16_t[4]"),
+                          adcRoot->typeLabel());
+                }
+
+                // Nested struct member: address must be the parent's + the offset.
+                const VariableNode *nested = findRoot(QStringLiteral("g_tu_b_point"));
+                check(nested != nullptr && nested->children.size() == 3,
+                      QStringLiteral("第二个单元的结构体也有 3 个成员"),
+                      nested ? QStringLiteral("%1 个").arg(nested->children.size())
+                             : QStringLiteral("缺失"));
+                if (nested && nested->children.size() >= 2) {
+                    check(nested->children.at(1).address == 0x0800107cu,
+                          QStringLiteral("结构体成员地址 = 父地址 + 偏移"),
+                          hexAddr(nested->children.at(1).address));
+                }
+
+                // Filtering must prune, not flatten: searching `flags` keeps the
+                // ancestors so the result is still readable as a hierarchy.
+                const QVector<VariableNode> pruned =
+                    sym.filteredRoots(QStringLiteral("flags"));
+                bool prunedKeepsParents = false;
+                for (const VariableNode &root : pruned) {
+                    if (root.kind == NodeKind::Array && !root.children.isEmpty()
+                        && root.children.first().children.size() == 1) {
+                        prunedKeepsParents = true;
+                    }
+                }
+                check(prunedKeepsParents,
+                      QStringLiteral("过滤后仍保留祖先层级（数组→元素→成员）"),
+                      QStringLiteral("%1 个根").arg(pruned.size()));
 
                 // Decoding: a float must come back as the value the source set, not
                 // as the raw bit pattern (25.5f = 0x41CC0000).

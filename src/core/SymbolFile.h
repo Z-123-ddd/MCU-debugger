@@ -42,15 +42,25 @@ struct WatchVariable
 struct SymbolTable
 {
     QString sourcePath;
+    /// Source-shaped forest, addresses resolved by the loader.
+    QVector<VariableNode> roots;
+    /// Flattened scalar leaves with dotted names (one row per curve source).
     QVector<WatchVariable> variables;
     int dwarfVersion = 0;
     bool usedSymbolFallback = false; ///< DWARF lacked addresses; .symtab supplied them
 
-    bool isValid() const { return !variables.isEmpty(); }
-    /// Look up by exact name (including the `parent.member` form).
+    bool isValid() const { return !variables.isEmpty() || !roots.isEmpty(); }
+    /// Look up a leaf by its dotted name.
     const WatchVariable *find(const QString &name) const;
-    /// Variables whose name, type or address contains \a needle (case-insensitive).
+    /// Flattened leaves whose name, type or address contains \a needle.
     QVector<WatchVariable> filtered(const QString &needle) const;
+    /// Roots pruned to the branches containing a match, so filtering does not
+    /// flatten or destroy the hierarchy.
+    QVector<VariableNode> filteredRoots(const QString &needle) const;
+
+    /// Collect every samplable leaf under \a node into \a out.
+    static void collectLeaves(const VariableNode &node, const QString &prefix,
+                              QVector<WatchVariable> *out);
 };
 
 /// Load a Keil `.axf` (or any ELF with DWARF) and list its variables.

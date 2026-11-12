@@ -23,12 +23,53 @@ QString scalarKindName(ScalarKind kind)
         return QStringLiteral("布尔");
     case ScalarKind::Pointer:
         return QStringLiteral("指针");
+    case ScalarKind::Enum:
+        return QStringLiteral("枚举");
     case ScalarKind::Composite:
         return QStringLiteral("结构体");
     case ScalarKind::Unknown:
         break;
     }
     return QStringLiteral("未知");
+}
+
+QString nodeKindName(NodeKind kind)
+{
+    switch (kind) {
+    case NodeKind::Scalar:
+        return QStringLiteral("标量");
+    case NodeKind::Array:
+        return QStringLiteral("数组");
+    case NodeKind::Struct:
+        return QStringLiteral("结构体");
+    case NodeKind::Union:
+        return QStringLiteral("联合体");
+    case NodeKind::Class:
+        return QStringLiteral("类");
+    case NodeKind::Pointer:
+        return QStringLiteral("指针");
+    case NodeKind::Enum:
+        return QStringLiteral("枚举");
+    }
+    return QStringLiteral("未知");
+}
+
+int VariableNode::leafCount() const
+{
+    if (children.isEmpty())
+        return samplable() ? qMax(1, elementCount) : 0;
+    int total = 0;
+    for (const VariableNode &child : children)
+        total += child.leafCount();
+    return total;
+}
+
+int VariableNode::totalNodeCount() const
+{
+    int total = 1;
+    for (const VariableNode &child : children)
+        total += child.totalNodeCount();
+    return total;
 }
 
 int scalarKindSizeGuess(ScalarKind kind)
@@ -77,6 +118,7 @@ constexpr quint64 AT_ENCODING = 0x3e;
 constexpr quint64 AT_UPPER_BOUND = 0x2f;
 constexpr quint64 AT_LOWER_BOUND = 0x22;
 constexpr quint64 AT_TYPE = 0x49;
+constexpr quint64 AT_BIT_SIZE = 0x0d;
 constexpr quint64 AT_LINKAGE_NAME = 0x6e;
 constexpr quint64 AT_MIPS_LINKAGE_NAME = 0x2007;
 constexpr quint64 AT_STR_OFFSETS_BASE = 0x72;
@@ -304,7 +346,7 @@ public:
         m_le = elf.littleEndian();
     }
 
-    Result<QVector<DwarfVariable>> run();
+    Result<QVector<VariableNode>> run();
 
 private:
     bool parseAbbrevTable(quint64 offset, QHash<quint64, Abbrev> *out);
@@ -324,7 +366,25 @@ private:
     TypeInfo resolveType(quint64 typeOffset, int depth);
     const Die *dieAt(quint64 offset) const;
 
-    void emitVariable(const Die &variable, const UnitContext &unit, QVector<DwarfVariable> *out);
+    void emitVariable(const Die &variable, const UnitContext &unit, QVector<VariableNode> *out);
+
+    /// Build one subtree: a struct becomes a node with member children, an array a
+    /// node with element children, a scalar a leaf. Returns false when the type is
+    /// unusable (an unresolved forward declaration, an unknown encoding).
+    ///
+    /// This replaces the old "flatten everything into `a.b.c` strings" walk. Keeping
+    /// the shape means the UI can show `g_points` as an array of two `Point`s with
+    /// their members, which is what the source says.
+    bool buildNode(const QString &name, quint64 typeOffset, quint32 address, bool hasAddress,
+                   int depth, VariableNode *out);
+
+    /// Node count still allowed for the variable being built. A single huge object
+    /// (ODrive's 14 KB `controllers`) must not produce a hundred thousand rows.
+    int m_nodeBudget = 0;
+    static constexpr int kNodeBudgetPerRoot = 4000;
+    /// Array elements expanded into child nodes. Beyond this the node still shows
+    /// its extent, it just does not materialise every element.
+    static constexpr int kMaxArrayChildren = 64;
 
     /// Address from a `DW_AT_location` location list in `.debug_loc`.
     ///
@@ -354,10 +414,6 @@ private:
     /// Per-object budget for struct/array expansion, so one huge object cannot
     /// produce a hundred thousand rows. It is reset for every top-level variable:
     /// a file-wide budget gets consumed by the first few big objects, which made
-    /// later ones (ODrive's `controllers`) vanish entirely.
-    int m_expansionBudget = 0;
-    void expandComposite(const Die &variable, const QString &baseName, quint64 typeOffset,
-                         quint32 baseAddress, int depth, QVector<DwarfVariable> *out);
 
     const ElfFile &m_elf;
     QByteArray m_info;
@@ -857,7 +913,9 @@ Parser::TypeInfo Parser::resolveType(quint64 typeOffset, int depth)
         info.elementSize = static_cast<int>(die->u(AT_BYTE_SIZE, 4));
         if (info.elementSize <= 0)
             info.elementSize = 4;
-        info.kind = ScalarKind::Signed;
+        // Stored as an integer; the kind is kept distinct only so the label can say
+        // "enum" and the decoder still treats it as a signed number.
+        info.kind = ScalarKind::Enum;
         info.display = die->text(AT_NAME);
         if (info.display.isEmpty())
             info.display = QStringLiteral("enum");
@@ -908,108 +966,201 @@ Parser::TypeInfo Parser::resolveType(quint64 typeOffset, int depth)
     return info;
 }
 
-void Parser::expandComposite(const Die &variable, const QString &baseName, quint64 typeOffset,
-                             quint32 baseAddress, int depth, QVector<DwarfVariable> *out)
+bool Parser::buildNode(const QString &name, quint64 typeOffset, quint32 address,
+                       bool hasAddress, int depth, VariableNode *out)
 {
-    // Nested C++ objects are deep (ODrive keeps everything under
-    // controllers[].axis.controller.config…), so allow a few more levels than a
-    // flat C struct would need, while the budget stops runaway expansion.
-    if (depth > 8 || m_expansionBudget <= 0)
-        return;
+    if (!out || typeOffset == 0)
+        return false;
+    if (depth > 12 || m_nodeBudget <= 0)
+        return false;
 
-    // An *array of structs* is common (controllers[], axis[], motor[]). The plain
-    // "resolve to a struct" walk below cannot represent it, which is why a 14 KB
-    // `controllers` object produced no rows at all.
-    {
-        quint64 probe = typeOffset;
-        for (int i = 0; i < 8; ++i) {
-            const Die *d = dieAt(probe);
-            if (!d)
-                break;
-            if (d->tag == TAG_ARRAY_TYPE) {
-                const quint64 elementType = d->u(AT_TYPE, 0);
-                const TypeInfo element = resolveType(elementType, depth + 1);
-                if (element.kind != ScalarKind::Composite)
-                    return; // scalar arrays are one row, handled by the caller
-                const int count = qMin(arrayExtent(probe), 16);
-                const int stride = element.elementSize > 0 ? element.elementSize
-                                                          : (count > 0 ? 1 : 1);
-                for (int index = 0; index < count && m_expansionBudget > 0; ++index) {
-                    expandComposite(variable,
-                                    QStringLiteral("%1[%2]").arg(baseName).arg(index),
-                                    elementType,
-                                    static_cast<quint32>(baseAddress + index * stride),
-                                    depth + 1, out);
-                }
-                return;
-            }
-            if (d->tag == TAG_TYPEDEF || d->tag == TAG_CONST_TYPE
-                || d->tag == TAG_VOLATILE_TYPE) {
-                probe = d->u(AT_TYPE, 0);
-                if (probe == 0)
+    // Walk through typedefs and qualifiers, remembering the typedef name because
+    // that is what the user wrote ("uint16_t" rather than "unsigned short").
+    quint64 current = typeOffset;
+    QString alias;
+    const Die *die = nullptr;
+    for (int i = 0; i < 10; ++i) {
+        die = dieAt(current);
+        if (!die)
+            return false;
+        if (die->tag == TAG_TYPEDEF) {
+            if (alias.isEmpty())
+                alias = die->text(AT_NAME);
+            current = die->u(AT_TYPE, 0);
+            if (current == 0)
+                return false;
+            continue;
+        }
+        if (die->tag == TAG_CONST_TYPE || die->tag == TAG_VOLATILE_TYPE
+            || die->tag == TAG_RESTRICT_TYPE || die->tag == TAG_ATOMIC_TYPE) {
+            current = die->u(AT_TYPE, 0);
+            if (current == 0)
+                return false;
+            continue;
+        }
+        break;
+    }
+    if (!die)
+        return false;
+
+    --m_nodeBudget;
+    out->name = name;
+    out->address = address;
+    out->hasAddress = hasAddress;
+
+    switch (die->tag) {
+    case TAG_ARRAY_TYPE: {
+        const quint64 elementType = die->u(AT_TYPE, 0);
+        const TypeInfo element = resolveType(elementType, depth + 1);
+        out->kind = NodeKind::Array;
+        out->elementCount = arrayExtent(current);
+        out->elementSize = element.elementSize > 0 ? element.elementSize : 1;
+        out->typeName = element.display;
+        out->byteSize = static_cast<int>(die->u(AT_BYTE_SIZE, 0));
+        if (out->byteSize <= 0)
+            out->byteSize = out->elementSize * out->elementCount;
+        out->scalar = element.kind;
+
+        // Only aggregates get element children: `Point[2]` is worth expanding,
+        // `uint8_t[39406]` is not (the extent is already in the type label, and a
+        // scalar array is drawn as one curve per element without extra nodes).
+        if (element.kind == ScalarKind::Composite) {
+            const int limit = qMin(out->elementCount, kMaxArrayChildren);
+            if (out->elementCount > limit)
+                out->incomplete = true;
+            for (int index = 0; index < limit; ++index) {
+                VariableNode child;
+                if (!buildNode(QStringLiteral("[%1]").arg(index), elementType,
+                               static_cast<quint32>(address + index * out->elementSize),
+                               hasAddress, depth + 1, &child)) {
                     break;
+                }
+                out->children.append(child);
+            }
+        }
+        return true;
+    }
+    case TAG_STRUCTURE_TYPE:
+    case TAG_UNION_TYPE:
+    case TAG_CLASS_TYPE: {
+        out->kind = die->tag == TAG_UNION_TYPE
+            ? NodeKind::Union
+            : (die->tag == TAG_CLASS_TYPE ? NodeKind::Class : NodeKind::Struct);
+
+        // A forward declaration has no layout: follow the name to the definition in
+        // whichever unit carries it. ODrive's `controllers` is typed by exactly such
+        // a declaration.
+        const Die *definition = die;
+        const bool declared =
+            die->u(AT_DECLARATION, 0) != 0 || die->u(AT_BYTE_SIZE, 0) == 0;
+        if (declared) {
+            if (const Die *found = m_typeDefinitions.value(die->text(AT_NAME)); found)
+                definition = found;
+        }
+        out->typeName = definition->text(AT_NAME);
+        if (!alias.isEmpty())
+            out->typeName = alias;
+        if (out->typeName.isEmpty())
+            out->typeName = nodeKindName(out->kind);
+        out->byteSize = static_cast<int>(definition->u(AT_BYTE_SIZE, 0));
+        out->elementSize = out->byteSize;
+        out->scalar = ScalarKind::Composite;
+
+        // No members available (declaration-only type, or a definition the compiler
+        // never emitted). Say so instead of pretending the object is empty.
+        if (out->byteSize <= 0 || !m_children.contains(definition->offset)) {
+            out->incomplete = true;
+            return true;
+        }
+
+        for (const Die &member : m_children.value(definition->offset)) {
+            if (member.tag != TAG_MEMBER)
+                continue;
+            const QString memberName = member.text(AT_NAME);
+            if (memberName.isEmpty())
+                continue;
+            // A bitfield member has no byte address of its own; keep it visible but
+            // unreadable rather than silently dropping the field.
+            const bool bitfield = member.has(AT_BIT_SIZE);
+            const qint64 memberOffset = member.s(AT_DATA_MEMBER_LOCATION, 0);
+            VariableNode child;
+            if (!buildNode(memberName, member.u(AT_TYPE, 0),
+                           static_cast<quint32>(address + memberOffset), hasAddress,
+                           depth + 1, &child)) {
                 continue;
             }
+            if (bitfield)
+                child.incomplete = true;
+            out->children.append(child);
+        }
+        if (out->children.isEmpty())
+            out->incomplete = true;
+        return true;
+    }
+    case TAG_POINTER_TYPE: {
+        out->kind = NodeKind::Pointer;
+        out->scalar = ScalarKind::Pointer;
+        out->byteSize = static_cast<int>(die->u(AT_BYTE_SIZE, 4));
+        if (out->byteSize <= 0)
+            out->byteSize = 4;
+        out->elementSize = out->byteSize;
+        out->typeName = alias.isEmpty() ? QStringLiteral("void *") : alias;
+        return true;
+    }
+    case TAG_ENUMERATION_TYPE: {
+        out->kind = NodeKind::Enum;
+        out->scalar = ScalarKind::Enum;
+        out->byteSize = static_cast<int>(die->u(AT_BYTE_SIZE, 4));
+        if (out->byteSize <= 0)
+            out->byteSize = 4;
+        out->elementSize = out->byteSize;
+        out->typeName = alias.isEmpty() ? die->text(AT_NAME) : alias;
+        if (out->typeName.isEmpty())
+            out->typeName = QStringLiteral("enum");
+        return true;
+    }
+    case TAG_BASE_TYPE: {
+        const int encoding = static_cast<int>(die->u(AT_ENCODING, 0));
+        out->kind = NodeKind::Scalar;
+        out->byteSize = static_cast<int>(die->u(AT_BYTE_SIZE, 0));
+        out->elementSize = out->byteSize;
+        out->typeName = alias.isEmpty() ? die->text(AT_NAME) : alias;
+        switch (encoding) {
+        case ATE_FLOAT:
+        case ATE_COMPLEX_FLOAT:
+            out->scalar = ScalarKind::Float;
+            break;
+        case ATE_BOOLEAN:
+            out->scalar = ScalarKind::Boolean;
+            break;
+        case ATE_SIGNED:
+        case ATE_SIGNED_CHAR:
+            out->scalar = ScalarKind::Signed;
+            break;
+        case ATE_ADDRESS:
+            out->scalar = ScalarKind::Pointer;
+            break;
+        default:
+            out->scalar = ScalarKind::Unsigned;
             break;
         }
+        if (out->byteSize <= 0)
+            return false;
+        return true;
     }
-
-    const Die *type = dieAt(typeOffset);
-    if (!type)
-        return;
-    // Resolve through typedef/const to reach the real struct/union.
-    quint64 structOffset = typeOffset;
-    for (int i = 0; i < 8; ++i) {
-        const Die *d = dieAt(structOffset);
-        if (!d)
-            return;
-        if (d->tag == TAG_STRUCTURE_TYPE || d->tag == TAG_UNION_TYPE) {
-            type = d;
-            break;
-        }
-        if (d->tag == TAG_TYPEDEF || d->tag == TAG_CONST_TYPE || d->tag == TAG_VOLATILE_TYPE) {
-            structOffset = d->u(AT_TYPE, 0);
-            if (structOffset == 0)
-                return;
-            continue;
-        }
-        return;
-    }
-
-    for (const Die &member : m_children.value(structOffset)) {
-        if (member.tag != TAG_MEMBER)
-            continue;
-        const QString memberName = member.text(AT_NAME);
-        if (memberName.isEmpty())
-            continue;
-        const qint64 memberOffset = member.s(AT_DATA_MEMBER_LOCATION, 0);
-        const quint64 memberType = member.u(AT_TYPE, 0);
-        const TypeInfo info = resolveType(memberType, depth + 1);
-        const QString fullName = baseName + QLatin1Char('.') + memberName;
-
-        if (info.kind == ScalarKind::Composite) {
-            expandComposite(variable, fullName, memberType,
-                            static_cast<quint32>(baseAddress + memberOffset), depth + 1, out);
-            continue;
-        }
-        if (m_expansionBudget <= 0)
-            return;
-        --m_expansionBudget;
-        DwarfVariable entry;
-        entry.name = fullName;
-        entry.typeDisplay = info.display;
-        entry.kind = info.kind;
-        entry.address = static_cast<quint32>(baseAddress + memberOffset);
-        entry.hasAddress = true;
-        entry.elementSize = info.elementSize;
-        entry.elementCount = info.elementCount;
-        entry.totalSize = info.totalSize;
-        out->append(entry);
+    default:
+        // An unsupported type DIE (subroutine, set, ...): keep the node so the tree
+        // still shows the member, but mark it unreadable.
+        out->kind = NodeKind::Scalar;
+        out->scalar = ScalarKind::Unknown;
+        out->typeName = alias.isEmpty() ? QStringLiteral("?") : alias;
+        out->incomplete = true;
+        return true;
     }
 }
 
 void Parser::emitVariable(const Die &variable, const UnitContext &unit,
-                          QVector<DwarfVariable> *out)
+                          QVector<VariableNode> *out)
 {
     const QString name = variable.text(AT_NAME);
     if (name.isEmpty())
@@ -1057,42 +1208,36 @@ void Parser::emitVariable(const Die &variable, const UnitContext &unit,
         // empty and SymbolFile recovers it from the linker symbol.
     }
 
-    if (info.kind == ScalarKind::Composite) {
-        if (!hasAddress) {
-            ++m_compositesSkipped;
-            return; // members have no meaning without a base address
-        }
-        m_expansionBudget = 3000;
-        expandComposite(variable, qualifiedName(variable.offset, name), typeOffset, address, 0,
-                        out);
-        return;
+    // Build the whole subtree. An aggregate needs a base address for its members to
+    // mean anything, but it is still worth listing when the address is unknown --
+    // the user can see the variable exists and the tree stays stable between builds.
+    if (info.kind == ScalarKind::Composite && !hasAddress) {
+        ++m_compositesSkipped;
     }
 
-    DwarfVariable entry;
-    entry.name = qualifiedName(variable.offset, name);
-    entry.typeDisplay = info.display;
-    entry.kind = info.kind;
-    entry.address = address;
-    entry.hasAddress = hasAddress;
-    entry.linkageName = variable.text(AT_LINKAGE_NAME);
-    if (entry.linkageName.isEmpty())
-        entry.linkageName = variable.text(AT_MIPS_LINKAGE_NAME);
-    entry.elementSize = info.elementSize;
-    entry.elementCount = info.elementCount;
-    entry.totalSize = info.totalSize;
+    m_nodeBudget = kNodeBudgetPerRoot;
+    VariableNode node;
+    if (!buildNode(qualifiedName(variable.offset, name), typeOffset, address, hasAddress, 0,
+                   &node)) {
+        ++m_variablesNoType;
+        return;
+    }
+    node.linkageName = variable.text(AT_LINKAGE_NAME);
+    if (node.linkageName.isEmpty())
+        node.linkageName = variable.text(AT_MIPS_LINKAGE_NAME);
     if (!hasAddress)
         ++m_variablesNoAddress;
-    out->append(entry);
+    out->append(node);
 }
 
-Result<QVector<DwarfVariable>> Parser::run()
+Result<QVector<VariableNode>> Parser::run()
 {
     if (m_info.isEmpty())
-        return Result<QVector<DwarfVariable>>::failure(
+        return Result<QVector<VariableNode>>::failure(
             QStringLiteral("没有 .debug_info 节（编译时未开调试信息）"));
 
     Cursor info{m_info.constData(), static_cast<int>(m_info.size()), 0, m_le};
-    QVector<DwarfVariable> variables;
+    QVector<VariableNode> variables;
     // Every unit is kept until the end: type resolution needs all of them.
     QVector<QPair<UnitContext, QVector<Die>>> units;
 
@@ -1160,7 +1305,7 @@ Result<QVector<DwarfVariable>> Parser::run()
     }
 
     if (!info.ok() && variables.isEmpty())
-        return Result<QVector<DwarfVariable>>::failure(
+        return Result<QVector<VariableNode>>::failure(
             QStringLiteral("DWARF 解析失败（数据被截断或格式不支持）"));
 
     Logger::instance()->debug(
@@ -1175,9 +1320,16 @@ Result<QVector<DwarfVariable>> Parser::run()
             .arg(m_variablesNoAddress)
             .arg(m_variablesNoType)
             .arg(m_compositesSkipped));
+    {
+        int nodes = 0;
+        for (const VariableNode &root : variables)
+            nodes += root.totalNodeCount();
+        Logger::instance()->debug(
+            QStringLiteral("变量树: %1 个根，%2 个节点").arg(variables.size()).arg(nodes));
+    }
     for (const QString &failure : m_failures)
         Logger::instance()->debug(QStringLiteral("DWARF CU 失败: %1").arg(failure));
-    return Result<QVector<DwarfVariable>>::success(variables);
+    return Result<QVector<VariableNode>>::success(variables);
 }
 
 } // namespace
@@ -1193,7 +1345,7 @@ int DwarfReader::dwarfVersion(const ElfFile &elf)
     return static_cast<int>(probe.readU16(p + 4));
 }
 
-Result<QVector<DwarfVariable>> DwarfReader::readVariables(const ElfFile &elf)
+Result<QVector<VariableNode>> DwarfReader::readVariables(const ElfFile &elf)
 {
     const QByteArray info = elf.sectionData(QStringLiteral(".debug_info"));
     const QByteArray abbrev = elf.sectionData(QStringLiteral(".debug_abbrev"));
@@ -1201,10 +1353,10 @@ Result<QVector<DwarfVariable>> DwarfReader::readVariables(const ElfFile &elf)
     const QByteArray strOffsets = elf.sectionData(QStringLiteral(".debug_str_offsets"));
 
     if (info.isEmpty())
-        return Result<QVector<DwarfVariable>>::failure(
+        return Result<QVector<VariableNode>>::failure(
             QStringLiteral("ELF 中没有 .debug_info（编译时未加 -g / 未开调试信息）"));
     if (abbrev.isEmpty())
-        return Result<QVector<DwarfVariable>>::failure(
+        return Result<QVector<VariableNode>>::failure(
             QStringLiteral("ELF 中没有 .debug_abbrev，无法解析 DWARF"));
 
     const QByteArray debugLoc = elf.sectionData(QStringLiteral(".debug_loc"));
