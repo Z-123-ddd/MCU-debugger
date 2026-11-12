@@ -42,6 +42,8 @@ public:
     void doListProbes();
     /// Locate the SEGGER RTT control block on the worker thread.
     void doFindRtt(quint32 hintAddress, quint32 ramStart, quint32 ramSize);
+    /// Read the core registers (for resolving locals of the halted function).
+    void doReadRegisters();
     void doValidateChip(const QString &chipName);
     void doScanDeviceTree(const QString &svdPath);
 
@@ -64,6 +66,7 @@ signals:
     void chipValidated(const QString &chipName, bool ok, const QString &message);
     void deviceTreeScanned(const QVector<mrd::PeripheralStatus> &statuses, const QString &error);
     void rttLocated(const mrd::RttControlBlock &block, const QString &error);
+    void registersRead(const QVector<quint32> &registers, bool ok, const QString &error);
 
 private:
     SvdLibrary &library();
@@ -110,6 +113,8 @@ public slots:
     void requestScanDeviceTree(const QString &svdPath);
     /// Find the RTT control block (worker thread; result via rttLocated).
     void requestFindRtt(quint32 hintAddress, quint32 ramStart, quint32 ramSize);
+    /// Read the core registers on the worker thread (result via registersRead).
+    void requestReadRegisters();
 
 signals:
     void opened(bool ok, const QString &error, const mrd::ProbeInfo &info);
@@ -127,6 +132,7 @@ signals:
     void deviceTreeScanned(const QVector<mrd::PeripheralStatus> &statuses, const QString &error);
     /// Result of requestFindRtt: the control block, or an empty one plus an error.
     void rttLocated(const mrd::RttControlBlock &block, const QString &error);
+    void registersRead(const QVector<quint32> &registers, bool ok, const QString &error);
 
 private:
     template <typename Fn>

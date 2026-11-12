@@ -388,6 +388,7 @@ ProbeController::ProbeController(QObject *parent)
     connect(m_worker, &ProbeWorker::probesListed, this, &ProbeController::probesListed);
     connect(m_worker, &ProbeWorker::deviceTreeScanned, this, &ProbeController::deviceTreeScanned);
     connect(m_worker, &ProbeWorker::rttLocated, this, &ProbeController::rttLocated);
+    connect(m_worker, &ProbeWorker::registersRead, this, &ProbeController::registersRead);
     connect(m_worker, &ProbeWorker::chipValidated, this, &ProbeController::chipValidated);
     connect(m_worker, &ProbeWorker::cpuStateChanged, this, [this](bool halted, bool ok, const QString &error) {
         if (ok)
@@ -497,6 +498,22 @@ void ProbeWorker::doFindRtt(quint32 hintAddress, quint32 ramStart, quint32 ramSi
 void ProbeController::requestScanDeviceTree(const QString &svdPath)
 {
     dispatch([worker = m_worker, svdPath] { worker->doScanDeviceTree(svdPath); });
+}
+
+void ProbeWorker::doReadRegisters()
+{
+    if (!m_probe) {
+        emit registersRead({}, false, QStringLiteral("探针未打开"));
+        return;
+    }
+    QVector<quint32> registers;
+    const Status st = m_probe->readCoreRegisters(&registers);
+    emit registersRead(registers, static_cast<bool>(st), st.error);
+}
+
+void ProbeController::requestReadRegisters()
+{
+    dispatch([worker = m_worker] { worker->doReadRegisters(); });
 }
 
 void ProbeController::requestFindRtt(quint32 hintAddress, quint32 ramStart, quint32 ramSize)

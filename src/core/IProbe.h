@@ -7,6 +7,7 @@
 #include <QByteArray>
 #include <QMetaType>
 #include <QString>
+#include <QVector>
 #include <QStringList>
 
 namespace mrd {
@@ -59,6 +60,18 @@ public:
     virtual Status writeMemory(quint32 address, const QByteArray &data) = 0;
     virtual Status readU32(quint32 address, quint32 *out) = 0;
     virtual Status writeU32(quint32 address, quint32 value) = 0;
+
+    /// Read the core registers, in the backend's own order.
+    ///
+    /// Local variables live at "frame pointer + offset", so showing them needs at
+    /// least SP and PC -- and both are only stable while the core is halted. The
+    /// default reports "unsupported" so backends and test doubles that cannot do it
+    /// stay valid.
+    virtual Status readCoreRegisters(QVector<quint32> *out)
+    {
+        Q_UNUSED(out)
+        return Status::failure(QStringLiteral("该后端不支持读取寄存器"));
+    }
 
     /// Raw J-Link command (e.g. "device = STM32F103C8", "R0", "W4 0x40021000 0x1").
     virtual Status exec(const QString &command) = 0;

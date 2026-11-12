@@ -17,6 +17,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QScopedValueRollback>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
@@ -63,7 +64,12 @@ ScopePage::ScopePage(QWidget *parent)
     m_variableTree->setColumnCount(4);
     m_variableTree->setHeaderLabels({QStringLiteral("变量"), QStringLiteral("类型"),
                                      QStringLiteral("地址"), QStringLiteral("大小")});
-    m_variableTree->setRootIsDecorated(false);
+    // setRootIsDecorated(false) removes the expand arrow from TOP-LEVEL items --
+    // and every struct/array is a top-level item, so the tree rendered as a flat
+    // list with no way to open anything. Keep the decoration.
+    m_variableTree->setRootIsDecorated(true);
+    m_variableTree->setIndentation(14);
+    m_variableTree->setExpandsOnDoubleClick(true);
     m_variableTree->setUniformRowHeights(true);
     m_variableTree->setAlternatingRowColors(true);
     m_variableTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
@@ -104,6 +110,11 @@ ScopePage::ScopePage(QWidget *parent)
     controlRow->addWidget(m_autoScale);
     m_codeButton = new QPushButton(QStringLiteral("复制固件端代码"), this);
     controlRow->addWidget(m_codeButton);
+    m_localsButton = new QPushButton(QStringLiteral("读取局部变量"), this);
+    m_localsButton->setToolTip(
+        QStringLiteral("局部变量只在停机时可读：先「暂停」再点这里。\n"
+                       "地址 = 帧基址 + DWARF 偏移，运行时会失效。"));
+    controlRow->addWidget(m_localsButton);
     controlRow->addStretch(1);
     m_statsLabel = new QLabel(this);
     controlRow->addWidget(m_statsLabel);
@@ -115,6 +126,7 @@ ScopePage::ScopePage(QWidget *parent)
     connect(m_autoScale, &QCheckBox::checkStateChanged, this,
             &ScopePage::onSampleSettingsChanged);
     connect(m_codeButton, &QPushButton::clicked, this, &ScopePage::onCopyFirmwareCode);
+    connect(m_localsButton, &QPushButton::clicked, this, &ScopePage::refreshLocals);
 
     // --- plot ---------------------------------------------------------------
     m_plot = new PlotWidget(this);
@@ -136,6 +148,14 @@ ScopePage::ScopePage(QWidget *parent)
     m_selectionTimer.setSingleShot(true);
     m_selectionTimer.setInterval(0);
     connect(&m_selectionTimer, &QTimer::timeout, this, &ScopePage::onSampleSettingsChanged);
+
+    // Typing in the filter must not rebuild the tree on every character.
+    m_filterTimer.setSingleShot(true);
+    m_filterTimer.setInterval(220);
+    connect(&m_filterTimer, &QTimer::timeout, this, &ScopePage::onFilterDebounced);
+    connect(m_variableTree, &QTreeWidget::itemExpanded, this, &ScopePage::onItemExpanded);
+    connect(m_probe, &ProbeController::registersRead, this, &ScopePage::onRegistersRead);
+    connect(this, &ScopePage::localsRefreshRequested, this, &ScopePage::refreshLocals);
 
     updateControls();
     refreshState();
@@ -236,136 +256,198 @@ void ScopePage::onBrowse()
     }
 }
 
+namespace {
+
+/// Full path of a node inside the tree, spelled the way C would: `g_points[0].x`.
+QString childPath(const QString &parent, const QString &name)
+{
+    if (parent.isEmpty())
+        return name;
+    if (name.startsWith(QLatin1Char('[')))
+        return parent + name;
+    return parent + QLatin1Char('.') + name;
+}
+
+/// Marker stored on a placeholder child so it can be recognised and removed.
+constexpr int kPlaceholderRole = Qt::UserRole + 4;
+
+} // namespace
+
+namespace {
+
+/// Every samplable leaf path under \a node, whose own full path is \a ownPath.
+void collectLeafPathsAt(const VariableNode &node, const QString &ownPath, QStringList *out)
+{
+    if (node.children.isEmpty()) {
+        if (node.samplable())
+            out->append(ownPath);
+        return;
+    }
+    for (const VariableNode &child : node.children)
+        collectLeafPathsAt(child, childPath(ownPath, child.name), out);
+}
+
+} // namespace
+
+QTreeWidgetItem *ScopePage::makeItem(const VariableNode &node, const QString &path,
+                                     QTreeWidgetItem *parent)
+{
+    auto *item = parent ? new QTreeWidgetItem(parent) : new QTreeWidgetItem(m_variableTree);
+    item->setText(0, node.name);
+    item->setText(1, node.typeLabel());
+    item->setText(2, node.hasAddress && node.address != 0 ? hexAddr(node.address)
+                                                          : QString());
+    item->setText(3, node.byteSize > 0 ? QStringLiteral("%1 B").arg(node.byteSize) : QString());
+    item->setData(0, Qt::UserRole, path);
+    item->setData(0, Qt::UserRole + 2, node.isAggregate());
+    // Lazy-loading state: has this node's subtree been materialised yet?
+    item->setData(0, Qt::UserRole + 3, false);
+
+    // Tooltips are built lazily too -- 6000 multi-line tooltips is megabytes of
+    // QString and shows up in the import time for no benefit.
+    item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+
+    if (node.isAggregate()) {
+        // A placeholder child makes Qt draw the expand arrow without us building
+        // the subtree. It carries no checkbox and is replaced on first expand.
+        auto *placeholder = new QTreeWidgetItem(item);
+        placeholder->setData(0, kPlaceholderRole, true);
+        placeholder->setFlags(Qt::NoItemFlags);
+        placeholder->setText(0, QStringLiteral("…"));
+    }
+    return item;
+}
+
+void ScopePage::populateChildren(QTreeWidgetItem *item)
+{
+    if (!item || item->data(0, Qt::UserRole + 3).toBool())
+        return; // already populated
+    item->setData(0, Qt::UserRole + 3, true);
+
+    // Drop the placeholder.
+    while (item->childCount() > 0) {
+        QTreeWidgetItem *child = item->child(0);
+        if (!child->data(0, kPlaceholderRole).toBool())
+            break;
+        delete item->takeChild(0);
+    }
+
+    const QString path = item->data(0, Qt::UserRole).toString();
+    const VariableNode *node = m_nodeByPath.value(path, nullptr);
+    if (!node || node->children.isEmpty())
+        return;
+
+    const QSignalBlocker blocker(m_variableTree);
+    for (const VariableNode &child : node->children) {
+        const QString childFullPath = childPath(path, child.name);
+        QTreeWidgetItem *childItem = makeItem(child, childFullPath, item);
+        if (child.children.isEmpty() && child.samplable()) {
+            childItem->setCheckState(0, m_selectedLeaves.contains(childFullPath)
+                                            ? Qt::Checked
+                                            : Qt::Unchecked);
+        }
+        // Tooltip on demand: only for items that actually exist.
+        QStringList tip;
+        tip << childFullPath;
+        tip << QStringLiteral("类型: %1（%2）").arg(child.typeLabel(), nodeKindName(child.kind));
+        if (child.kind == NodeKind::Array) {
+            tip << QStringLiteral("元素数: %1，每元素 %2 字节")
+                       .arg(child.elementCount)
+                       .arg(child.elementSize);
+        }
+        if (child.hasAddress && child.address != 0)
+            tip << QStringLiteral("地址: %1").arg(hexAddr(child.address));
+        if (child.byteSize > 0)
+            tip << QStringLiteral("大小: %1 字节").arg(child.byteSize);
+        if (child.samplable())
+            tip << QStringLiteral("采样: %1").arg(scalarKindName(child.scalar));
+        if (child.addressFromSymbol)
+            tip << QStringLiteral("（地址取自链接符号表）");
+        if (child.incomplete)
+            tip << QStringLiteral("（布局不完整：类型仅有声明，或展开已截断）");
+        childItem->setToolTip(0, tip.join(QLatin1Char('\n')));
+    }
+    // Newly created children can flip this node between checked/partial/unchecked.
+    recomputeAncestors(item->child(0));
+}
+
 void ScopePage::rebuildVariableList()
 {
-    m_variableTree->clear();
-    const QString needle = m_filterEdit->text().trimmed();
-
-    // The tree keeps the source shape: a struct expands into its members, an array
-    // into its elements. Filtering prunes the branches instead of flattening them,
-    // so the hierarchy the user is reading survives a search.
-    const QVector<VariableNode> roots = m_symbols.filteredRoots(needle);
-    const QSet<QString> selected = selectedLeafNames();
-
-    // Building the whole tree can be thousands of items; suspend the checkbox
-    // signals while doing it, or every item would trigger a re-evaluation.
     const QSignalBlocker blocker(m_variableTree);
+    m_variableTree->clear();
+    m_nodeByPath.clear();
 
-    struct Builder
+    const QString needle = m_filterEdit->text().trimmed();
+    m_visibleRoots = m_symbols.filteredRoots(needle);
+
+    // Index every visible node by path so a lazy expansion can find its subtree.
+    struct Index
     {
-        ScopePage *page = nullptr;
-        QTreeWidget *tree = nullptr;
-        const QSet<QString> *selected = nullptr;
-        const QString *needle = nullptr;
-
-        void build(const VariableNode &node, QTreeWidgetItem *parent, const QString &prefix)
+        static void run(const VariableNode &node, const QString &prefix,
+                        QHash<QString, const VariableNode *> *out)
         {
-            // Same spelling as the flat path so a selection maps back to a
-            // WatchVariable by name.
-            QString path;
-            if (prefix.isEmpty())
-                path = node.name;
-            else if (node.name.startsWith(QLatin1Char('[')))
-                path = prefix + node.name;
-            else
-                path = prefix + QLatin1Char('.') + node.name;
-
-            auto *item = parent ? new QTreeWidgetItem(parent) : new QTreeWidgetItem(tree);
-            // Members and array elements read better without repeating the parent,
-            // so only the local name is shown; the tooltip carries the full path.
-            item->setText(0, node.name);
-            item->setText(1, node.typeLabel());
-            item->setText(2, node.hasAddress && node.address != 0
-                                 ? hexAddr(node.address)
-                                 : QString());
-            item->setText(3, node.byteSize > 0 ? QStringLiteral("%1 B").arg(node.byteSize)
-                                               : QString());
-
-            QStringList tip;
-            tip << path;
-            tip << QStringLiteral("类型: %1（%2）").arg(node.typeLabel(), nodeKindName(node.kind));
-            if (node.kind == NodeKind::Array)
-                tip << QStringLiteral("元素数: %1，每元素 %2 字节")
-                           .arg(node.elementCount)
-                           .arg(node.elementSize);
-            if (node.hasAddress && node.address != 0)
-                tip << QStringLiteral("地址: %1").arg(hexAddr(node.address));
-            if (node.byteSize > 0)
-                tip << QStringLiteral("大小: %1 字节").arg(node.byteSize);
-            if (node.samplable())
-                tip << QStringLiteral("采样: %1").arg(scalarKindName(node.scalar));
-            if (node.addressFromSymbol)
-                tip << QStringLiteral("（地址取自链接符号表）");
-            if (node.incomplete)
-                tip << QStringLiteral("（布局不完整：类型仅有声明，或展开已截断）");
-            item->setToolTip(0, tip.join(QLatin1Char('\n')));
-
-            item->setData(0, Qt::UserRole, path);
-            item->setData(0, Qt::UserRole + 1, node.samplable());
-            item->setData(0, Qt::UserRole + 2, node.isAggregate());
-
-            if (node.isAggregate()) {
-                // Ticking an aggregate ticks everything under it: Qt does the
-                // propagation when the item is auto-tristate.
-                item->setFlags(item->flags() | Qt::ItemIsUserCheckable
-                               | Qt::ItemIsAutoTristate);
-            } else {
-                item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-            }
-            item->setCheckState(0, selected->contains(path) ? Qt::Checked : Qt::Unchecked);
-
-            // Array elements and members start collapsed: an ODrive build has
-            // thousands of nodes and expanding everything would freeze the view.
-            item->setExpanded(false);
-
+            const QString path = childPath(prefix, node.name);
+            out->insert(path, &node);
             for (const VariableNode &child : node.children)
-                build(child, item, path);
-        }
-    } builder{this, m_variableTree, &selected, &needle};
-
-    for (const VariableNode &root : roots)
-        builder.build(root, nullptr, QString());
-
-    // Recompute the aggregate states bottom-up. Qt's auto-tristate keeps them in
-    // sync while the user clicks, but during construction the children are created
-    // after the parent's own state was set -- so a restored selection would show
-    // fully-unticked parents above ticked leaves.
-    struct Sync
-    {
-        static void run(QTreeWidgetItem *item)
-        {
-            if (!item || item->childCount() == 0)
-                return;
-            for (int i = 0; i < item->childCount(); ++i)
-                run(item->child(i));
-            int checked = 0;
-            int partial = 0;
-            for (int i = 0; i < item->childCount(); ++i) {
-                const Qt::CheckState state = item->child(i)->checkState(0);
-                if (state == Qt::Checked)
-                    ++checked;
-                else if (state == Qt::PartiallyChecked)
-                    ++partial;
-            }
-            // Only aggregates carry a checkbox of their own; a leaf's state was set
-            // above and must not be touched here.
-            if ((item->flags() & Qt::ItemIsAutoTristate) == 0)
-                return;
-            if (checked == item->childCount())
-                item->setCheckState(0, Qt::Checked);
-            else if (checked == 0 && partial == 0)
-                item->setCheckState(0, Qt::Unchecked);
-            else
-                item->setCheckState(0, Qt::PartiallyChecked);
+                run(child, path, out);
         }
     };
-    for (int i = 0; i < m_variableTree->topLevelItemCount(); ++i)
-        Sync::run(m_variableTree->topLevelItem(i));
+    for (const VariableNode &root : m_visibleRoots)
+        Index::run(root, QString(), &m_nodeByPath);
+    // Locals are indexed under the "(局部)" prefix used for their items.
+    for (const VariableNode &local : m_localRoots)
+        Index::run(local, QStringLiteral("(局部)"), &m_nodeByPath);
 
-    // A filter that matched something inside a collapsed root should reveal it.
+    // Locals of the halted function go on top, in their own labelled section: they
+    // are not globals and their addresses change as soon as the core runs again.
+    m_localHeader = nullptr;
+    if (!m_localRoots.isEmpty()) {
+        m_localHeader = new QTreeWidgetItem(m_variableTree);
+        m_localHeader->setText(0, QStringLiteral("局部变量 @ %1").arg(m_localFunction));
+        m_localHeader->setText(1, QStringLiteral("停机时可读"));
+        m_localHeader->setFlags(Qt::ItemIsEnabled);
+        m_localHeader->setExpanded(true);
+        for (const VariableNode &local : m_localRoots) {
+            const QString path = childPath(QStringLiteral("(局部)"), local.name);
+            QTreeWidgetItem *item = makeItem(local, path, m_localHeader);
+            item->setToolTip(0, QStringLiteral("%1\n地址 = 帧基址 + 偏移，仅在停机时有效")
+                                    .arg(path));
+        }
+        // Populate one level so the user sees the values without clicking.
+        populateChildren(m_localHeader);
+    }
+
+    // Only top-level items are created now; each aggregate gets one placeholder
+    // child. This is the difference between 637 items and 5692.
+    for (const VariableNode &root : m_visibleRoots) {
+        const QString rootPath = childPath(QString(), root.name);
+        QTreeWidgetItem *item = makeItem(root, rootPath, nullptr);
+        if (root.children.isEmpty() && root.samplable()) {
+            item->setCheckState(0, m_selectedLeaves.contains(rootPath) ? Qt::Checked
+                                                                      : Qt::Unchecked);
+        }
+        QStringList tip;
+        tip << item->data(0, Qt::UserRole).toString();
+        tip << QStringLiteral("类型: %1（%2）").arg(root.typeLabel(), nodeKindName(root.kind));
+        if (root.hasAddress && root.address != 0)
+            tip << QStringLiteral("地址: %1").arg(hexAddr(root.address));
+        if (root.byteSize > 0)
+            tip << QStringLiteral("大小: %1 字节").arg(root.byteSize);
+        if (root.samplable())
+            tip << QStringLiteral("采样: %1").arg(scalarKindName(root.scalar));
+        item->setToolTip(0, tip.join(QLatin1Char('\n')));
+    }
+
+    // A filter that matched inside a root should reveal one level, otherwise the
+    // user sees a collapsed root and cannot tell the search worked.
     if (!needle.isEmpty()) {
-        for (int i = 0; i < m_variableTree->topLevelItemCount(); ++i)
-            m_variableTree->topLevelItem(i)->setExpanded(true);
+        for (int i = 0; i < m_variableTree->topLevelItemCount(); ++i) {
+            QTreeWidgetItem *item = m_variableTree->topLevelItem(i);
+            item->setExpanded(true);
+            populateChildren(item);
+            if (item->childCount() == 1)
+                item->child(0)->setExpanded(true);
+        }
     }
     Q_UNUSED(blocker);
 }
@@ -373,48 +455,182 @@ void ScopePage::rebuildVariableList()
 void ScopePage::onFilterChanged(const QString &text)
 {
     Q_UNUSED(text);
+    // Rebuilding a 637-root tree per keystroke stutters; wait for a pause.
+    m_filterTimer.start();
+}
+
+void ScopePage::filterForBench(const QString &text)
+{
+    m_filterEdit->setText(text);
     rebuildVariableList();
+}
+
+void ScopePage::onFilterDebounced()
+{
+    rebuildVariableList();
+}
+
+void ScopePage::onItemExpanded(QTreeWidgetItem *item)
+{
+    populateChildren(item);
 }
 
 QSet<QString> ScopePage::selectedLeafNames() const
 {
-    // Every visible leaf that is ticked. Aggregates are auto-tristate, so a parent
-    // tick has already propagated down to its leaves.
-    QSet<QString> names;
-    struct Walker
-    {
-        static void walk(const QTreeWidgetItem *item, QSet<QString> *out)
-        {
-            if (!item)
-                return;
-            const bool leaf = item->childCount() == 0;
-            if (leaf && item->checkState(0) == Qt::Checked)
-                out->insert(item->data(0, Qt::UserRole).toString());
-            for (int i = 0; i < item->childCount(); ++i)
-                walk(item->child(i), out);
+    // The set is maintained by onVariableToggled from the model, so it also holds
+    // leaves whose widgets have never been created. That is what makes "tick a
+    // 500-member struct without expanding it" work.
+    return m_selectedLeaves;
+}
+
+void ScopePage::applySelectionToItem(QTreeWidgetItem *item, const VariableNode &node,
+                                    const QString &path)
+{
+    if (!item)
+        return;
+    if (node.children.isEmpty()) {
+        if (node.samplable()) {
+            item->setCheckState(0, m_selectedLeaves.contains(path) ? Qt::Checked
+                                                                  : Qt::Unchecked);
         }
-    };
-    for (int i = 0; i < m_variableTree->topLevelItemCount(); ++i)
-        Walker::walk(m_variableTree->topLevelItem(i), &names);
-    return names;
+        return;
+    }
+
+    // Children were created in model order and skip the placeholder, so a simple
+    // index walk keeps widget and model aligned.
+    int modelIndex = 0;
+    for (int i = 0; i < item->childCount(); ++i) {
+        QTreeWidgetItem *child = item->child(i);
+        if (child->data(0, kPlaceholderRole).toBool())
+            continue;
+        if (modelIndex >= node.children.size())
+            break;
+        applySelectionToItem(child, node.children.at(modelIndex),
+                             child->data(0, Qt::UserRole).toString());
+        ++modelIndex;
+    }
+
+    // An aggregate's own state is derived from the children it has materialised.
+    int checked = 0;
+    int unchecked = 0;
+    for (int i = 0; i < item->childCount(); ++i) {
+        const QTreeWidgetItem *child = item->child(i);
+        if (!(child->flags() & Qt::ItemIsUserCheckable))
+            continue;
+        if (child->checkState(0) == Qt::Checked)
+            ++checked;
+        else if (child->checkState(0) == Qt::Unchecked)
+            ++unchecked;
+    }
+    const int total = checked + unchecked;
+    Qt::CheckState state = Qt::PartiallyChecked;
+    if (total == 0)
+        state = Qt::Unchecked;
+    else if (checked == total)
+        state = Qt::Checked;
+    else if (unchecked == total)
+        state = Qt::Unchecked;
+    item->setCheckState(0, state);
+}
+
+void ScopePage::setSubtreeChecked(QTreeWidgetItem *item, Qt::CheckState state)
+{
+    if (!item)
+        return;
+    for (int i = 0; i < item->childCount(); ++i) {
+        QTreeWidgetItem *child = item->child(i);
+        if (child->data(0, kPlaceholderRole).toBool())
+            continue;
+        if (child->flags() & Qt::ItemIsUserCheckable)
+            child->setCheckState(0, state);
+        setSubtreeChecked(child, state);
+    }
+}
+
+void ScopePage::recomputeAncestors(QTreeWidgetItem *item)
+{
+    // A parent is Checked when every materialised child is Checked, Unchecked when
+    // all are Unchecked, otherwise PartiallyChecked. Children that have not been
+    // created yet (lazy tree) do not participate.
+    for (QTreeWidgetItem *parent = item ? item->parent() : nullptr; parent;
+         parent = parent->parent()) {
+        if ((parent->flags() & Qt::ItemIsUserCheckable) == 0)
+            continue;
+        int checked = 0;
+        int unchecked = 0;
+        for (int i = 0; i < parent->childCount(); ++i) {
+            const QTreeWidgetItem *child = parent->child(i);
+            if (!(child->flags() & Qt::ItemIsUserCheckable))
+                continue; // the lazy placeholder
+            const Qt::CheckState state = child->checkState(0);
+            if (state == Qt::Checked)
+                ++checked;
+            else if (state == Qt::Unchecked)
+                ++unchecked;
+        }
+        const int total = checked + unchecked;
+        Qt::CheckState next = Qt::PartiallyChecked;
+        if (total == 0)
+            next = Qt::Unchecked;
+        else if (checked == total)
+            next = Qt::Checked;
+        else if (unchecked == total)
+            next = Qt::Unchecked;
+        if (parent->checkState(0) != next) {
+            const QSignalBlocker blocker(parent->treeWidget());
+            parent->setCheckState(0, next);
+        }
+    }
 }
 
 void ScopePage::onVariableToggled(QTreeWidgetItem *item, int column)
 {
-    Q_UNUSED(item);
     Q_UNUSED(column);
-    // Auto-tristate fires this once per changed child, so a "select all" on a big
-    // struct would otherwise rebuild the frame layout hundreds of times. Coalesce.
+    if (!item || m_syncingChecks)
+        return;
+
+    // Propagate in both directions ourselves. Qt's auto-tristate only manages
+    // children that already exist, which does not hold for a lazily built tree.
+    const QScopedValueRollback<bool> guard(m_syncingChecks, true);
+
+    const Qt::CheckState state = item->checkState(0);
+    const QString path = item->data(0, Qt::UserRole).toString();
+    const bool aggregate = item->data(0, Qt::UserRole + 2).toBool();
+
+    if (aggregate && state != Qt::PartiallyChecked) {
+        setSubtreeChecked(item, state);
+        // Record the choice against every leaf of this subtree, including the ones
+        // whose widgets do not exist yet -- otherwise ticking a collapsed struct
+        // would sample nothing.
+        if (const VariableNode *node = m_nodeByPath.value(path, nullptr)) {
+            QStringList leaves;
+            collectLeafPathsAt(*node, path, &leaves);
+            for (const QString &leaf : leaves) {
+                if (state == Qt::Checked)
+                    m_selectedLeaves.insert(leaf);
+                else
+                    m_selectedLeaves.remove(leaf);
+            }
+        }
+    } else if (!aggregate) {
+        if (state == Qt::Checked)
+            m_selectedLeaves.insert(path);
+        else
+            m_selectedLeaves.remove(path);
+    }
+    recomputeAncestors(item);
+
+    // A single tick on a big struct produces one itemChanged per descendant; fold
+    // them into one frame-layout recomputation.
     if (!m_selectionTimer.isActive())
         m_selectionTimer.start();
 }
 
 QVector<WatchVariable> ScopePage::selectedVariables() const
 {
-    const QSet<QString> names = selectedLeafNames();
     QVector<WatchVariable> chosen;
     for (const WatchVariable &variable : m_symbols.variables) {
-        if (names.contains(variable.name))
+        if (m_selectedLeaves.contains(variable.name))
             chosen.append(variable);
     }
     // Frame order must match the generated firmware snippet, so keep it stable and
@@ -422,6 +638,91 @@ QVector<WatchVariable> ScopePage::selectedVariables() const
     std::sort(chosen.begin(), chosen.end(),
               [](const WatchVariable &a, const WatchVariable &b) { return a.address < b.address; });
     return chosen;
+}
+
+void ScopePage::refreshLocals()
+{
+    if (!m_probe || !m_symbols.isValid()) {
+        emit statusMessage(QStringLiteral("先导入 .axf 并连接目标"));
+        return;
+    }
+    if (m_symbols.functions.isEmpty()) {
+        emit statusMessage(
+            QStringLiteral("该符号文件里没有局部变量信息（编译时可能需要 -g / Debug Information）"));
+        return;
+    }
+    // Registers are only meaningful while the core is stopped, and stopping a
+    // running control loop is the user's call -- never done implicitly here.
+    emit statusMessage(QStringLiteral("正在读取寄存器…"));
+    m_probe->requestReadRegisters();
+}
+
+void ScopePage::onRegistersRead(const QVector<quint32> &registers, bool ok, const QString &error)
+{
+    if (!ok) {
+        emit statusMessage(QStringLiteral("读取寄存器失败：%1（多数后端只在停机时可读）")
+                               .arg(error));
+        return;
+    }
+    // Cortex-M order from the GDB `g` packet: r0-r12, sp, lr, pc, xpsr.
+    if (registers.size() < 16) {
+        emit statusMessage(QStringLiteral("寄存器数量异常（%1 个）").arg(registers.size()));
+        return;
+    }
+    applyLocals(registers.at(13), registers.at(15), registers);
+}
+
+void ScopePage::applyLocals(quint32 sp, quint32 pc, const QVector<quint32> &registers)
+{
+    m_localRoots.clear();
+    m_localFunction.clear();
+    if (!m_symbols.isValid() || pc == 0) {
+        rebuildVariableList();
+        return;
+    }
+    const FunctionScope *scope = m_symbols.functionContaining(pc);
+    if (!scope) {
+        emit statusMessage(
+            QStringLiteral("PC %1 不在任何带局部变量的函数内").arg(hexAddr(pc)));
+        rebuildVariableList();
+        return;
+    }
+
+    m_localFunction = scope->name;
+
+    // The frame base is "register + offset". armclang gives register 13 with offset
+    // 0; GCC points at the CFA, whose offset changes with the prologue, so it is
+    // evaluated for the *current* PC rather than the function entry.
+    int frameRegister = -1;
+    qint32 frameOffset = 0;
+    if (!m_symbols.frameBaseAt(pc, &frameRegister, &frameOffset)) {
+        emit statusMessage(
+            QStringLiteral("无法确定 %1 的帧基址（缺 .debug_frame），局部变量地址不可信")
+                .arg(scope->name));
+        rebuildVariableList();
+        return;
+    }
+    const quint32 base =
+        static_cast<quint32>(static_cast<qint32>((frameRegister >= 0
+                                                  && frameRegister < registers.size())
+                                                     ? registers.at(frameRegister)
+                                                     : sp)
+                             + frameOffset);
+    for (const VariableNode &local : scope->locals) {
+        VariableNode copy = local;
+        if (copy.stackRelative) {
+            copy.address = static_cast<quint32>(static_cast<qint32>(base) + copy.stackOffset);
+            copy.hasAddress = true;
+            copy.stackRelative = false;
+        }
+        m_localRoots.append(copy);
+    }
+
+    rebuildVariableList();
+    emit statusMessage(QStringLiteral("局部变量：%1 内有 %2 个（SP=%3，PC=%4）")
+                           .arg(scope->name)
+                           .arg(m_localRoots.size())
+                           .arg(hexAddr(sp), hexAddr(pc)));
 }
 
 void ScopePage::onSampleSettingsChanged()
@@ -472,6 +773,9 @@ void ScopePage::updateControls()
     m_startButton->setText(running ? QStringLiteral("停止") : QStringLiteral("开始"));
     m_startButton->setEnabled(!selectedVariables().isEmpty() || running);
     m_codeButton->setEnabled(!selectedVariables().isEmpty());
+    if (m_localsButton)
+        m_localsButton->setEnabled(m_attached && m_symbols.isValid()
+                                   && !m_symbols.functions.isEmpty());
 }
 
 void ScopePage::refreshState()

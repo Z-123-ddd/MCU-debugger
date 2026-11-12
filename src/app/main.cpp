@@ -99,7 +99,8 @@ int main(int argc, char *argv[])
     if (options.bench)
         return mrd::cli::runBench(options);
     if (!options.symbolPath.isEmpty())
-        return mrd::cli::runSymbols(options);
+        return options.benchScope ? mrd::cli::runBenchScope(options)
+                                  : mrd::cli::runSymbols(options);
     if (options.probeInfo)
         return mrd::cli::runProbeInfo(options);
 

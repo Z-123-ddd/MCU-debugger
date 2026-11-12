@@ -49,6 +49,7 @@ public:
     Status readU32(quint32 address, quint32 *out) override;
     Status writeU32(quint32 address, quint32 value) override;
 
+    Status readCoreRegisters(QVector<quint32> *out) override;
     Status exec(const QString &command) override;
 
     ProbeInfo info() const override;

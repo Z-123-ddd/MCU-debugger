@@ -3,6 +3,7 @@
 #include "core/Result.h"
 
 #include <QByteArray>
+#include <QVector>
 #include <QString>
 
 class QTcpSocket;
@@ -26,6 +27,10 @@ public:
 
     /// Read \a length bytes from \a address (target byte order).
     Result<QByteArray> readMemory(quint32 address, int length, int timeoutMs = 15000);
+
+    /// Read all core registers (`g` packet). The order is the target's, which for
+    /// Cortex-M is r0..r12, sp, lr, pc, xpsr.
+    Result<QVector<quint32>> readRegisters(int timeoutMs = 15000);
     Status writeMemory(quint32 address, const QByteArray &data, int timeoutMs = 15000);
 
     /// Stop reason of the last `?` (`S05`/`T05...`); empty on failure.

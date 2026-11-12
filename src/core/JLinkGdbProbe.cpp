@@ -444,6 +444,22 @@ Status JLinkGdbProbe::writeU32(quint32 address, quint32 value)
     return writeMemory(address, data);
 }
 
+Status JLinkGdbProbe::readCoreRegisters(QVector<quint32> *out)
+{
+    if (!out)
+        return Status::failure(QStringLiteral("输出参数为空"));
+    if (!isConnected())
+        return Status::failure(QStringLiteral("目标未连接"));
+    // Registers are only meaningful while the core is stopped; the caller is
+    // expected to halt first (the UI asks the user to, rather than surprising them
+    // by stopping a running motor loop).
+    const auto read = m_client.readRegisters();
+    if (!read)
+        return Status::failure(read.error);
+    *out = read.value;
+    return Status::success();
+}
+
 Status JLinkGdbProbe::exec(const QString &command)
 {
     QString console;

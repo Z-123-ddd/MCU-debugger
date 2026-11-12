@@ -5,8 +5,11 @@
 #include "core/HexUtil.h"
 #include "core/Logger.h"
 #include "core/SymbolFile.h"
+#include "ui/ScopePage.h"
 
 #include <QHash>
+#include <QTreeWidget>
+#include <QElapsedTimer>
 #include <QStringList>
 
 #include <cstdio>
@@ -135,6 +138,74 @@ int runSymbols(const Options &options)
         out(QStringLiteral("      ... 其余 %1 条省略")
                 .arg(table.variables.size() - (showAll ? 12 : 6)));
 
+    return 0;
+}
+
+int runBenchScope(const Options &options)
+{
+    // Times the parts that used to make the window freeze: parsing the DWARF,
+    // building the variable tree, and materialising every widget row. The last one
+    // is what lazy loading removed, so the numbers show whether it helped.
+    Logger::instance()->setMinimumLevel(Logger::Warn);
+
+    out(QStringLiteral("=== 变量面板耗时: %1 ===").arg(options.symbolPath));
+
+    QElapsedTimer timer;
+    timer.start();
+    const auto loaded = SymbolFile::load(options.symbolPath);
+    const qint64 parseMs = timer.elapsed();
+    if (!loaded) {
+        out(QStringLiteral("[FAIL] %1").arg(loaded.error));
+        return 1;
+    }
+    const SymbolTable &table = loaded.value;
+    int nodes = 0;
+    for (const VariableNode &root : table.roots)
+        nodes += root.totalNodeCount();
+    out(QStringLiteral("    解析 DWARF      : %1 ms（%2 个根 / %3 个节点 / %4 个可采样叶子）")
+            .arg(parseMs)
+            .arg(table.roots.size())
+            .arg(nodes)
+            .arg(table.variables.size()));
+
+    ScopePage page;
+    timer.restart();
+    QString error;
+    if (!page.importSymbolFile(options.symbolPath, &error)) {
+        out(QStringLiteral("[FAIL] 导入面板: %1").arg(error));
+        return 1;
+    }
+    const qint64 importMs = timer.elapsed();
+    auto *tree = page.findChild<QTreeWidget *>();
+    out(QStringLiteral("    导入面板(懒加载): %1 ms（实际创建 %2 个顶层行）")
+            .arg(importMs)
+            .arg(tree ? tree->topLevelItemCount() : 0));
+
+    // Expand everything, which is what the old eager build did up front.
+    if (tree) {
+        timer.restart();
+        struct Expander
+        {
+            static void run(QTreeWidgetItem *item)
+            {
+                item->setExpanded(true);
+                for (int i = 0; i < item->childCount(); ++i)
+                    run(item->child(i));
+            }
+        };
+        int rows = 0;
+        for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+            Expander::run(tree->topLevelItem(i));
+            rows += 0;
+        }
+        const qint64 expandMs = timer.elapsed();
+        out(QStringLiteral("    全展开(旧行为)  : %1 ms").arg(expandMs));
+    }
+
+    // Filtering: it used to rebuild the whole tree per keystroke.
+    timer.restart();
+    page.filterForBench(QStringLiteral("config"));
+    out(QStringLiteral("    过滤重建        : %1 ms").arg(timer.elapsed()));
     return 0;
 }
 

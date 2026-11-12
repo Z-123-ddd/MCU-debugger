@@ -56,8 +56,13 @@ QString nodeKindName(NodeKind kind)
 
 int VariableNode::leafCount() const
 {
-    if (children.isEmpty())
-        return samplable() ? qMax(1, elementCount) : 0;
+    if (children.isEmpty()) {
+        // A stack-relative local is displayable before it is addressable.
+        const bool decodable = samplable()
+            || (stackRelative && elementSize > 0 && scalar != ScalarKind::Unknown
+                && scalar != ScalarKind::Composite);
+        return decodable ? qMax(1, elementCount) : 0;
+    }
     int total = 0;
     for (const VariableNode &child : children)
         total += child.leafCount();
@@ -104,6 +109,9 @@ constexpr quint64 TAG_SUBRANGE_TYPE = 0x21;
 constexpr quint64 TAG_BASE_TYPE = 0x24;
 constexpr quint64 TAG_CONST_TYPE = 0x26;
 constexpr quint64 TAG_VARIABLE = 0x34;
+constexpr quint64 TAG_SUBPROGRAM = 0x2e;
+constexpr quint64 TAG_FORMAL_PARAMETER = 0x05;
+constexpr quint64 TAG_LEXICAL_BLOCK = 0x0b;
 constexpr quint64 TAG_VOLATILE_TYPE = 0x35;
 constexpr quint64 TAG_RESTRICT_TYPE = 0x37;
 constexpr quint64 TAG_ATOMIC_TYPE = 0x47;
@@ -111,6 +119,9 @@ constexpr quint64 TAG_ATOMIC_TYPE = 0x47;
 constexpr quint64 AT_NAME = 0x03;
 constexpr quint64 AT_LOCATION = 0x02;
 constexpr quint64 AT_BYTE_SIZE = 0x0b;
+constexpr quint64 AT_LOW_PC = 0x11;
+constexpr quint64 AT_HIGH_PC = 0x12;
+constexpr quint64 AT_FRAME_BASE = 0x40;
 constexpr quint64 AT_COUNT = 0x37;
 constexpr quint64 AT_DATA_MEMBER_LOCATION = 0x38;
 constexpr quint64 AT_DECLARATION = 0x3c;
@@ -173,6 +184,19 @@ constexpr int ATE_UNSIGNED = 0x07;
 constexpr int ATE_UNSIGNED_CHAR = 0x08;
 
 constexpr quint8 OP_ADDR = 0x03;
+constexpr quint8 OP_REG0 = 0x50;
+constexpr quint8 OP_BREG0 = 0x70;
+constexpr quint8 OP_FBREG = 0x91;
+constexpr quint8 OP_CALL_FRAME_CFA = 0x9c;
+
+// DWARF call-frame instructions (only the CFA-relevant ones are decoded).
+constexpr quint8 CFA_NOP = 0x00;
+constexpr quint8 CFA_ADVANCE_LOC = 0x40;
+constexpr quint8 CFA_DEF_CFA = 0x0c;
+constexpr quint8 CFA_DEF_CFA_REGISTER = 0x0d;
+constexpr quint8 CFA_DEF_CFA_OFFSET = 0x0e;
+constexpr quint8 CFA_REMEMBER_STATE = 0x0a;
+constexpr quint8 CFA_RESTORE_STATE = 0x0b;
 
 /// Bounds-checked cursor over a DWARF section.
 struct Cursor
@@ -339,14 +363,14 @@ class Parser
 public:
     Parser(const ElfFile &elf, const QByteArray &info, const QByteArray &abbrev,
            const QByteArray &str, const QByteArray &strOffsets,
-           const QByteArray &debugLoc)
+           const QByteArray &debugLoc, const QByteArray &debugFrame)
         : m_elf(elf), m_info(info), m_abbrev(abbrev), m_str(str),
-          m_strOffsets(strOffsets), m_debugLoc(debugLoc)
+          m_strOffsets(strOffsets), m_debugLoc(debugLoc), m_debugFrame(debugFrame)
     {
         m_le = elf.littleEndian();
     }
 
-    Result<QVector<VariableNode>> run();
+    Result<DwarfContents> run();
 
 private:
     bool parseAbbrevTable(quint64 offset, QHash<quint64, Abbrev> *out);
@@ -367,6 +391,38 @@ private:
     const Die *dieAt(quint64 offset) const;
 
     void emitVariable(const Die &variable, const UnitContext &unit, QVector<VariableNode> *out);
+
+    /// Collect the locals of one DW_TAG_subprogram. Only frame-relative and
+    /// register-homed variables are meaningful before the core is halted at that
+    /// exact function, which is why they are kept per function.
+    void collectFunction(const Die &subprogram, const UnitContext &unit,
+                         QVector<FunctionScope> *out);
+
+    /// Canonical-frame-address rule for a PC, from `.debug_frame`.
+    ///
+    /// GCC emits `DW_AT_frame_base = DW_OP_call_frame_cfa` for locals, which means
+    /// "the CFA of this PC" -- the address just above the frame. It is `SP + N`
+    /// (or `frame pointer + N`) and only `.debug_frame` knows N. Guessing `SP`
+    /// would silently read the wrong memory, so this is resolved properly.
+    struct Cfa
+    {
+        int reg = -1;   ///< register the CFA is relative to (-1 = unknown)
+        qint32 offset = 0;
+        bool valid() const { return reg >= 0; }
+    };
+public:
+    Cfa cfaForPc(quint32 pc);
+
+    /// Locate the FDE that covers \a pc: its entry offset (in .debug_frame) and the
+    /// CIE offset it references. Returns false when nothing covers the PC.
+    bool findFde(quint32 pc, quint64 *fdeEntry, quint64 *cieEntry);
+
+private:
+    static qint64 readSleb(const char **cursor, const char *end);
+
+    /// Add one local's subtree with `stackRelative` set (address resolved later).
+    void emitLocal(const Die &variable, qint32 frameOffset, int registerNumber,
+                   const UnitContext &unit, FunctionScope *scope);
 
     /// Build one subtree: a struct becomes a node with member children, an array a
     /// node with element children, a scalar a leaf. Returns false when the type is
@@ -421,6 +477,8 @@ private:
     QByteArray m_str;
     QByteArray m_strOffsets;
     QByteArray m_debugLoc;
+    QByteArray m_debugFrame;
+    QHash<quint32, Cfa> m_cfaCache;
     bool m_le = true;
     QHash<quint64, QHash<quint64, Abbrev>> m_abbrevCache; ///< by abbrev-section offset
     QHash<quint64, Die> m_dies;                            ///< by absolute offset
@@ -1230,10 +1288,364 @@ void Parser::emitVariable(const Die &variable, const UnitContext &unit,
     out->append(node);
 }
 
-Result<QVector<VariableNode>> Parser::run()
+namespace {
+
+/// Decode the simple location expressions used for locals.
+///
+/// `DW_OP_fbreg N` is "frame base + N" and `DW_OP_regN` is "the value lives in
+/// register N". Anything more elaborate (location lists, DW_OP_piece, ...) is
+/// reported as unusable rather than guessed at -- showing a wrong number would be
+/// worse than showing nothing.
+struct LocalLocation
+{
+    bool usable = false;
+    bool inRegister = false;
+    int registerNumber = -1;
+    qint32 frameOffset = 0;
+};
+
+LocalLocation decodeLocalLocation(const QByteArray &expr, bool littleEndian)
+{
+    LocalLocation out;
+    if (expr.isEmpty())
+        return out;
+    const uchar *b = reinterpret_cast<const uchar *>(expr.constData());
+    const quint8 op = b[0];
+    if (op == OP_FBREG && expr.size() >= 2) {
+        // Signed LEB128.
+        qint64 value = 0;
+        int shift = 0;
+        quint8 byte = 0;
+        for (int i = 1; i < expr.size(); ++i) {
+            byte = static_cast<quint8>(expr.at(i));
+            if (shift < 64)
+                value |= static_cast<qint64>(byte & 0x7f) << shift;
+            shift += 7;
+            if ((byte & 0x80) == 0)
+                break;
+        }
+        if (shift < 64 && (byte & 0x40))
+            value |= -(Q_INT64_C(1) << shift);
+        out.usable = true;
+        out.frameOffset = static_cast<qint32>(value);
+        return out;
+    }
+    if (op >= OP_REG0 && op <= OP_REG0 + 31 && expr.size() == 1) {
+        out.usable = true;
+        out.inRegister = true;
+        out.registerNumber = op - OP_REG0;
+        return out;
+    }
+    if (op >= OP_BREG0 && op <= OP_BREG0 + 31) {
+        // Register plus a signed offset: usable when the register is the frame base.
+        qint64 value = 0;
+        int shift = 0;
+        quint8 byte = 0;
+        for (int i = 1; i < expr.size(); ++i) {
+            byte = static_cast<quint8>(expr.at(i));
+            if (shift < 64)
+                value |= static_cast<qint64>(byte & 0x7f) << shift;
+            shift += 7;
+            if ((byte & 0x80) == 0)
+                break;
+        }
+        if (shift < 64 && (byte & 0x40))
+            value |= -(Q_INT64_C(1) << shift);
+        out.usable = true;
+        out.inRegister = true;
+        out.registerNumber = op - OP_BREG0;
+        out.frameOffset = static_cast<qint32>(value);
+        return out;
+    }
+    Q_UNUSED(littleEndian);
+    return out;
+}
+
+} // namespace
+
+void Parser::emitLocal(const Die &variable, qint32 frameOffset, int registerNumber,
+                       const UnitContext &unit, FunctionScope *scope)
+{
+    Q_UNUSED(unit);
+    const QString name = variable.text(AT_NAME);
+    if (name.isEmpty() || !scope)
+        return;
+    const quint64 typeOffset = variable.u(AT_TYPE, 0);
+    if (typeOffset == 0)
+        return;
+
+    m_nodeBudget = 256; // a local struct does not need the global budget
+    VariableNode node;
+    if (!buildNode(name, typeOffset, 0, false, 0, &node))
+        return;
+    node.stackRelative = true;
+    node.stackOffset = frameOffset;
+    if (registerNumber >= 0)
+        node.address = static_cast<quint32>(registerNumber); // reused as reg index
+    scope->locals.append(node);
+}
+
+qint64 Parser::readSleb(const char **cursor, const char *end)
+{
+    qint64 result = 0;
+    int shift = 0;
+    quint8 byte = 0;
+    const char *p = *cursor;
+    while (p < end) {
+        byte = static_cast<quint8>(*p++);
+        if (shift < 64)
+            result |= static_cast<qint64>(byte & 0x7f) << shift;
+        shift += 7;
+        if ((byte & 0x80) == 0)
+            break;
+    }
+    if (shift < 64 && (byte & 0x40))
+        result |= -(Q_INT64_C(1) << shift);
+    *cursor = p;
+    return result;
+}
+
+bool Parser::findFde(quint32 pc, quint64 *fdeEntry, quint64 *cieEntry)
+{
+    if (m_debugFrame.isEmpty() || !fdeEntry || !cieEntry)
+        return false;
+    const char *base = m_debugFrame.constData();
+    const char *end = base + m_debugFrame.size();
+    const char *p = base;
+
+    auto readU = [](const char **cursor, int bytes, bool le) -> quint64 {
+        const uchar *b = reinterpret_cast<const uchar *>(*cursor);
+        quint64 value = 0;
+        if (le) {
+            for (int i = bytes - 1; i >= 0; --i)
+                value = (value << 8) | b[i];
+        } else {
+            for (int i = 0; i < bytes; ++i)
+                value = (value << 8) | b[i];
+        }
+        *cursor += bytes;
+        return value;
+    };
+
+    while (p + 4 <= end) {
+        const char *entryStart = p;
+        quint64 length = readU(&p, 4, m_le);
+        if (length == 0xffffffffu)
+            length = readU(&p, 8, m_le);
+        const char *entryEnd = entryStart + 4 + length;
+        if (length == 0 || entryEnd > end) {
+            if (length == 0)
+                continue;
+            break;
+        }
+        const char *q = p;
+        const quint64 ciePointer = readU(&q, 4, m_le);
+        if (ciePointer == 0xffffffffu) {
+            p = entryEnd;
+            continue; // a CIE
+        }
+        const quint64 initialLocation = readU(&q, 4, m_le);
+        const quint64 addressRange = readU(&q, 4, m_le);
+        if (pc >= initialLocation && pc < initialLocation + addressRange) {
+            *fdeEntry = static_cast<quint64>(entryStart - base);
+            *cieEntry = ciePointer;
+            return true;
+        }
+        p = entryEnd;
+    }
+    return false;
+}
+
+Parser::Cfa Parser::cfaForPc(quint32 pc)
+{
+    Cfa result;
+    quint64 fdeEntry = 0;
+    quint64 cieEntry = 0;
+    if (!findFde(pc, &fdeEntry, &cieEntry))
+        return result;
+
+    const char *base = m_debugFrame.constData();
+    const char *end = base + m_debugFrame.size();
+    auto readU = [](const char **cursor, int bytes, bool le) -> quint64 {
+        const uchar *b = reinterpret_cast<const uchar *>(*cursor);
+        quint64 value = 0;
+        if (le) {
+            for (int i = bytes - 1; i >= 0; --i)
+                value = (value << 8) | b[i];
+        } else {
+            for (int i = 0; i < bytes; ++i)
+                value = (value << 8) | b[i];
+        }
+        *cursor += bytes;
+        return value;
+    };
+
+    // CIE baseline first, then this FDE's own instructions.
+    const char *cieStart = base + cieEntry;
+    if (cieStart < base || cieStart >= end)
+        return result;
+    const char *cq = cieStart;
+    const quint64 cieLength = readU(&cq, 4, m_le);
+    const char *cieEnd = cieStart + 4 + cieLength;
+    if (cieEnd > end)
+        cieEnd = end;
+    readU(&cq, 4, m_le);            // CIE id
+    ++cq;                           // version
+    while (cq < cieEnd && *cq != '\0')
+        ++cq;                       // augmentation
+    ++cq;
+    if (cq < cieEnd) {
+        ++cq;                        // code alignment
+        readSleb(&cq, cieEnd);       // data alignment
+        ++cq;                        // return-address column
+    }
+
+    const char *fdeStart = base + fdeEntry;
+    const char *fq = fdeStart;
+    const quint64 fdeLength = readU(&fq, 4, m_le);
+    const char *fdeEnd = fdeStart + 4 + fdeLength;
+    if (fdeEnd > end)
+        fdeEnd = end;
+    readU(&fq, 4, m_le);            // cie pointer
+    const quint64 initialLocation = readU(&fq, 4, m_le);
+    readU(&fq, 4, m_le);            // address range
+
+    auto runProgram = [&](const char *from, const char *to, quint64 *loc) {
+        const char *r = from;
+        while (r < to) {
+            const quint8 op = static_cast<quint8>(*r++);
+            const quint8 high = op & 0xc0;
+            if (op == CFA_NOP)
+                continue;
+            if (high == CFA_ADVANCE_LOC) {
+                *loc += (op & 0x3f);
+                if (*loc > pc)
+                    return; // the rest applies to code past our PC
+                continue;
+            }
+            switch (op) {
+            case CFA_DEF_CFA: {
+                const quint64 reg = static_cast<quint8>(*r++);
+                const qint64 offset = readSleb(&r, to);
+                result.reg = static_cast<int>(reg);
+                result.offset = static_cast<qint32>(offset);
+                break;
+            }
+            case CFA_DEF_CFA_REGISTER: {
+                const quint64 reg = static_cast<quint8>(*r++);
+                result.reg = static_cast<int>(reg);
+                break;
+            }
+            case CFA_DEF_CFA_OFFSET: {
+                const qint64 offset = readSleb(&r, to);
+                result.offset = static_cast<qint32>(offset);
+                break;
+            }
+            default:
+                // Skip the ULEB operand of instructions we do not interpret (they
+                // concern saved registers, not the CFA).
+                while (r < to && (static_cast<quint8>(*r) & 0x80))
+                    ++r;
+                if (r < to)
+                    ++r;
+                break;
+            }
+        }
+    };
+
+    quint64 loc = initialLocation;
+    result = Cfa();
+    runProgram(cq, cieEnd, &loc);
+    loc = initialLocation;
+    runProgram(fq, fdeEnd, &loc);
+    return result;
+}
+
+void Parser::collectFunction(const Die &subprogram, const UnitContext &unit,
+                            QVector<FunctionScope> *out)
+{
+    const quint64 lowPc = subprogram.u(AT_LOW_PC, 0);
+    if (lowPc == 0)
+        return; // declaration, or an inlined-only copy with no code
+    quint64 highPc = subprogram.u(AT_HIGH_PC, 0);
+    if (highPc != 0 && highPc <= lowPc)
+        highPc = lowPc + highPc; // DW_AT_high_pc as a length instead of an address
+    if (highPc == 0)
+        highPc = lowPc + 1; // no range info: still usable for an exact PC match
+
+    // Frame base: with DW_OP_regN the locals are at "regN + offset", which needs no
+    // stack unwinding -- the common case for ARM at -O0 (r13/SP).
+    int frameRegister = -1;
+    qint32 frameOffset = 0;
+    quint32 cfaFde = 0;
+    if (subprogram.has(AT_FRAME_BASE)) {
+        const QByteArray expr = subprogram.value(AT_FRAME_BASE).bytes;
+        if (expr.size() >= 1) {
+            const quint8 op = static_cast<quint8>(expr.at(0));
+            if (op >= OP_REG0 && op <= OP_REG0 + 31) {
+                // armclang spells it out: the frame base *is* register N (usually
+                // r13 = SP), so no stack unwinding is needed.
+                frameRegister = op - OP_REG0;
+            } else if (op == OP_CALL_FRAME_CFA) {
+                // GCC: "the CFA of this PC". The rule changes inside the function
+                // (each prologue push does `DW_CFA_def_cfa_offset`), so the offset
+                // must be evaluated at the halt PC, not at the entry. Record which
+                // FDE applies and let the runtime evaluate it.
+                quint64 fdeEntry = 0;
+                quint64 cieEntry = 0;
+                if (findFde(static_cast<quint32>(lowPc), &fdeEntry, &cieEntry))
+                    cfaFde = static_cast<quint32>(fdeEntry);
+            }
+        }
+    }
+
+    FunctionScope scope;
+    scope.name = qualifiedName(subprogram.offset, subprogram.text(AT_NAME));
+    if (scope.name.isEmpty())
+        scope.name = QStringLiteral("(匿名函数)");
+    scope.lowPc = static_cast<quint32>(lowPc);
+    scope.highPc = static_cast<quint32>(highPc);
+    scope.frameBaseRegister = frameRegister;
+    scope.frameBaseOffset = frameOffset;
+    scope.cfaFde = cfaFde;
+
+    for (const Die &child : m_children.value(subprogram.offset)) {
+        // Variables can also sit inside a lexical block ({ ... }).
+        // Parameters are DW_TAG_formal_parameter, not DW_TAG_variable -- a function
+        // whose arguments sit on the stack (the -O0 case) would otherwise show only
+        // its temporaries.
+        if (child.tag == TAG_VARIABLE || child.tag == TAG_FORMAL_PARAMETER) {
+            const QByteArray expr = child.value(AT_LOCATION).bytes;
+            const LocalLocation location = decodeLocalLocation(expr, m_le);
+            if (location.usable
+                && (location.inRegister || frameRegister >= 0 || cfaFde != 0)) {
+                emitLocal(child, location.frameOffset,
+                          location.inRegister ? location.registerNumber : -1, unit, &scope);
+            }
+        } else if (child.tag == TAG_LEXICAL_BLOCK) {
+            for (const Die &inner : m_children.value(child.offset)) {
+                if (inner.tag != TAG_VARIABLE && inner.tag != TAG_FORMAL_PARAMETER)
+                    continue;
+                const LocalLocation location =
+                    decodeLocalLocation(inner.value(AT_LOCATION).bytes, m_le);
+                if (location.usable
+                && (location.inRegister || frameRegister >= 0 || cfaFde != 0)) {
+                    emitLocal(inner, location.frameOffset,
+                              location.inRegister ? location.registerNumber : -1, unit,
+                              &scope);
+                }
+            }
+        }
+    }
+
+    if (!scope.locals.isEmpty())
+        out->append(scope);
+}
+
+Result<DwarfContents> Parser::run()
 {
     if (m_info.isEmpty())
-        return Result<QVector<VariableNode>>::failure(
+        return Result<DwarfContents>::failure(
             QStringLiteral("没有 .debug_info 节（编译时未开调试信息）"));
 
     Cursor info{m_info.constData(), static_cast<int>(m_info.size()), 0, m_le};
@@ -1297,15 +1709,18 @@ Result<QVector<VariableNode>> Parser::run()
     }
 
     // Pass 2: emit variables now that every type is reachable.
+    QVector<FunctionScope> functions;
     for (const auto &unit : units) {
         for (const Die &die : unit.second) {
             if (die.tag == TAG_VARIABLE)
                 emitVariable(die, unit.first, &variables);
+            else if (die.tag == TAG_SUBPROGRAM)
+                collectFunction(die, unit.first, &functions);
         }
     }
 
     if (!info.ok() && variables.isEmpty())
-        return Result<QVector<VariableNode>>::failure(
+        return Result<DwarfContents>::failure(
             QStringLiteral("DWARF 解析失败（数据被截断或格式不支持）"));
 
     Logger::instance()->debug(
@@ -1326,13 +1741,49 @@ Result<QVector<VariableNode>> Parser::run()
             nodes += root.totalNodeCount();
         Logger::instance()->debug(
             QStringLiteral("变量树: %1 个根，%2 个节点").arg(variables.size()).arg(nodes));
+        int localCount = 0;
+        for (const FunctionScope &scope : functions)
+            localCount += scope.localCount();
+        Logger::instance()->debug(
+            QStringLiteral("局部变量: %1 个函数含 locals，共 %2 个叶子")
+                .arg(functions.size())
+                .arg(localCount));
     }
     for (const QString &failure : m_failures)
         Logger::instance()->debug(QStringLiteral("DWARF CU 失败: %1").arg(failure));
-    return Result<QVector<VariableNode>>::success(variables);
+    DwarfContents contents;
+    contents.globals = variables;
+    contents.functions = functions;
+    return Result<DwarfContents>::success(contents);
 }
 
 } // namespace
+
+bool DwarfReader::cfaAt(const ElfFile &elf, quint32 pc, int *reg, qint32 *offset)
+{
+    const QByteArray frame = elf.sectionData(QStringLiteral(".debug_frame"));
+    if (frame.isEmpty() || !reg || !offset)
+        return false;
+    // Reuse the parser's evaluator: it needs .debug_info only for its own state, so
+    // a frame-only instance is enough here.
+    const QByteArray info = elf.sectionData(QStringLiteral(".debug_info"));
+    const QByteArray abbrev = elf.sectionData(QStringLiteral(".debug_abbrev"));
+    Parser parser(elf, info, abbrev, QByteArray(), QByteArray(), QByteArray(), frame);
+    const auto cfa = parser.cfaForPc(pc);
+    if (!cfa.valid())
+        return false;
+    *reg = cfa.reg;
+    *offset = cfa.offset;
+    return true;
+}
+
+int FunctionScope::localCount() const
+{
+    int total = 0;
+    for (const VariableNode &local : locals)
+        total += local.leafCount();
+    return total;
+}
 
 int DwarfReader::dwarfVersion(const ElfFile &elf)
 {
@@ -1347,20 +1798,29 @@ int DwarfReader::dwarfVersion(const ElfFile &elf)
 
 Result<QVector<VariableNode>> DwarfReader::readVariables(const ElfFile &elf)
 {
+    const auto contents = read(elf);
+    if (!contents)
+        return Result<QVector<VariableNode>>::failure(contents.error);
+    return Result<QVector<VariableNode>>::success(contents.value.globals);
+}
+
+Result<DwarfContents> DwarfReader::read(const ElfFile &elf)
+{
     const QByteArray info = elf.sectionData(QStringLiteral(".debug_info"));
     const QByteArray abbrev = elf.sectionData(QStringLiteral(".debug_abbrev"));
     const QByteArray str = elf.sectionData(QStringLiteral(".debug_str"));
     const QByteArray strOffsets = elf.sectionData(QStringLiteral(".debug_str_offsets"));
 
     if (info.isEmpty())
-        return Result<QVector<VariableNode>>::failure(
+        return Result<DwarfContents>::failure(
             QStringLiteral("ELF 中没有 .debug_info（编译时未加 -g / 未开调试信息）"));
     if (abbrev.isEmpty())
-        return Result<QVector<VariableNode>>::failure(
+        return Result<DwarfContents>::failure(
             QStringLiteral("ELF 中没有 .debug_abbrev，无法解析 DWARF"));
 
     const QByteArray debugLoc = elf.sectionData(QStringLiteral(".debug_loc"));
-    Parser parser(elf, info, abbrev, str, strOffsets, debugLoc);
+    const QByteArray debugFrame = elf.sectionData(QStringLiteral(".debug_frame"));
+    Parser parser(elf, info, abbrev, str, strOffsets, debugLoc, debugFrame);
     return parser.run();
 }
 

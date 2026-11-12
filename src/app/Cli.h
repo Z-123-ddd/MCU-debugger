@@ -20,6 +20,8 @@ struct Options
     /// --verbose: also log the per-step details (now DEBUG level).
     bool verbose = false;
     bool probeInfo = false;
+    /// --bench-scope: time the variable panel instead of listing variables
+    bool benchScope = false;
     bool printHelp = false;
     bool printVersion = false;
     /// --autoconnect: connect on GUI startup
@@ -59,6 +61,9 @@ int runBench(const Options &options);
 /// Needs no hardware, so it doubles as a way to check a symbol file before
 /// connecting.
 int runSymbols(const Options &options);
+
+/// --bench-scope <file>: time parsing, tree build and widget materialisation.
+int runBenchScope(const Options &options);
 
 /// `--probe-info`: load the J-Link DLL, print version/firmware/SN, try to connect.
 int runProbeInfo(const Options &options);

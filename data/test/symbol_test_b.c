@@ -25,3 +25,17 @@ void tu_b_touch(void)
     g_shared++;
     g_tu_b_counter++;
 }
+
+/* A function with locals, so the "temporary variables" path can be asserted.
+ * volatile keeps them on the stack at -O0; DWARF then records DW_OP_fbreg
+ * offsets, which is exactly what the reader resolves against SP. */
+volatile int32_t g_local_sum = 0;
+
+void tu_b_compute(int32_t input)
+{
+    /* Integer only: a float conversion would pull in libgcc (__aeabi_i2f) and the
+     * fixture links with -nostdlib. */
+    volatile int32_t temp = input * 2;
+    volatile int32_t offset = temp + 3;
+    g_local_sum = offset;
+}

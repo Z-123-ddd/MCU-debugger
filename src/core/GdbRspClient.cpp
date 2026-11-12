@@ -237,6 +237,36 @@ Result<QByteArray> GdbRspClient::readMemory(quint32 address, int length, int tim
     return Result<QByteArray>::success(out);
 }
 
+Result<QVector<quint32>> GdbRspClient::readRegisters(int timeoutMs)
+{
+    // "g" returns every register as one hex blob in target byte order. Cortex-M
+    // exposes 17 words (r0..r12, sp, lr, pc, xpsr), so the blob is not necessarily
+    // exactly 68 bytes on other cores -- accept whatever whole words come back.
+    const QString reply = sendPacket("g", timeoutMs);
+    if (reply.isEmpty()) {
+        return Result<QVector<quint32>>::failure(
+            m_lastError.isEmpty() ? QStringLiteral("读取寄存器无响应") : m_lastError);
+    }
+    if (reply.startsWith(QLatin1Char('E'))) {
+        return Result<QVector<quint32>>::failure(
+            QStringLiteral("读取寄存器失败 (GDB 错误 %1)").arg(reply));
+    }
+    const QByteArray bytes = hexToBytes(reply.toLatin1());
+    if (bytes.size() < 4) {
+        return Result<QVector<quint32>>::failure(
+            QStringLiteral("寄存器响应过短（%1 字节）").arg(bytes.size()));
+    }
+    QVector<quint32> words;
+    words.reserve(bytes.size() / 4);
+    for (int offset = 0; offset + 4 <= bytes.size(); offset += 4) {
+        const uchar *b = reinterpret_cast<const uchar *>(bytes.constData() + offset);
+        words.append(static_cast<quint32>(b[0]) | (static_cast<quint32>(b[1]) << 8)
+                     | (static_cast<quint32>(b[2]) << 16)
+                     | (static_cast<quint32>(b[3]) << 24));
+    }
+    return Result<QVector<quint32>>::success(words);
+}
+
 Status GdbRspClient::writeMemory(quint32 address, const QByteArray &data, int timeoutMs)
 {
     if (data.isEmpty())

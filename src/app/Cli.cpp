@@ -157,6 +157,8 @@ Options parse(int argc, char *argv[])
             o.portName = takeValue(args, &i, arg);
         } else if (is("--log")) {
             o.logPath = takeValue(args, &i, arg);
+        } else if (is("--bench-scope")) {
+            o.benchScope = true;
         } else if (is("--symbols")) {
             o.symbolPath = takeValue(args, &i, arg);
         } else if (arg.startsWith(QLatin1String("--"))) {
@@ -2408,17 +2410,32 @@ int runSelftest(const Options &options)
                 if (points) {
                     check(points->text(1) == QLatin1String("Point[2]"),
                           QStringLiteral("数组以 Point[2] 显示"), points->text(1));
-                    check(points->childCount() == 2,
-                          QStringLiteral("g_points 下挂 2 个元素节点"),
+                    // Lazy loading: only the top level exists up front, each aggregate
+                    // carries one placeholder so Qt still draws the expand arrow.
+                    // Building all 5692 nodes eagerly is what froze the window.
+                    check(points->childCount() == 1,
+                          QStringLiteral("未展开时只有 1 个占位子节点（懒加载）"),
                           QStringLiteral("%1 个").arg(points->childCount()));
-                    check(!points->isExpanded() || points->childCount() == 2,
-                          QStringLiteral("默认折叠（不展开成千上万节点）"), QString());
+                    check(!points->isExpanded(), QStringLiteral("默认折叠"), QString());
+                    // The expand arrow must actually be usable: setRootIsDecorated(false)
+                    // removed it from top-level items, which made the whole tree look
+                    // like a flat list.
+                    check(tree->rootIsDecorated(),
+                          QStringLiteral("顶层可展开（rootIsDecorated 打开）"), QString());
+
+                    // Now expand, the way clicking the arrow does.
+                    points->setExpanded(true);
+                    check(points->childCount() == 2,
+                          QStringLiteral("展开后下挂 2 个元素节点"),
+                          QStringLiteral("%1 个").arg(points->childCount()));
                     if (points->childCount() == 2) {
                         QTreeWidgetItem *element = points->child(0);
                         check(element->text(0) == QLatin1String("[0]"),
                               QStringLiteral("元素节点显示为 [0]"), element->text(0));
+                        // Element children are lazy too.
+                        element->setExpanded(true);
                         check(element->childCount() == 3,
-                              QStringLiteral("元素节点下是 3 个结构体成员"),
+                              QStringLiteral("展开元素后是 3 个结构体成员"),
                               QStringLiteral("%1 个").arg(element->childCount()));
                         if (element->childCount() == 3) {
                             // Members show their local name; the full path lives in
@@ -2434,30 +2451,129 @@ int runSelftest(const Options &options)
                                   QStringLiteral("成员类型显示 float"),
                                   element->child(0)->text(1));
                         }
-                        // Checking the array must tick every leaf below it: Qt's
-                        // auto-tristate does the propagation.
+                        // Checking the array must tick every materialised leaf, and
+                        // must be remembered for the ones that do not exist yet.
                         element->setCheckState(0, Qt::Checked);
                         check(points->checkState(0) == Qt::PartiallyChecked,
                               QStringLiteral("勾选一个元素后父节点为半选"),
                               QStringLiteral("%1").arg(int(points->checkState(0))));
                         points->setCheckState(0, Qt::Checked);
-                        bool allTicked = true;
-                        for (int i = 0; i < points->childCount(); ++i) {
-                            for (int j = 0; j < points->child(i)->childCount(); ++j) {
-                                if (points->child(i)->child(j)->checkState(0) != Qt::Checked)
-                                    allTicked = false;
-                            }
+
+                        bool materialisedTicked = true;
+                        for (int j = 0; j < element->childCount(); ++j) {
+                            if (element->child(j)->checkState(0) != Qt::Checked)
+                                materialisedTicked = false;
                         }
-                        check(allTicked, QStringLiteral("勾选父节点带动全部叶子"), QString());
+                        check(materialisedTicked,
+                              QStringLiteral("勾选父节点带动已展开的叶子"), QString());
+
+                        // [1] was never expanded, so its members have no widgets yet.
+                        // The selection lives in the model set, and expanding must
+                        // restore the ticks -- that is what keeps "tick a collapsed
+                        // struct" from sampling nothing.
+                        QTreeWidgetItem *second = points->child(1);
+                        check(second->checkState(0) == Qt::Checked,
+                              QStringLiteral("勾选父节点带动未展开的子聚合节点"),
+                              QStringLiteral("%1").arg(int(second->checkState(0))));
+                        second->setExpanded(true);
+                        bool restored = second->childCount() == 3;
+                        for (int j = 0; j < second->childCount(); ++j) {
+                            if (second->child(j)->checkState(0) != Qt::Checked)
+                                restored = false;
+                        }
+                        check(restored,
+                              QStringLiteral("展开后未创建的叶子恢复为已勾选"),
+                              QStringLiteral("%1 个子节点").arg(second->childCount()));
                     }
                 }
 
-                // A scalar array stays one row with its extent (not 4 element rows).
+                // --- locals (temporary variables) ----------------------------
+                // A local's address is frame-relative, so it is only meaningful while
+                // the core is halted: this drives applyLocals with a known SP.
+                const auto tableForLocals = SymbolFile::load(axf);
+                check(tableForLocals.ok, QStringLiteral("再次加载符号文件以取局部变量"),
+                      tableForLocals.ok ? QString() : tableForLocals.error);
+                static const SymbolTable kEmptyTable;
+                const SymbolTable &symPage =
+                    tableForLocals.ok ? tableForLocals.value : kEmptyTable;
+                check(!symPage.functions.isEmpty(),
+                      QStringLiteral("提取到含局部变量的函数"),
+                      QStringLiteral("%1 个").arg(symPage.functions.size()));
+                const FunctionScope *compute = nullptr;
+                for (const FunctionScope &scope : symPage.functions) {
+                    if (scope.name.contains(QLatin1String("tu_b_compute")))
+                        compute = &scope;
+                }
+                check(compute != nullptr, QStringLiteral("找到 tu_b_compute 的局部变量"),
+                      compute ? QString() : QStringLiteral("缺失"));
+                if (compute) {
+                    // GCC emits DW_OP_call_frame_cfa, so the frame base has to be
+                    // evaluated at the halt PC (the prologue moves the CFA). The
+                    // armclang case states the register directly.
+                    int baseReg = -1;
+                    qint32 baseOfs = 0;
+                    const quint32 haltPc = compute->lowPc + 2;
+                    const bool baseOk = symPage.frameBaseAt(haltPc, &baseReg, &baseOfs);
+                    check(baseOk && baseReg >= 0,
+                          QStringLiteral("frame base 可解析（含 .debug_frame CFA 路径）"),
+                          QStringLiteral("寄存器 %1 + 偏移 %2（armclang 直给 %3）")
+                              .arg(baseReg)
+                              .arg(baseOfs)
+                              .arg(compute->frameBaseRegister));
+                    check(compute->localCount() == 3,
+                          QStringLiteral("参数与两个临时变量都在（3 个）"),
+                          QStringLiteral("%1 个").arg(compute->localCount()));
+                    check(symPage.functionContaining(compute->lowPc + 2) == compute,
+                          QStringLiteral("按 PC 能定位到该函数"), QString());
+
+                    // Resolve with a synthetic SP and check the arithmetic.
+                    const quint32 fakeSp = 0x20008000;
+                    const QVector<quint32> registers(17, 0);
+                    QVector<quint32> withSp = registers;
+                    withSp[13] = fakeSp;
+                    page.applyLocals(fakeSp, compute->lowPc + 2, withSp);
+
+                    // The locals section must appear at the top of the tree.
+                    bool headerFound = false;
+                    int localRows = 0;
+                    for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+                        QTreeWidgetItem *item = tree->topLevelItem(i);
+                        if (item->text(0).startsWith(QStringLiteral("局部变量"))) {
+                            headerFound = true;
+                            localRows = item->childCount();
+                        }
+                    }
+                    check(headerFound, QStringLiteral("树上出现「局部变量」分区"), QString());
+                    check(localRows == 3, QStringLiteral("分区下列出 3 个局部变量"),
+                          QStringLiteral("%1 个").arg(localRows));
+
+                    // Every address must equal frameBase + stackOffset, and sit in
+                    // RAM (a wrong frame base would land outside it).
+                    bool addressesOk = true;
+                    QStringList details;
+                    for (const VariableNode &local : compute->locals) {
+                        const quint32 expected = static_cast<quint32>(
+                            static_cast<qint32>(static_cast<qint32>(fakeSp) + baseOfs)
+                            + local.stackOffset);
+                        details << QStringLiteral("%1=%2").arg(local.name, hexAddr(expected));
+                        if (expected < 0x20000000u || expected > 0x20030000u)
+                            addressesOk = false;
+                    }
+                    check(addressesOk,
+                          QStringLiteral("局部变量地址 = 帧基址 + 偏移，且落在 RAM 内"),
+                          details.join(QStringLiteral(" ")));
+                }
+                // Reset the page so the later plot test sees a clean state.
+                page.applyLocals(0, 0, {});
+
+
                 QTreeWidgetItem *adc = nullptr;
                 for (int i = 0; i < tree->topLevelItemCount(); ++i) {
                     if (tree->topLevelItem(i)->text(0) == QLatin1String("g_adc_raw"))
                         adc = tree->topLevelItem(i);
                 }
+                if (adc)
+                    adc->setExpanded(true); // a leaf: expanding must add nothing
                 check(adc != nullptr && adc->text(1) == QLatin1String("uint16_t[4]")
                           && adc->childCount() == 0,
                       QStringLiteral("标量数组显示为 uint16_t[4] 且不分子节点"),
@@ -2566,28 +2682,28 @@ int runSelftest(const Options &options)
 
                 // Plain scalars (addresses from the two-unit fixture; regenerate
                 // with scripts/gen-symbol-fixture.py after touching the source).
-                expect(QStringLiteral("g_temperature"), ScalarKind::Float, 0x08001058u, 4, 1);
-                expect(QStringLiteral("g_counter"), ScalarKind::Signed, 0x08001084u, 4, 1);
-                expect(QStringLiteral("g_voltage"), ScalarKind::Float, 0x08001068u, 8, 1);
-                expect(QStringLiteral("g_shared"), ScalarKind::Unsigned, 0x08001070u, 4, 1);
+                expect(QStringLiteral("g_temperature"), ScalarKind::Float, 0x08001080u, 4, 1);
+                expect(QStringLiteral("g_counter"), ScalarKind::Signed, 0x080010acu, 4, 1);
+                expect(QStringLiteral("g_voltage"), ScalarKind::Float, 0x08001090u, 8, 1);
+                expect(QStringLiteral("g_shared"), ScalarKind::Unsigned, 0x08001098u, 4, 1);
 
                 // An array keeps one entry with its extent, so the UI can fan it out
                 // into one curve per element.
-                expect(QStringLiteral("g_adc_raw"), ScalarKind::Unsigned, 0x0800105Cu, 2, 4);
+                expect(QStringLiteral("g_adc_raw"), ScalarKind::Unsigned, 0x08001084u, 2, 4);
 
                 // Regression: an array OF STRUCTS must expand per element. A reader
                 // that only walks struct->member produced zero rows for ODrive's
                 // 14 KB `controllers` object.
-                expect(QStringLiteral("g_points[0].x"), ScalarKind::Float, 0x08001040u, 4, 1);
-                expect(QStringLiteral("g_points[0].flags"), ScalarKind::Unsigned, 0x08001048u,
+                expect(QStringLiteral("g_points[0].x"), ScalarKind::Float, 0x08001068u, 4, 1);
+                expect(QStringLiteral("g_points[0].flags"), ScalarKind::Unsigned, 0x08001070u,
                        2, 1);
-                expect(QStringLiteral("g_points[1].x"), ScalarKind::Float, 0x0800104cu, 4, 1);
+                expect(QStringLiteral("g_points[1].x"), ScalarKind::Float, 0x08001074u, 4, 1);
 
                 // Regression: the second compilation unit must be read too. A wrong
                 // loop condition stopped after unit 1 and made a 107-unit C++ image
                 // look like it had three variables.
-                expect(QStringLiteral("g_tu_b_counter"), ScalarKind::Signed, 0x08001074u, 4, 1);
-                expect(QStringLiteral("g_tu_b_point.x"), ScalarKind::Float, 0x08001078u, 4, 1);
+                expect(QStringLiteral("g_tu_b_counter"), ScalarKind::Signed, 0x0800109cu, 4, 1);
+                expect(QStringLiteral("g_tu_b_point.x"), ScalarKind::Float, 0x080010a0u, 4, 1);
 
                 // Regression: a global referenced from two units is described twice;
                 // it must appear once, not once per unit.
@@ -2657,7 +2773,7 @@ int runSelftest(const Options &options)
                                            first.children.at(2).name));
                         }
                         // Element 1 must be offset by the struct size, not by 1.
-                        check(points->children.at(1).address == 0x0800104cu,
+                        check(points->children.at(1).address == 0x08001074u,
                               QStringLiteral("第二个元素按结构体大小偏移"),
                               hexAddr(points->children.at(1).address));
                     }
@@ -2688,7 +2804,7 @@ int runSelftest(const Options &options)
                       nested ? QStringLiteral("%1 个").arg(nested->children.size())
                              : QStringLiteral("缺失"));
                 if (nested && nested->children.size() >= 2) {
-                    check(nested->children.at(1).address == 0x0800107cu,
+                    check(nested->children.at(1).address == 0x080010a4u,
                           QStringLiteral("结构体成员地址 = 父地址 + 偏移"),
                           hexAddr(nested->children.at(1).address));
                 }

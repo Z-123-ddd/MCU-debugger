@@ -142,6 +142,39 @@ QVector<VariableNode> SymbolTable::filteredRoots(const QString &needle) const
     return out;
 }
 
+bool SymbolTable::frameBaseAt(quint32 pc, int *reg, qint32 *offset) const
+{
+    const FunctionScope *scope = functionContaining(pc);
+    if (!scope || !reg || !offset)
+        return false;
+    if (scope->frameBaseRegister >= 0) {
+        // armclang style: the frame base is the register itself (usually r13).
+        *reg = scope->frameBaseRegister;
+        *offset = scope->frameBaseOffset;
+        return true;
+    }
+    // GCC style: DW_OP_call_frame_cfa, so evaluate the rule for *this* PC.
+    return DwarfReader::cfaAt(source, pc, reg, offset);
+}
+
+const FunctionScope *SymbolTable::functionContaining(quint32 pc) const
+{
+    if (pc == 0)
+        return nullptr;
+    for (const FunctionScope &scope : functions) {
+        if (scope.contains(pc))
+            return &scope;
+    }
+    // No range match: fall back to the nearest function that starts below the PC,
+    // which is what happens when a function's range was left out of the DWARF.
+    const FunctionScope *nearest = nullptr;
+    for (const FunctionScope &scope : functions) {
+        if (scope.lowPc <= pc && (!nearest || scope.lowPc > nearest->lowPc))
+            nearest = &scope;
+    }
+    return nearest;
+}
+
 QStringList SymbolFile::fileFilters()
 {
     return {QStringLiteral("Keil 符号文件 (*.axf *.elf *.out)"),
@@ -241,18 +274,20 @@ Result<SymbolTable> SymbolFile::load(const QString &path)
 
     SymbolTable table;
     table.sourcePath = path;
+    table.source = elfResult.value;
     table.dwarfVersion = DwarfReader::dwarfVersion(elf);
 
     const QHash<QString, const ElfSymbol *> symbols = indexSymbols(elf.symbols());
 
     // Primary source: DWARF knows names, types, sizes and the nesting.
-    auto dwarfResult = DwarfReader::readVariables(elf);
+    // One pass yields both views: parsing a 4 MB image twice costs ~1 s.
+    auto dwarfResult = DwarfReader::read(elf);
     if (dwarfResult) {
         // Resolve each root's base address, then shift its whole subtree by the
         // same delta. Children were built as `parentBase + memberOffset`, so when
         // the parent base was unknown they hold plain offsets and adding the real
         // base makes them absolute -- which is exactly what the shift does.
-        for (VariableNode &root : dwarfResult.value) {
+        for (VariableNode &root : dwarfResult.value.globals) {
             quint32 oldBase = root.address;
             if (!root.hasAddress || root.address == 0) {
                 // The mangled name is what .symtab uses. Matching the demangled
@@ -319,6 +354,10 @@ Result<SymbolTable> SymbolFile::load(const QString &path)
         // Flatten for sampling / frame layout / the firmware snippet.
         for (const VariableNode &root : table.roots)
             SymbolTable::collectLeaves(root, QString(), &table.variables);
+
+        // Locals travel with their function: their address is frame-relative and
+        // only meaningful while the core sits inside that function.
+        table.functions = dwarfResult.value.functions;
     }
 
     // DWARF absent or unusable: fall back to the symbol table alone. Types become

@@ -46,6 +46,12 @@ struct SymbolTable
     QVector<VariableNode> roots;
     /// Flattened scalar leaves with dotted names (one row per curve source).
     QVector<WatchVariable> variables;
+    /// Functions with locals, so the UI can resolve "which locals exist at this PC".
+    QVector<FunctionScope> functions;
+    /// The image itself, kept so `.debug_frame` can be re-read at any PC (the CFA
+    /// rule is PC-dependent). ElfFile holds implicitly-shared byte arrays, so this
+    /// is a cheap handle rather than a 4 MB copy.
+    ElfFile source;
     int dwarfVersion = 0;
     bool usedSymbolFallback = false; ///< DWARF lacked addresses; .symtab supplied them
 
@@ -57,6 +63,16 @@ struct SymbolTable
     /// Roots pruned to the branches containing a match, so filtering does not
     /// flatten or destroy the hierarchy.
     QVector<VariableNode> filteredRoots(const QString &needle) const;
+
+    /// The function whose code range contains \a pc, or nullptr.
+    /// Frame base for a halt at  pc: `frameBase = registers[reg] + offset`.
+    ///
+    /// armclang states it directly (usually register 13 = SP, offset 0); GCC points
+    /// at the CFA, whose rule changes inside the function, so it is read from
+    /// `.debug_frame` for this exact PC.
+    bool frameBaseAt(quint32 pc, int *reg, qint32 *offset) const;
+
+    const FunctionScope *functionContaining(quint32 pc) const;
 
     /// Collect every samplable leaf under \a node into \a out.
     static void collectLeaves(const VariableNode &node, const QString &prefix,

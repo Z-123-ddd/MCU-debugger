@@ -56,6 +56,11 @@ struct VariableNode
 
     quint32 address = 0;    ///< absolute when hasAddress
     bool hasAddress = false;
+    /// Locals live at "frame pointer + offset", and the frame pointer is only known
+    /// while the core is halted. The offset is kept signed and resolved at display
+    /// time instead of baking in an address that would be stale immediately.
+    qint32 stackOffset = 0;
+    bool stackRelative = false;
     int byteSize = 0;       ///< total bytes this node spans
     int elementSize = 0;    ///< scalar width, or the array's element width
     int elementCount = 1;   ///< array extent (1 for non-arrays)
@@ -96,9 +101,46 @@ struct VariableNode
     }
 
     /// Number of leaf values contained here (arrays multiply out).
+    ///
+    /// Locals count too even though they have no address yet: their value becomes
+    /// readable once the core is halted and the frame base is known.
     int leafCount() const;
     /// Sum of byteSize over the whole subtree's leaves.
     int totalNodeCount() const;
+};
+
+/// One function that has local variables, as DWARF describes it.
+///
+/// Locals cannot be sampled like globals: they only exist while the core is halted
+/// inside the function, and their address is `frameBase + stackOffset`. That is why
+/// they are kept per function together with the PC range that identifies it.
+struct FunctionScope
+{
+    QString name;          ///< qualified: "Axis::run_control"
+    quint32 lowPc = 0;
+    quint32 highPc = 0;    ///< exclusive end
+    int frameBaseRegister = -1; ///< -1 when DWARF did not give a usable register
+    /// Added to the frame-base register to get the CFA. armclang gives 0 (the base
+    /// is the register itself); GCC's DW_OP_call_frame_cfa needs the CFA offset from
+    /// .debug_frame.
+    qint32 frameBaseOffset = 0;
+    /// Offset of the `.debug_frame` FDE covering this function, 0 when none.
+    ///
+    /// Needed when the frame base is `DW_OP_call_frame_cfa`: the CFA rule changes
+    /// *within* a function (the prologue pushes registers), so it has to be
+    /// evaluated at the PC the core is actually halted at, not at the entry.
+    quint32 cfaFde = 0;
+    QVector<VariableNode> locals;
+
+    bool contains(quint32 pc) const { return pc >= lowPc && pc < highPc; }
+    int localCount() const;
+};
+
+/// Everything one DWARF pass produces.
+struct DwarfContents
+{
+    QVector<VariableNode> globals;
+    QVector<FunctionScope> functions;
 };
 
 /// Extract every statically allocated variable from an ELF image's DWARF, as a
@@ -117,7 +159,17 @@ struct VariableNode
 class DwarfReader
 {
 public:
+    /// Globals and per-function locals from a single pass (parsing a 4 MB image
+    /// twice would double a ~1 s cost for no benefit).
+    static Result<DwarfContents> read(const ElfFile &elf);
+
+    /// Convenience wrapper when only the globals are needed.
     static Result<QVector<VariableNode>> readVariables(const ElfFile &elf);
+
+    /// CFA rule at \a pc, read from `.debug_frame`: `CFA = registers[reg] + offset`.
+    /// Returns false when the section is missing (armclang's DW_OP_reg13 style does
+    /// not need it) or the PC is not covered.
+    static bool cfaAt(const ElfFile &elf, quint32 pc, int *reg, qint32 *offset);
 
     /// DWARF version found in `.debug_info` (0 when absent). Diagnostics only.
     static int dwarfVersion(const ElfFile &elf);
