@@ -20,6 +20,40 @@ namespace {
 /// of `<length><identifier>` pieces with `N`/`E` nesting markers and one-letter
 /// qualifier codes skipped. Anything unrecognised yields an empty string rather than
 /// a half-mangled guess.
+/// True when a path belongs to the chip pack / compiler / SDK rather than the user's
+/// project.
+///
+/// Measured on a Keil ARM build, the line table mixes `../MotorControl` (user) with
+/// `C:/Keil_v5/ARM/ARMCLANG/Bin/../include/libcxx` and `../ThirdParty/CMSIS/core`
+/// (vendor). Listing vendor tables such as CMSIS-DSP's `Weights_2048` next to
+/// project variables makes the tree unusable, so they are tagged and hidden by
+/// default.
+bool isSystemDirectory(const QString &text)
+{
+    if (text.isEmpty())
+        return false;
+    static const char *const kMarkers[] = {
+        "armclang", "armcc", "keil_v5", "libcxx", "cmsis", "thirdparty",
+        "arm-none-eabi", "gcc-arm", "sdk",
+    };
+    const QString lower = text.toLower();
+    for (const char *marker : kMarkers) {
+        if (lower.contains(QString::fromLatin1(marker)))
+            return true;
+    }
+    // A bare system header name (no directory) is equally vendor code.
+    static const char *const kSystemHeaders[] = {
+        "stdint.h", "stddef.h", "string.h", "stdlib.h", "math.h", "assert.h",
+        "core_cm4.h", "cmsis_gcc.h", "cmsis_armclang.h", "cmsis_compiler.h",
+        "stm32", "n32h47x.h", "n32g45x.h", "n32g4xx.h", "n32h4xx.h",
+    };
+    for (const char *header : kSystemHeaders) {
+        if (lower == QString::fromLatin1(header))
+            return true;
+    }
+    return false;
+}
+
 QString readableSymbolName(const QString &linkage)
 {
     if (!linkage.startsWith(QLatin1String("_Z")))
@@ -158,6 +192,7 @@ constexpr quint64 TAG_BASE_TYPE = 0x24;
 constexpr quint64 TAG_CONST_TYPE = 0x26;
 constexpr quint64 TAG_VARIABLE = 0x34;
 constexpr quint64 TAG_SUBPROGRAM = 0x2e;
+constexpr quint64 TAG_INLINED_SUBROUTINE = 0x1d;
 constexpr quint64 TAG_FORMAL_PARAMETER = 0x05;
 constexpr quint64 TAG_LEXICAL_BLOCK = 0x0b;
 constexpr quint64 TAG_VOLATILE_TYPE = 0x35;
@@ -411,6 +446,8 @@ struct UnitContext
     /// `.debug_line` file-name table for this unit, index 1 = first entry
     /// (DWARF uses 1-based indices in DW_AT_decl_file).
     QStringList fileNames;
+    /// Directory of each entry in fileNames, parallel to it.
+    QStringList fileDirs;
 };
 
 class Parser
@@ -552,6 +589,8 @@ private:
     QByteArray m_debugLine;
     /// stmt_list offset -> file table, so units sharing a line table parse it once.
     QHash<quint64, QStringList> m_fileTables;
+    /// Same key -> the directory of each file, parallel to m_fileTables.
+    QHash<quint64, QStringList> m_fileDirs;
     QHash<quint32, Cfa> m_cfaCache;
     bool m_le = true;
     QHash<quint64, QHash<quint64, Abbrev>> m_abbrevCache; ///< by abbrev-section offset
@@ -854,8 +893,10 @@ bool Parser::readUnit(Cursor &info, UnitContext *unit, QVector<Die> *dies, quint
             // Offset 0 is a *valid* line table (it is the first one in the section),
             // so the presence of the attribute is what matters, not a non-zero value
             // -- testing `!= 0` silently dropped the first compilation unit's files.
-            if (spec.name == AT_STMT_LIST)
+            if (spec.name == AT_STMT_LIST) {
                 unit->fileNames = fileTableAt(value.u);
+                unit->fileDirs = m_fileDirs.value(value.u);
+            }
         }
         if (!info.ok())
             break;
@@ -1217,6 +1258,13 @@ bool Parser::buildNode(const QString &name, quint64 typeOffset, quint32 address,
             const QString memberName = member.text(AT_NAME);
             if (memberName.isEmpty())
                 continue;
+            // A `static` member is not part of the instance layout: it has its own
+            // storage elsewhere. Placing it at instance+0 made
+            // `Encoder::ports_to_sample` appear at the instance address, which is
+            // wrong (its real address is 0x200002F0). It is listed under the class
+            // type instead, resolved from .symtab.
+            if (member.u(AT_DECLARATION, 0) != 0 || !member.has(AT_DATA_MEMBER_LOCATION))
+                continue;
             // A bitfield member has no byte address of its own; keep it visible but
             // unreadable rather than silently dropping the field.
             const bool bitfield = member.has(AT_BIT_SIZE);
@@ -1317,6 +1365,7 @@ void Parser::emitVariable(const Die &variable, const UnitContext &unit,
     // carry a frame-relative expression or a register location instead.
     quint32 address = 0;
     bool hasAddress = false;
+    bool unresolvedAddress = false;
     if (variable.has(AT_LOCATION)) {
         const FormValue loc = variable.value(AT_LOCATION);
         const QByteArray expr = loc.bytes;
@@ -1333,6 +1382,13 @@ void Parser::emitVariable(const Die &variable, const UnitContext &unit,
             }
             address = value;
             hasAddress = (value != 0);
+            if (value == 0) {
+                // armclang emits DW_OP_addr 0 for symbols the linker resolves; the
+                // address then comes from .symtab, and if that fails too the variable
+                // is still a real declaration. Dropping it made whole arrays
+                // (CMSIS `Weights_*`, `adc_full_scale`) disappear from the panel.
+                unresolvedAddress = true;
+            }
         } else if (!loc.isBlock && loc.u != 0) {
             // DW_FORM_sec_offset: a location list in .debug_loc. On the ODrive
             // firmware most statics land here rather than in an inline DW_OP_addr.
@@ -1363,13 +1419,21 @@ void Parser::emitVariable(const Die &variable, const UnitContext &unit,
     // Which source file this belongs to: DW_AT_decl_file is a 1-based index into the
     // unit's line-table file list.
     const quint64 declFile = variable.u(AT_DECL_FILE, 0);
-    if (declFile > 0 && declFile <= static_cast<quint64>(unit.fileNames.size()))
-        node.sourceFile = unit.fileNames.at(static_cast<int>(declFile) - 1);
+    if (declFile > 0 && declFile <= static_cast<quint64>(unit.fileNames.size())) {
+        const int index = static_cast<int>(declFile) - 1;
+        node.sourceFile = unit.fileNames.at(index);
+        if (index < unit.fileDirs.size())
+            node.sourceDir = unit.fileDirs.at(index);
+        node.systemFile = isSystemDirectory(node.sourceDir)
+            || isSystemDirectory(node.sourceFile);
+    }
     node.linkageName = variable.text(AT_LINKAGE_NAME);
     if (node.linkageName.isEmpty())
         node.linkageName = variable.text(AT_MIPS_LINKAGE_NAME);
-    if (!hasAddress)
+    if (!hasAddress) {
         ++m_variablesNoAddress;
+        node.addressUnresolved = unresolvedAddress;
+    }
     out->append(node);
 }
 
@@ -1545,6 +1609,7 @@ QStringList Parser::fileTableAt(quint64 offset)
 
     // file_names: { name, dir_index (uleb), mtime (uleb), size (uleb) } until an
     // empty name. The index is 1-based, so index N maps to names[N-1].
+    QStringList dirNames;
     while (c.ok() && c.remaining() > 0) {
         const QString name = c.readCString();
         if (name.isEmpty())
@@ -1552,20 +1617,26 @@ QStringList Parser::fileTableAt(quint64 offset)
         const quint64 dirIndex = c.readUleb();
         c.readUleb();                 // mtime
         c.readUleb();                 // length
-        // Keep just the base name: the directory is usually a long absolute build
-        // path, and the variable panel is narrow.
+        // Keep the base name for display (the directory is a long absolute build
+        // path), but remember the directory: it is what tells chip-pack headers from
+        // the user's own files.
         QString display = name;
         const int slash = qMax(display.lastIndexOf(QLatin1Char('/')),
                                display.lastIndexOf(QChar(92)));
         if (slash >= 0)
             display = display.mid(slash + 1);
-        Q_UNUSED(dirIndex);
-        Q_UNUSED(directories);
         names << display;
+        // DWARF dir indices are 1-based into include_directories; 0 means "the CU's
+        // own directory", which counts as user code.
+        QString dir;
+        if (dirIndex > 0 && dirIndex <= static_cast<quint64>(directories.size()))
+            dir = directories.at(static_cast<int>(dirIndex) - 1);
+        dirNames << dir;
     }
 
     Q_UNUSED(headerLength);
     m_fileTables.insert(offset, names);
+    m_fileDirs.insert(offset, dirNames);
     return names;
 }
 
@@ -1964,7 +2035,11 @@ Result<DwarfContents> Parser::run()
                         continue;
                     TypeMember info;
                     info.name = memberName;
-                    info.byteOffset = static_cast<int>(member.s(AT_DATA_MEMBER_LOCATION, 0));
+                    info.isStatic = member.u(AT_DECLARATION, 0) != 0
+                        || !member.has(AT_DATA_MEMBER_LOCATION);
+                    info.byteOffset = info.isStatic
+                        ? 0
+                        : static_cast<int>(member.s(AT_DATA_MEMBER_LOCATION, 0));
                     const TypeInfo memberType = resolveType(member.u(AT_TYPE, 0), 1);
                     info.typeLabel = memberType.display;
                     info.byteSize = memberType.elementSize;
@@ -1980,12 +2055,31 @@ Result<DwarfContents> Parser::run()
 
     // Pass 2: emit variables now that every type is reachable.
     QVector<FunctionScope> functions;
+    // Is this DIE at file scope? Walking the parents is the only reliable answer:
+    // namespaces keep a variable global, a function or block makes it a local.
+    auto isFileScope = [this](const Die &die) {
+        quint64 cursor = die.parent;
+        for (int guard = 0; guard < 32 && cursor != 0; ++guard) {
+            const Die *parent = dieAt(cursor);
+            if (!parent)
+                return true;
+            if (parent->tag == TAG_SUBPROGRAM || parent->tag == TAG_LEXICAL_BLOCK
+                || parent->tag == TAG_INLINED_SUBROUTINE) {
+                return false;
+            }
+            cursor = parent->parent;
+        }
+        return true;
+    };
+
     for (const auto &unit : units) {
         for (const Die &die : unit.second) {
-            if (die.tag == TAG_VARIABLE)
-                emitVariable(die, unit.first, &variables);
-            else if (die.tag == TAG_SUBPROGRAM)
+            if (die.tag == TAG_VARIABLE) {
+                if (isFileScope(die))
+                    emitVariable(die, unit.first, &variables);
+            } else if (die.tag == TAG_SUBPROGRAM) {
                 collectFunction(die, unit.first, &functions);
+            }
         }
     }
 
@@ -2119,6 +2213,11 @@ bool DwarfReader::cfaAt(const ElfFile &elf, quint32 pc, int *reg, qint32 *offset
     *reg = cfa.reg;
     *offset = cfa.offset;
     return true;
+}
+
+bool DwarfReader::isSystemPath(const QString &path)
+{
+    return isSystemDirectory(path);
 }
 
 int FunctionScope::localCount() const

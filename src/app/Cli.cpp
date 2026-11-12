@@ -2692,6 +2692,53 @@ int runSelftest(const Options &options)
                               : QString());
                 }
 
+                // --- inventory completeness ---------------------------------
+                // Reported: whole arrays and objects were missing from the panel.
+                // Two separate causes: `DW_OP_addr: 0` (armclang's marker for a
+                // link-time symbol) used to be dropped, and function locals were
+                // collected as globals and then dropped for having no address.
+                {
+                    // Locals must never appear as top-level rows: `input`/`temp` are
+                    // inside tu_b_compute and belong under it.
+                    int leaked = 0;
+                    for (const VariableNode &root : symPage.roots) {
+                        if (root.name == QLatin1String("input")
+                            || root.name == QLatin1String("temp")
+                            || root.name == QLatin1String("offset")) {
+                            ++leaked;
+                        }
+                    }
+                    check(leaked == 0,
+                          QStringLiteral("函数局部变量不会漏成顶层全局"),
+                          QStringLiteral("%1 个泄漏").arg(leaked));
+
+                    // Every root is either addressable or explicitly marked
+                    // unreadable -- never silently dropped.
+                    int unexplained = 0;
+                    for (const VariableNode &root : symPage.roots) {
+                        const bool ok = (root.hasAddress && root.address != 0)
+                            || root.addressUnresolved || root.incomplete;
+                        if (!ok)
+                            ++unexplained;
+                    }
+                    check(unexplained == 0,
+                          QStringLiteral("每个顶层变量要么有地址，要么标记为不可读"),
+                          QStringLiteral("%1 个未说明").arg(unexplained));
+                }
+
+                // --- chip-pack classification --------------------------------
+                // Vendor tables (CMSIS-DSP `Weights_*`, libc++ internals) must be
+                // recognised so the tree can hide them by default.
+                check(DwarfReader::isSystemPath(
+                          QStringLiteral("C:/Keil_v5/ARM/ARMCLANG/Bin/../include/libcxx")),
+                      QStringLiteral("识别编译器头文件为芯片包"), QString());
+                check(DwarfReader::isSystemPath(QStringLiteral("../ThirdParty/CMSIS/core")),
+                      QStringLiteral("识别 CMSIS 目录为芯片包"), QString());
+                check(!DwarfReader::isSystemPath(QStringLiteral("../MotorControl")),
+                      QStringLiteral("项目目录不算芯片包"), QString());
+                check(!DwarfReader::isSystemPath(QStringLiteral("encoder.cpp")),
+                      QStringLiteral("项目源文件不算芯片包"), QString());
+
                 // Reset the page so the later plot test sees a clean state.
                 page.applyLocals(0, 0, {});
 

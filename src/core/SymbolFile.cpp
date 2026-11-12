@@ -142,6 +142,28 @@ QVector<VariableNode> SymbolTable::filteredRoots(const QString &needle) const
     return out;
 }
 
+bool SymbolTable::isSystemFile(const QString &file) const
+{
+    // The directory was recorded at parse time; fall back to the variable's own flag
+    // when the file is not in any type list.
+    for (const VariableNode &root : roots) {
+        if (root.sourceFile == file)
+            return root.systemFile;
+    }
+    for (const TypeDecl &type : types) {
+        if (type.sourceFile != file)
+            continue;
+        // A type carries no flag of its own; re-derive it from the directory the
+        // parser attached to the variables of that file, or the name heuristics.
+        return DwarfReader::isSystemPath(type.sourceFile);
+    }
+    for (const FunctionScope &scope : functions) {
+        if (scope.sourceFile == file)
+            return DwarfReader::isSystemPath(scope.sourceFile);
+    }
+    return DwarfReader::isSystemPath(file);
+}
+
 QVector<TypeDecl> SymbolTable::typesInFile(const QString &file) const
 {
     QVector<TypeDecl> out;
@@ -319,6 +341,9 @@ Result<SymbolTable> SymbolFile::load(const QString &path)
 
     SymbolTable table;
     table.sourcePath = path;
+    /// Counted across the whole load, reported once at the end.
+    int unresolvedAddresses = 0;
+    int staticMembersResolved = 0;
     table.source = elfResult.value;
     table.dwarfVersion = DwarfReader::dwarfVersion(elf);
 
@@ -347,8 +372,16 @@ Result<SymbolTable> SymbolFile::load(const QString &path)
                     sym = symbols.value(root.name, nullptr);
                 if (!sym)
                     sym = symbols.value(leafName, nullptr);
-                if (!sym)
-                    continue; // no address anywhere: a local or an extern
+                if (!sym) {
+                    // No address anywhere: keep it, flagged, so the panel shows that
+                    // the variable exists but cannot be read (linker-resolved or
+                    // optimised out). It is not selectable -- there is nothing to read.
+                    root.addressUnresolved = true;
+                    root.hasAddress = false;
+                    ++unresolvedAddresses;
+                    table.roots.append(root);
+                    continue;
+                }
                 root.address = sym->value;
                 root.hasAddress = true;
                 root.addressFromSymbol = true;
@@ -364,8 +397,15 @@ Result<SymbolTable> SymbolFile::load(const QString &path)
                         root.elementCount = deduced;
                 }
             }
-            if (root.address < 0x1000)
-                continue; // a mis-parsed location expression: not a real address
+            if (root.address < 0x1000) {
+                // A mis-parsed location expression (or a genuine 0): report it as
+                // unreadable rather than inventing an address or hiding the variable.
+                root.addressUnresolved = true;
+                root.hasAddress = false;
+                ++unresolvedAddresses;
+                table.roots.append(root);
+                continue;
+            }
 
             // Propagate the resolved base down to every child.
             const qint64 delta = static_cast<qint64>(root.address)
@@ -399,6 +439,30 @@ Result<SymbolTable> SymbolFile::load(const QString &path)
         // Flatten for sampling / frame layout / the firmware snippet.
         for (const VariableNode &root : table.roots)
             SymbolTable::collectLeaves(root, QString(), &table.variables);
+
+        // Static class members are ordinary static variables that happen to be
+        // declared inside a class. armclang emits them as DW_TAG_member with
+        // DW_AT_declaration and no linkage name, so the symbol has to be found by
+        // its Itanium shape: `...<len><name>E` (e.g. `_ZN7Encoder15ports_to_sampleE`).
+        for (TypeDecl &type : dwarfResult.value.types) {
+            for (TypeMember &member : type.members) {
+                if (!member.isStatic)
+                    continue;
+                const QString suffix = QStringLiteral("%1%2E")
+                                           .arg(member.name.size())
+                                           .arg(member.name);
+                for (auto it = symbols.constBegin(); it != symbols.constEnd(); ++it) {
+                    if (!it.key().endsWith(suffix))
+                        continue;
+                    member.address = it.value()->value;
+                    member.hasAddress = member.address != 0;
+                    if (member.byteSize <= 0 && it.value()->size > 0)
+                        member.byteSize = static_cast<int>(it.value()->size);
+                    ++staticMembersResolved;
+                    break;
+                }
+            }
+        }
 
         // Locals travel with their function: their address is frame-relative and
         // only meaningful while the core sits inside that function.
@@ -474,8 +538,9 @@ Result<SymbolTable> SymbolFile::load(const QString &path)
             unique.append(variable);
         }
         if (unique.size() != table.variables.size()) {
-            Logger::instance()->debug(QStringLiteral("符号文件: 去重 %1 条（同一变量被多个 CU 重复描述）")
-                                          .arg(table.variables.size() - unique.size()));
+            Logger::instance()->debug(
+                QStringLiteral("符号文件: 去重 %1 条（同一变量被多个 CU 重复描述）")
+                    .arg(table.variables.size() - unique.size()));
         }
         table.variables = unique;
     }
@@ -503,6 +568,15 @@ Result<SymbolTable> SymbolFile::load(const QString &path)
         table.roots = unique;
     }
 
+    if (staticMembersResolved > 0) {
+        Logger::instance()->debug(QStringLiteral("符号文件: 静态类成员已定位 %1 个")
+                                      .arg(staticMembersResolved));
+    }
+    if (unresolvedAddresses > 0) {
+        Logger::instance()->debug(
+            QStringLiteral("符号文件: %1 个变量无地址（链接期解析或已优化），列在树中但不可读")
+                .arg(unresolvedAddresses));
+    }
     Logger::instance()->debug(QStringLiteral("符号文件: %1，DWARF v%2，%3 个变量%4")
                                   .arg(info.fileName())
                                   .arg(table.dwarfVersion)

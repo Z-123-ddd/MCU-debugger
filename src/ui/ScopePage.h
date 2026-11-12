@@ -136,6 +136,11 @@ private:
     /// headers entirely -- `Encoder` is defined in one, so its members were
     /// unreachable from the tree.
     QStringList m_allFiles;
+    /// Static class members as sample points: "Class::member" -> (address, size).
+    QHash<QString, QPair<quint32, int>> m_staticMembers;
+    /// Show chip-pack / compiler-header files (CMSIS, libcxx, ARMCLANG, ThirdParty).
+    /// Off by default: CMSIS-DSP lookup tables would otherwise dominate the tree.
+    bool m_showSystemFiles = false;
     /// The FileGroup backing each top-level row, in row order (created rows must not
     /// dangle, so they are copied here rather than pointing into m_groups).
     QVector<FileGroup> m_fileRowGroups;
@@ -170,6 +175,7 @@ private:
     QLineEdit *m_filterEdit = nullptr;
     QTreeWidget *m_variableTree = nullptr;
     QCheckBox *m_selectAll = nullptr;
+    QCheckBox *m_showSystemCheck = nullptr;
     QPushButton *m_startButton = nullptr;
     QPushButton *m_codeButton = nullptr;
     QPushButton *m_localsButton = nullptr;

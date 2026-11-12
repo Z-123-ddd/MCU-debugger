@@ -67,8 +67,20 @@ ScopePage::ScopePage(QWidget *parent)
     m_filterEdit = new QLineEdit(listGroup);
     m_filterEdit->setPlaceholderText(QStringLiteral("按名字 / 类型 / 地址过滤，例如 g_adc 或 float"));
     filterRow->addWidget(m_filterEdit, 1);
+    m_showSystemCheck = new QCheckBox(QStringLiteral("含芯片包"), listGroup);
+    m_showSystemCheck->setToolTip(
+        QStringLiteral("勾选后同时显示芯片包 / 编译器头文件里的变量\n"
+                       "（CMSIS 查找表、libc++ 内部量等）。默认隐藏，"
+                       "否则它们会淹没项目自己的变量。"));
+    m_showSystemCheck->setChecked(m_showSystemFiles);
+    filterRow->addWidget(m_showSystemCheck);
     m_selectAll = new QCheckBox(QStringLiteral("全选"), listGroup);
     filterRow->addWidget(m_selectAll);
+    connect(m_showSystemCheck, &QCheckBox::checkStateChanged, this,
+            [this](Qt::CheckState state) {
+                m_showSystemFiles = (state == Qt::Checked);
+                rebuildVariableList();
+            });
     listLayout->addLayout(filterRow);
 
     m_variableTree = new QTreeWidget(listGroup);
@@ -478,6 +490,44 @@ void ScopePage::populateChildren(QTreeWidgetItem *item)
             // Members are created up front: there are at most 512 and they are
             // plain rows, so lazily loading them would cost more than it saves.
             for (const TypeMember &member : type.members) {
+                if (member.isStatic) {
+                    // A static member is a real variable with its own address, so it
+                    // is selectable like any global -- which is what "all static
+                    // variables" means for something like Encoder::ports_to_sample.
+                    auto *staticItem = new QTreeWidgetItem(typeItem);
+                    staticItem->setText(0, member.name);
+                    staticItem->setText(1, QStringLiteral("static %1").arg(member.typeLabel));
+                    staticItem->setText(2, member.hasAddress ? hexAddr(member.address)
+                                                             : QStringLiteral("?"));
+                    staticItem->setText(3, member.byteSize > 0
+                                             ? QStringLiteral("%1 B").arg(member.byteSize)
+                                             : QString());
+                    staticItem->setData(0, Qt::UserRole,
+                                        QStringLiteral("%1::%2").arg(type.name, member.name));
+                    staticItem->setData(0, Qt::UserRole + 2, false);
+                    if (member.hasAddress) {
+                        staticItem->setFlags(staticItem->flags() | Qt::ItemIsUserCheckable);
+                        staticItem->setCheckState(
+                            0, m_selectedLeaves.contains(
+                                   QStringLiteral("%1::%2").arg(type.name, member.name))
+                                   ? Qt::Checked
+                                   : Qt::Unchecked);
+                        // Register it so ticking it can be turned into a sample point.
+                        m_staticMembers.insert(
+                            QStringLiteral("%1::%2").arg(type.name, member.name),
+                            qMakePair(member.address, member.byteSize));
+                    } else {
+                        staticItem->setFlags(Qt::ItemIsEnabled);
+                    }
+                    staticItem->setToolTip(
+                        0, QStringLiteral("%1::%2  (static)\n类型: %3\n%4\n"
+                                          "静态成员有自己的地址，可像全局变量一样采样")
+                               .arg(type.name, member.name, member.typeLabel,
+                                    member.hasAddress
+                                        ? QStringLiteral("地址: %1").arg(hexAddr(member.address))
+                                        : QStringLiteral("地址未知（链接期解析或已优化）")));
+                    continue;
+                }
                 auto *memberItem = new QTreeWidgetItem(typeItem);
                 memberItem->setText(0, member.name);
                 memberItem->setText(1, member.typeLabel);
@@ -617,6 +667,9 @@ void ScopePage::rebuildVariableList()
              ++it) {
             files.insert(it.key());
         }
+        // Types always contribute their file: `encoder.hpp` defines `Encoder`, and a
+        // user file must never disappear just because the header holds no variables.
+        // Whether the file is vendor code is decided by the system filter below.
         for (const TypeDecl &type : m_symbols.types) {
             files.insert(type.sourceFile.isEmpty() ? QStringLiteral("(未知文件)")
                                                    : type.sourceFile);
@@ -656,6 +709,18 @@ void ScopePage::rebuildVariableList()
     // Top level is one row per source file; the variables in it are created when the
     // file is opened. A flat 637-row list of names was unusable; file -> variable is
     // how the user knows where to look.
+    // Chip-pack / compiler headers are hidden by default: they contain vendor tables
+    // (CMSIS `Weights_*`, libc++ internals) that are not project state.
+    if (!m_showSystemFiles) {
+        QStringList userFiles;
+        for (const QString &file : m_allFiles) {
+            if (m_symbols.isSystemFile(file))
+                continue;
+            userFiles << file;
+        }
+        m_allFiles = userFiles;
+    }
+
     for (const QString &file : m_allFiles) {
         // Find the variables group for this file (may be absent for a header).
         FileGroup empty;

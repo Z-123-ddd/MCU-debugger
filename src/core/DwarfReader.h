@@ -58,6 +58,13 @@ struct VariableNode
 
     quint32 address = 0;    ///< absolute when hasAddress
     bool hasAddress = false;
+    /// This node is a `static` class member: it has its own address, not an offset
+    /// inside the enclosing instance.
+    bool staticMember = false;
+    /// A file-scope variable the compiler recorded with no usable location (armclang
+    /// writes `DW_OP_addr: 0` for link-time symbols). It is still a real declaration,
+    /// so it is listed -- but it cannot be read, and saying so beats hiding it.
+    bool addressUnresolved = false;
     /// Locals live at "frame pointer + offset", and the frame pointer is only known
     /// while the core is halted. The offset is kept signed and resolved at display
     /// time instead of baking in an address that would be stale immediately.
@@ -81,6 +88,12 @@ struct VariableNode
     /// Empty when the compiler emitted no line table (or DWARF v5, whose table
     /// format this reader does not decode).
     QString sourceFile;
+    /// Directory the file came from, as recorded in the line table. Used to tell the
+    /// user's own code from chip-pack/compiler headers (`CMSIS`, `libcxx`,
+    /// `ARMCLANG`, `ThirdParty`), so vendor tables do not clutter the tree.
+    QString sourceDir;
+    /// True when the source lives in a chip-pack / compiler / SDK directory.
+    bool systemFile = false;
     QString linkageName;    ///< mangled name, roots only (pairs with .symtab)
     bool addressFromSymbol = false;
     /// Set when the layout could not be read (a forward declaration, or the
@@ -136,6 +149,15 @@ struct TypeMember
     QString typeLabel;
     int byteOffset = 0;
     int byteSize = 0;
+    /// A `static` member (DW_AT_declaration / no data_member_location).
+    ///
+    /// It has its own address rather than an offset inside an instance, so it is a
+    /// real static variable: `Encoder::ports_to_sample` lives at 0x200002F0 and is
+    /// perfectly readable, while the instance it is "declared in" does not own it.
+    bool isStatic = false;
+    /// Resolved address of a static member (from .symtab); 0 when unknown.
+    quint32 address = 0;
+    bool hasAddress = false;
 };
 
 /// A class/struct/union *definition* and its members.
@@ -237,6 +259,10 @@ public:
     static LocalLoc localAt(const ElfFile &elf, quint32 pc, quint32 listOffset);
 
     static bool cfaAt(const ElfFile &elf, quint32 pc, int *reg, qint32 *offset);
+
+    /// True when a path belongs to the chip pack / compiler / SDK rather than the
+    /// project. Public because the UI needs the same rule when filtering files.
+    static bool isSystemPath(const QString &path);
 
     /// DWARF version found in `.debug_info` (0 when absent). Diagnostics only.
     static int dwarfVersion(const ElfFile &elf);

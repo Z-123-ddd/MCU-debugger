@@ -314,6 +314,42 @@ int runBenchScope(const Options &options)
         }
         out(QStringLiteral("    类成员 index_found_: %1")
                 .arg(memberFound ? memberWhere : QStringLiteral("未找到")));
+
+        // A `static` class member is a real variable with its own address; it must
+        // not be shown at the instance base.
+        QString staticWhere;
+        for (int i = 0; i < tree->topLevelItemCount() && staticWhere.isEmpty(); ++i) {
+            QTreeWidgetItem *fileRow = tree->topLevelItem(i);
+            fileRow->setExpanded(true);
+            page.expandForTest(fileRow);
+            for (int j = 0; j < fileRow->childCount(); ++j) {
+                QTreeWidgetItem *typeRow = fileRow->child(j);
+                if (typeRow->text(0) != QLatin1String("Encoder"))
+                    continue;
+                for (int k = 0; k < typeRow->childCount(); ++k) {
+                    QTreeWidgetItem *m = typeRow->child(k);
+                    if (m->text(0) != QLatin1String("ports_to_sample"))
+                        continue;
+                    staticWhere = QStringLiteral("%1 → Encoder → ports_to_sample @ %2 (%3)")
+                                      .arg(fileRow->text(0), m->text(2), m->text(1));
+                    break;
+                }
+            }
+        }
+        out(QStringLiteral("    静态成员 ports_to_sample: %1")
+                .arg(staticWhere.isEmpty() ? QStringLiteral("未找到") : staticWhere));
+
+        // Vendor files must be hidden unless the user asks for them.
+        bool vendorVisible = false;
+        for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+            const QString row = tree->topLevelItem(i)->text(0);
+            if (row.startsWith(QLatin1String("arm_")) || row.contains(QLatin1String("cmsis"))
+                || row.contains(QLatin1String("libcxx"))) {
+                vendorVisible = true;
+            }
+        }
+        out(QStringLiteral("    芯片包文件默认隐藏: %1")
+                .arg(vendorVisible ? QStringLiteral("否（有泄漏）") : QStringLiteral("是")));
     }
 
     // Filtering: it used to rebuild the whole tree per keystroke.

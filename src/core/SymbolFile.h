@@ -91,6 +91,10 @@ struct SymbolTable
     /// Types defined in  file (empty name = the unknown-file bucket).
     QVector<TypeDecl> typesInFile(const QString &file) const;
 
+    /// True when  file belongs to the chip pack / compiler / SDK rather than the
+    /// project (CMSIS, libcxx, ARMCLANG, ThirdParty, bare system headers).
+    bool isSystemFile(const QString &file) const;
+
     /// Variables grouped by the source file they were declared in (name order,
     /// address order inside each). Entries without file information land in a
     /// trailing "(未知文件)" group.

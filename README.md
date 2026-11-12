@@ -966,6 +966,47 @@ error_mapping_table_axis[1].internal_error_code   0x08038570
 
 最终：**3 个 → 2450 个变量**，地址与 `arm-none-eabi-nm` 逐一核对一致。
 
+#### 变量清单的完整性：三类漏收集 + 一类噪音
+
+面板要回答的是「固件里有哪些静态变量 / 数组 / 对象」，所以漏一个都算错。实测对
+BX8115.axf 做了一次对照（DWARF 的真实清单 vs 面板里的树），修掉四个问题：
+
+| 问题 | 后果 | 修法 |
+|---|---|---|
+| `DW_OP_addr: 0` 被当成"没地址"丢弃 | `Weights_128`（`float32_t[256]`）、`adc_full_scale`、`SaveState` 整类消失 | 保留并标记「不可读」 |
+| 函数局部变量被当成全局收集 | `count_fwd`/`error_fwd` 出现在顶层；3536 个因无地址被丢弃 | 按父链判定作用域，局部只挂到函数下 |
+| 静态类成员被当成实例成员 | `Encoder::ports_to_sample` 显示在实例基址 `0x20009CD0` | 识别 `DW_AT_declaration`，按符号名独立寻址 |
+| 芯片包文件混在树里 | CMSIS 查找表、libc++ 内部量淹没项目变量 | 按 line table 的**目录**分类，默认隐藏 |
+
+**`DW_OP_addr: 0`** 是 armclang 对 link-time 解析符号的写法——地址由链接器填，DWARF
+里写 0。原来的 `hasAddress = (value != 0)` 把它当失败，再查 `.symtab` 也查不到（那些
+变量确实没进镜像，或被优化掉了）就默默删掉。现在保留、标「无地址」，不可勾选。
+
+**作用域**靠父链判定：往上走，遇到 `DW_TAG_subprogram` / `DW_TAG_lexical_block` 就是
+局部，遇到 `DW_TAG_namespace` 仍是全局。之前没有这个判断，所有 depth 的 `DW_TAG_variable`
+都变成根。
+
+**静态成员**：`DW_TAG_member` 带 `DW_AT_declaration: 1`、没有 `DW_AT_data_member_location`
+的就是静态成员。它有独立存储（`ports_to_sample` 在 `0x200002F0`，12 字节 = 3 个指针），
+不该按 `实例+偏移` 算。armclang 不给它 `DW_AT_linkage_name`，所以按 Itanium 形状
+（`...7Encoder15ports_to_sampleE`）去 `.symtab` 里找。找到后它是**可勾选的真实变量**。
+
+**芯片包判定**看 line table 的目录字段（之前只保留文件名，把目录丢了）：
+
+```
+../MotorControl                                    ← 项目
+C:/Keil_v5/ARM/ARMCLANG/Bin/../include/libcxx      ← 编译器
+../ThirdParty/CMSIS/core                           ← 芯片包
+```
+
+含 `armclang` / `armcc` / `keil_v5` / `libcxx` / `cmsis` / `thirdparty` / `arm-none-eabi`
+等标记的目录算芯片包。面板上有「含芯片包」勾选框，默认关闭。
+
+**最终对照结果**：DWARF 里 746 个文件作用域变量，树里 745 个。差的 1 个是命名空间前缀
+差异（`fibre::embedded_json` vs `embedded_json`）。另有 17 个**没有出现在树里也不需要
+出现**——它们是 `DW_AT_const_value`（`constexpr` / `PROTOCOL_VERSION` 这类），编译期
+常量，没有 RAM 存储，永远不变，列进变量树只会是噪音。
+
 #### 变量有三种，不是一种：全局 / 局部 / 类成员
 
 这是一个反复踩到的问题，值得写清楚——报「这个变量没有」的，多数不是解析失败，而是
