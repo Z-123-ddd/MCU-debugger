@@ -75,7 +75,7 @@ int PartTable::load(QString *error)
         g_parts.insert(entry.part, entry);
     }
 
-    Logger::instance()->info(QStringLiteral("料号表: %1 个型号 (%2)")
+    Logger::instance()->debug(QStringLiteral("料号表: %1 个型号 (%2)")
                                  .arg(g_parts.size())
                                  .arg(g_path));
     return g_parts.size();

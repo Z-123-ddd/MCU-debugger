@@ -11,8 +11,8 @@
 #include "core/PartTable.h"
 #include "core/PeripheralRoles.h"
 #include "core/ProbeController.h"
+#include "core/JLinkDllApi.h"
 #include "core/JLinkRunner.h"
-#include "core/ProbeRsRunner.h"
 #include "core/RegisterSession.h"
 #include "core/ResourcePaths.h"
 #include "core/SvdLibrary.h"
@@ -181,6 +181,7 @@ void MainWindow::createUi()
 
     auto *viewMenu = menuBar()->addMenu(QStringLiteral("视图(&V)"));
     viewMenu->setObjectName(QStringLiteral("ViewMenu"));
+    m_viewMenu = viewMenu;
     auto *themeLight = viewMenu->addAction(QStringLiteral("浅色主题"));
     connect(themeLight, &QAction::triggered, this, [this] {
         AppSettings::setTheme(QStringLiteral("light"));
@@ -199,7 +200,7 @@ void MainWindow::createUi()
     connect(aboutAction, &QAction::triggered, this, [this] {
         QMessageBox::about(this, QStringLiteral("关于"),
                            QStringLiteral("<b>%1</b> %2<br/>MCU 寄存器级 UI 调试器<br/><br/>"
-                                          "后端: probe-rs CLI<br/>描述: CMSIS-SVD<br/>Qt %3")
+                                          "后端: J-Link DLL<br/>描述: CMSIS-SVD<br/>Qt %3")
                                .arg(QStringLiteral(APP_NAME), QStringLiteral(APP_VERSION),
                                     QString::fromLatin1(qVersion())));
     });
@@ -239,9 +240,13 @@ void MainWindow::createToolBar()
 
     m_toolBar->addWidget(new QLabel(QStringLiteral(" 后端 "), this));
     m_backendBox = new QComboBox(this);
-    m_backendBox->addItem(QStringLiteral("J-Link"), QStringLiteral("jlink"));
-    m_backendBox->addItem(QStringLiteral("probe-rs"), QStringLiteral("probe-rs"));
-    m_backendBox->setCurrentIndex(AppSettings::probeBackend() == QLatin1String("probe-rs") ? 1 : 0);
+    // The DLL backend is listed first because it is the default: same target access
+    // as the GDB server, plus HSS live sampling.
+    m_backendBox->addItem(QStringLiteral("J-Link DLL"), QStringLiteral("jlink-dll"));
+    m_backendBox->addItem(QStringLiteral("J-Link GDB"), QStringLiteral("jlink"));
+    const QString savedBackend = AppSettings::probeBackend();
+    int backendIndex = m_backendBox->findData(savedBackend);
+    m_backendBox->setCurrentIndex(backendIndex < 0 ? 0 : backendIndex);
     m_toolBar->addWidget(m_backendBox);
 
     m_toolBar->addWidget(new QLabel(QStringLiteral(" 接口 "), this));
@@ -298,13 +303,22 @@ void MainWindow::createToolBar()
 
 void MainWindow::createDocks()
 {
-    auto *treeDock = new QDockWidget(QStringLiteral("外设"), this);
-    treeDock->setObjectName(QStringLiteral("PeripheralDock"));
-    treeDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
-    treeDock->setMinimumWidth(120);
-    m_tree = new PeripheralTree(treeDock);
-    treeDock->setWidget(m_tree);
-    addDockWidget(Qt::LeftDockWidgetArea, treeDock);
+    // The left dock is a single window containing a tab widget, exactly like the
+    // central pages: the peripheral tree and the variable selector are two tabs you
+    // switch by clicking, not two panes competing for width. The dock itself keeps
+    // Movable/Floatable so it can still be dragged out.
+    m_leftDock = new QDockWidget(QStringLiteral("外设 / 变量"), this);
+    m_leftDock->setObjectName(QStringLiteral("PeripheralDock"));
+    m_leftDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable
+                            | QDockWidget::DockWidgetClosable);
+    m_leftDock->setMinimumWidth(260);
+
+    m_leftTabs = new QTabWidget(m_leftDock);
+    m_leftTabs->setDocumentMode(true);
+    m_tree = new PeripheralTree(m_leftTabs);
+    m_leftTabs->addTab(m_tree, QStringLiteral("外设"));
+    m_leftDock->setWidget(m_leftTabs);
+    addDockWidget(Qt::LeftDockWidgetArea, m_leftDock);
     connect(m_tree, &PeripheralTree::peripheralSelected, this, &MainWindow::onPeripheralSelected);
     connect(m_tree, &PeripheralTree::pinnedChanged, this, &MainWindow::onPinnedChanged);
 
@@ -333,7 +347,7 @@ void MainWindow::createDocks()
 
     // Give the three areas a usable initial split; the user can drag the
     // separators freely afterwards (no fixed sizes are enforced anywhere).
-    resizeDocks({treeDock, inspectorDock}, {260, 380}, Qt::Horizontal);
+    resizeDocks({m_leftDock, inspectorDock}, {300, 380}, Qt::Horizontal);
     resizeDocks({logDock}, {160}, Qt::Vertical);
 }
 
@@ -386,36 +400,33 @@ void MainWindow::createCentralPages()
 
     m_tabs->addTab(registerPage, QStringLiteral("寄存器全景"));
 
-    // --- variable scope (Keil .axf + RTT) -----------------------------------
+
+    // --- variable scope (Keil .axf -> snapshot / HSS live curves) ------------
     // Appended last so the hardcoded setCurrentIndex(2) that jumps to the register
     // tab keeps pointing at the same page.
     m_scopePage = new ScopePage(m_tabs);
-    m_tabs->addTab(m_scopePage, QStringLiteral("变量曲线 (J-Scope)"));
+    m_tabs->addTab(m_scopePage, QStringLiteral("变量曲线"));
     m_scopePage->setProbe(m_probe.get());
 
-    // Variable selection lives in its own dock rather than inside the tab: it is the
-    // tallest thing on the page and would otherwise squeeze the waveform. A dock can
-    // be dragged, floated into a second monitor, or hidden while plotting.
-    m_variableDock = new QDockWidget(QStringLiteral("变量选择"), this);
-    m_variableDock->setObjectName(QStringLiteral("VariableDock"));
-    m_variableDock->setFeatures(QDockWidget::DockWidgetMovable
-                                | QDockWidget::DockWidgetFloatable
-                                | QDockWidget::DockWidgetClosable);
-    m_variableDock->setMinimumWidth(260);
-    m_variableDock->setWidget(m_scopePage->variableSelector());
-    addDockWidget(Qt::LeftDockWidgetArea, m_variableDock);
-    // Show it as a tab next to the peripheral tree, so opening it does not halve the
-    // width available to the middle column.
-    if (auto *treeDock = findChild<QDockWidget *>(QStringLiteral("PeripheralDock")))
-        tabifyDockWidget(treeDock, m_variableDock);
-    m_variableDock->hide(); // nothing to select before a symbol file is imported
-    if (auto *viewMenu = findChild<QMenu *>(QStringLiteral("ViewMenu")))
-        viewMenu->addAction(m_variableDock->toggleViewAction());
-    connect(m_scopePage, &ScopePage::symbolsImported, this, [this] {
-        // First import: reveal the selector, since that is the next thing to do.
-        if (m_variableDock)
-            m_variableDock->show();
-    });
+    // The picker lives in its own dock rather than inside the tab: it is the tallest
+    // thing here, and a dock can be dragged, floated onto a second monitor, or hidden
+    // while a live capture is running.
+    // Second tab of the same left window.
+    m_leftTabs->addTab(m_scopePage->variableSelector(), QStringLiteral("变量选择"));
+    if (m_viewMenu)
+        m_viewMenu->addAction(m_leftDock->toggleViewAction());
+    connect(m_scopePage, &ScopePage::symbolsImported, this,
+            [this](const mrd::SymbolTable &symbols) {
+                // Bring the selector tab to the front: after importing a symbol file
+                // picking variables is the next step. The peripheral tree stays
+                // reachable in the same tab strip.
+                if (m_leftTabs) {
+                    // Selecting the tab is the whole "show the selector" action now.
+                    m_leftTabs->setCurrentIndex(1);
+                    if (m_leftDock)
+                        m_leftDock->show();
+                }
+            });
     connect(m_scopePage, &ScopePage::statusMessage, this, [this](const QString &text) {
         statusBar()->showMessage(text, 5000);
     });
@@ -725,14 +736,14 @@ void MainWindow::onConnectClicked()
     AppSettings::setSpeedKHz(m_speedBox->value());
 
     QString binary;
-    if (backend == QLatin1String("probe-rs")) {
-        binary = ProbeRsRunner::locate(AppSettings::probeRsPath());
-        if (binary.isEmpty()) {
+    if (backend == QLatin1String("jlink-dll")) {
+        // No helper executable: the DLL is loaded in-process. Fail here on a clear
+        // message rather than half-way through the session.
+        if (!JLinkDllApi::libraryAvailable()) {
             QMessageBox::warning(
-                this, QStringLiteral("缺少 probe-rs"),
-                QStringLiteral("未找到 probe-rs 可执行文件。\n\n"
-                               "请运行:\n  powershell -ExecutionPolicy Bypass -File scripts\\fetch-probe-rs.ps1\n\n"
-                               "或改用 J-Link 后端（使用已安装的 SEGGER 软件，无需换驱动）。"));
+                this, QStringLiteral("缺少 J-Link DLL"),
+                QStringLiteral("未找到 JLink_x64.dll / JLinkARM.dll。\n\n"
+                               "请安装 SEGGER J-Link 软件包。"));
             return;
         }
     } else {
@@ -760,8 +771,6 @@ void MainWindow::onDisconnectClicked()
     // The right-hand inspector kept the last register on screen after a
     // disconnect, which read as if it were still live.
     parkDeviceViews(QStringLiteral("已断开连接。重新连接后将自动识别并渲染引脚布局"));
-    if (m_scopePage)
-        m_scopePage->detachTarget();
     statusBar()->showMessage(QStringLiteral("已断开"));
 }
 
@@ -1033,15 +1042,6 @@ void MainWindow::onIdentifyFinished(bool ok, const QString &error, const Identif
 
     // The SVD only describes the family; ask the target which peripherals it really
     // has (clock gates + bus decode) so the tree reflects this exact part.
-    // Give the scope page the RAM window so it can locate the RTT control block
-    // (the ELF's _SEGGER_RTT symbol is preferred when a symbol file is loaded).
-    if (m_scopePage) {
-        const quint32 ramStart = 0x20000000u;
-        const quint32 ramSize = result.ramBytes > 0 ? quint32(result.ramBytes)
-                                                    : 128u * 1024u;
-        m_scopePage->attachTarget(ramStart, ramSize);
-    }
-
     if (!m_svdPath.isEmpty()) {
         statusBar()->showMessage(QStringLiteral("正在读取设备树..."));
         m_probe->requestScanDeviceTree(m_svdPath);
@@ -1377,7 +1377,7 @@ void MainWindow::onWriteFinished(quint32 address, bool ok, const QString &error)
         return;
     }
     Logger::instance()->info(QStringLiteral("写入 %1 成功").arg(hexAddr(address)));
-    // probe-rs leaves the core halted after a write; refresh immediately.
+    // A write can leave the core halted; refresh immediately.
     const SvdPeripheral *peripheral = currentPeripheral();
     if (peripheral && m_session->connected())
         m_session->requestPeripheralRead(*peripheral);
@@ -1432,6 +1432,7 @@ void MainWindow::resetReadFailureState()
 
 void MainWindow::onCpuStateChanged(bool halted, bool ok, const QString &error)
 {
+
     m_cpuHalted = ok && halted;
     if (ok)
         updateCpuStateLabel();

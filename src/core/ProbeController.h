@@ -2,10 +2,8 @@
 
 #include "core/DeviceIdentifier.h"
 #include "core/IProbe.h"
-#include "core/RttClient.h"
 #include "core/DeviceTreeScanner.h"
 #include "core/JLinkGdbProbe.h"
-#include "core/ProbeRsProbe.h"
 #include "core/SvdLibrary.h"
 
 #include <QByteArray>
@@ -16,7 +14,7 @@
 
 namespace mrd {
 
-/// Lives in the probe thread: every `probe-rs` process is spawned and awaited
+/// Lives in the probe thread: the DLL session and every helper process are owned
 /// here so the UI never blocks on a multi-second attach.
 class ProbeWorker : public QObject
 {
@@ -40,12 +38,15 @@ public:
     void doSelectChip(const QString &chipName);
     void doExec(const QString &command);
     void doListProbes();
-    /// Locate the SEGGER RTT control block on the worker thread.
-    void doFindRtt(quint32 hintAddress, quint32 ramStart, quint32 ramSize);
-    /// Read the core registers (for resolving locals of the halted function).
-    void doReadRegisters();
+    /// Insert or clear a software breakpoint on the worker thread.
     void doValidateChip(const QString &chipName);
     void doScanDeviceTree(const QString &svdPath);
+    /// Start/stop/drain HSS. These must run on the worker thread: the DLL session
+    /// lives there, and HSS is stateful (start once, then read repeatedly), so the UI
+    /// cannot drive it by pretending each call is an independent request.
+    void doHssStart(const QVector<QPair<quint32, int>> &blocks, int periodUs);
+    void doHssRead(quint64 requestId, int maxSamples, int sampleBytes);
+    void doHssStop();
 
 signals:
     void opened(bool ok, const QString &error, const mrd::ProbeInfo &info);
@@ -65,10 +66,18 @@ signals:
     void probesListed(const QStringList &serials, const QString &error);
     void chipValidated(const QString &chipName, bool ok, const QString &message);
     void deviceTreeScanned(const QVector<mrd::PeripheralStatus> &statuses, const QString &error);
-    void rttLocated(const mrd::RttControlBlock &block, const QString &error);
-    void registersRead(const QVector<quint32> &registers, bool ok, const QString &error);
+    /// HSS outcome from the worker thread (the UI cannot reach the probe object).
+    void hssStarted(bool ok, const QString &error);
+    void hssReadFinished(quint64 requestId, const QByteArray &records, int samples,
+                         int sampleBytes, bool ok, const QString &error);
+    void hssFailed(const QString &error);
+    /// Whether the current session can do HSS; published when the probe opens.
+    void hssAvailability(bool supported);
 
 private:
+    /// Set while opening: the UI asks this instead of the probe, which lives here.
+    bool m_supportsHss = false;
+
     SvdLibrary &library();
     QString probeSerial() const;
     QString m_backend = QStringLiteral("jlink");
@@ -93,6 +102,12 @@ public:
     QString backend() const { return m_backend; }
     quint64 nextRequestId() { return ++m_requestId; }
 
+    /// True when the active backend can do HSS background sampling.
+    ///
+    /// The probe object lives on the worker thread and cannot be queried from the UI,
+    /// so the worker publishes this flag when it opens the session.
+    bool supportsHss() const { return m_supportsHss; }
+
 public slots:
     void requestOpen(const QString &backend, const QString &binaryPath, const QString &interfaceName,
                      int speedKHz);
@@ -111,10 +126,11 @@ public slots:
     void requestValidateChip(const QString &chipName);
     /// Walk every SVD peripheral through the probe to build the real device tree.
     void requestScanDeviceTree(const QString &svdPath);
-    /// Find the RTT control block (worker thread; result via rttLocated).
-    void requestFindRtt(quint32 hintAddress, quint32 ramStart, quint32 ramSize);
-    /// Read the core registers on the worker thread (result via registersRead).
-    void requestReadRegisters();
+
+    void requestHssStart(const QVector<QPair<quint32, int>> &blocks, int periodUs);
+    void requestHssRead(quint64 requestId, int maxSamples, int sampleBytes);
+    void requestHssStop();
+    /// Insert ( insert true) or clear a breakpoint; result via breakpointChanged.
 
 signals:
     void opened(bool ok, const QString &error, const mrd::ProbeInfo &info);
@@ -130,9 +146,11 @@ signals:
     void probesListed(const QStringList &serials, const QString &error);
     void chipValidated(const QString &chipName, bool ok, const QString &message);
     void deviceTreeScanned(const QVector<mrd::PeripheralStatus> &statuses, const QString &error);
-    /// Result of requestFindRtt: the control block, or an empty one plus an error.
-    void rttLocated(const mrd::RttControlBlock &block, const QString &error);
-    void registersRead(const QVector<quint32> &registers, bool ok, const QString &error);
+    /// Re-emitted from the worker so the UI can follow the HSS lifecycle.
+    void hssStarted(bool ok, const QString &error);
+    void hssReadFinished(quint64 requestId, const QByteArray &records, int samples,
+                         int sampleBytes, bool ok, const QString &error);
+    void hssFailed(const QString &error);
 
 private:
     template <typename Fn>
@@ -143,6 +161,7 @@ private:
     ProbeInfo m_info;
     QString m_backend;
     quint64 m_requestId = 0;
+    bool m_supportsHss = false;
 };
 
 } // namespace mrd

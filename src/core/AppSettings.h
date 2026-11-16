@@ -18,15 +18,16 @@ public:
     static void setLastSvdPath(const QString &path);
 
     // --- probe backend ------------------------------------------------------
-    /// "jlink" (JLink.exe, official driver) or "probe-rs".
+    /// "jlink" (GDB server) or "jlink-dll" (DLL directly, needed for HSS).
     static QString probeBackend();
     static void setProbeBackend(const QString &backend);
 
     static QString jlinkPath(); ///< empty = auto-detect the SEGGER install
+    /// Explicit path to JLink_x64.dll / JLinkARM.dll; empty = auto-detect.
+    static QString jlinkDllPath();
+    static void setJlinkDllPath(const QString &path);
     static void setJlinkPath(const QString &path);
 
-    static QString probeRsPath(); ///< empty = auto-detect tools/probe-rs
-    static void setProbeRsPath(const QString &path);
 
     static QString probeSelector(); ///< optional "vid:pid:serial" / serial number
     static void setProbeSelector(const QString &selector);

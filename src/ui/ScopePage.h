@@ -1,6 +1,7 @@
 #pragma once
 
-#include "core/SampleCollector.h"
+#include "core/HssSampler.h"
+#include "core/SnapshotReader.h"
 #include "core/SymbolFile.h"
 
 #include <QHash>
@@ -9,27 +10,26 @@
 #include <QWidget>
 
 class QCheckBox;
-class QComboBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
+class QDoubleSpinBox;
+class QSpinBox;
 class QTreeWidget;
 class QTreeWidgetItem;
 
 namespace mrd {
 
-class PlotWidget;
+class GlPlotWidget;
 class ProbeController;
+class SampleHistory;
 
-/// Tab that turns a Keil `.axf` into a live waveform.
+/// Variable picker plus the two ways to read target memory.
 ///
-/// Flow: import the ELF -> every statically allocated variable appears with its
-/// type and address -> tick the ones to plot -> the firmware sends them over RTT in
-/// the generated frame -> the plot updates from the collector's ring buffer.
-///
-/// Nothing here polls for values on a timer. The collector issues its next read as
-/// soon as the previous one returns, and this page only repaints when a batch has
-/// already landed, so a heavy repaint costs no samples.
+/// Everything happens in-process: the ELF is parsed here to make thousands of
+/// variables navigable, a snapshot reads memory on demand, and HSS background
+/// sampling streams live curves. No external visualizer is launched and no project
+/// file is written, so the tool has no second program to keep in sync.
 class ScopePage : public QWidget
 {
     Q_OBJECT
@@ -39,83 +39,101 @@ public:
 
     void setProbe(ProbeController *probe);
 
-    /// Called after a successful connect: locate the RTT control block using the
-    /// ELF's `_SEGGER_RTT` symbol, or by scanning RAM. \a ramStart/\a ramSize come
-    /// from the identification result.
-    void attachTarget(quint32 ramStart, quint32 ramSize);
-    void detachTarget();
-
     /// Load an ELF and populate the variable list. Returns false on failure.
     bool importSymbolFile(const QString &path, QString *error = nullptr);
     bool hasSymbols() const { return m_symbols.isValid(); }
+    QString symbolPath() const { return m_symbols.sourcePath; }
 
-    /// The variable selector (filter + tree), owned by this page but shown by the
-    /// main window in a dock so it can float and does not squeeze the plot.
+    /// The variable selector (filter + tree), owned by this page but shown by the main
+    /// window in the left dock next to the peripheral tree.
     QWidget *variableSelector() const { return m_selectorBox; }
 
     /// Test hook: the tree itself (it lives inside the selector dock, not the page).
     QTreeWidget *variableTree() const { return m_variableTree; }
     /// Test hook: materialise one row's children the way an expand click does.
     void expandForTest(QTreeWidgetItem *item) { populateChildren(item); }
-    QString symbolPath() const { return m_symbols.sourcePath; }
+    /// Test hook: flush the coalescing timer so a tick is applied immediately.
+    void settleSelectionForTest() { refreshState(); }
+    /// Test hook: how many variables the current ticks would export.
+    int testSelectedCount() const;
+    /// Test hook: show a fabricated capture through the real table/plot path, so the
+    /// self-test checks the widgets rather than a private helper.
+    void showSnapshotForTest(const SnapshotReader::Snapshot &snapshot);
+    /// Test hook: the two views, to assert what they ended up displaying.
+    GlPlotWidget *plotForTest() const { return m_plot; }
 
-    /// Test/benchmark hook: apply a filter without going through the debounce.
+    /// Apply a filter without going through the debounce (benchmarks/tests).
     void filterForBench(const QString &text);
-
-    /// Locals of the function the core is halted in.
-    ///
-    /// Requires registers, so it only works while halted -- and the tool never
-    /// halts on its own: pausing a running control loop is the user's decision.
-    void refreshLocals();
-    /// Show locals for a known SP/PC pair (used by refreshLocals and the tests).
-    void applyLocals(quint32 sp, quint32 pc, const QVector<quint32> &registers);
 
 signals:
     void statusMessage(const QString &text);
     /// A symbol file was loaded: the selector has content worth showing.
-    void symbolsImported();
-    /// Asking for locals: keeps the QAction/shortcut wiring free of direct calls.
-    void localsRefreshRequested();
+    void symbolsImported(const mrd::SymbolTable &symbols);
 
 private slots:
     void onBrowse();
     void onFilterChanged(const QString &text);
-    void onVariableToggled(QTreeWidgetItem *item, int column);
-    void onStartStop();
-    void onSampleSettingsChanged();
-    void onCopyFirmwareCode();
-    void onSamplesAppended(int count);
-    void onStatistics(quint64 frames, quint64 droppedBytes, double fps);
-    void onCollectorFailed(const QString &message);
-    void onRegistersRead(const QVector<quint32> &registers, bool ok, const QString &error);
-    /// Build a collapsed node's children the first time it is opened. Creating all
-    /// 5692 nodes up front is what made the window freeze.
-    void onItemExpanded(QTreeWidgetItem *item);
     void onFilterDebounced();
+    void onItemExpanded(QTreeWidgetItem *item);
+    void onVariableToggled(QTreeWidgetItem *item, int column);
+    /// Read the ticked variables once (arrays) or repeatedly (scalars) and show them.
+    /// Selection settled (debounced): may need to rebuild the live session.
+    void onSelectionSettled();
+    /// Pause/resume the live capture. Paused keeps the drawn data and the zoom.
+    void onTogglePause();
+    /// Drop collected samples and empty the chart.
+    void onClearChart();
+
+public:
+    /// Write the current history as CSV (index, µs, ms, one column per variable).
+    /// Separate from the slot so the self-test can verify the exact bytes.
+    static bool writeHistoryCsv(const SampleHistory &history, const QString &path,
+                                QString *error);
+    void onCaptureSnapshot();
+    void onSnapshotFinished(const mrd::SnapshotReader::Snapshot &snapshot);
+    /// Start/stop HSS background sampling: live curves while the target runs.
+    void onToggleLiveCapture();
+    /// Timer tick: drain the probe buffer into the plot.
+    void onLiveTick();
+    /// The worker finished a drain (history already updated inside the sampler).
+    void onLiveDrained(const mrd::HssSampler::Result &result);
+    /// Time-domain / spectrum toggle for the live view.
+    void onToggleFft();
+    /// Write the visible history to a CSV next to the symbol file.
+    void onExportCsv();
 
 private:
     void rebuildVariableList();
-    /// Populate  item's children from the model (idempotent).
     void populateChildren(QTreeWidgetItem *item);
-    /// Create one item for  node, adding a placeholder child so Qt draws the
-    /// expand arrow without us building the subtree yet.
     QTreeWidgetItem *makeItem(const VariableNode &node, const QString &path,
                               QTreeWidgetItem *parent);
     /// Top-level row for one source file; its variables are created on expansion.
     QTreeWidgetItem *makeFileItem(const FileGroup &group, int groupIndex);
-    /// Set  state on every checkbox below  item.
+    /// Create the rows for one type member, recursing into aggregates so that every
+    /// selectable row is a single number.
+    void buildMemberRows(QTreeWidgetItem *parent, const TypeMember &member, int depth,
+                         quint32 baseAddress, bool hasAddress, const QString &instanceName);
+    /// Restore one row's checkbox state from m_selectedLeaves.
+    void applySelectionToItem(QTreeWidgetItem *item, const VariableNode &node,
+                              const QString &path);
+    /// Set \a state on every checkbox below \a item.
     static void setSubtreeChecked(QTreeWidgetItem *item, Qt::CheckState state);
     /// Recompute tri-state from the children, walking up to the root.
     static void recomputeAncestors(QTreeWidgetItem *item);
-    /// Reflect one model node's selection into its item (and its children's states).
-    void applySelectionToItem(QTreeWidgetItem *item, const VariableNode &node,
-                              const QString &path);
+
     QVector<WatchVariable> selectedVariables() const;
-    /// Ticked leaf paths (m_selectedLeaves, filtered to what exists).
+    /// Dotted names of every ticked leaf.
     QSet<QString> selectedLeafNames() const;
     void updateControls();
     void refreshState();
-    QString firmwareSnippet() const;
+    /// Fill the plot from a capture (one curve per variable, index on X).
+    void rebuildPlot(const SnapshotReader::Snapshot &snapshot);
+    /// Which view the user is looking at, so a fresh capture refreshes both.
+    void refreshViews();
+    /// Live HSS status line (sample rate, per-channel min/max/average).
+    void refreshLiveStatus();
+    /// Fill \a project from the current selection. Fails when nothing is ticked or no
+    /// symbol file is loaded.
 
     ProbeController *m_probe = nullptr;
     SymbolTable m_symbols;
@@ -123,67 +141,73 @@ private:
     QVector<VariableNode> m_visibleRoots;
     /// path -> node, so a lazy expansion can find its subtree without a search.
     QHash<QString, const VariableNode *> m_nodeByPath;
-    /// Files shown in the tree, in display order. Top-level rows are files and their
-    /// children are the variables declared in them -- the layout every debugger's
-    /// watch window uses, and the only way 4000 names stay navigable.
+    /// Files shown in the tree, in display order.
     QVector<FileGroup> m_groups;
-    /// Functions with locals, per source file. Shown under each file so a local like
-    /// `match_indx` is findable at all -- it is not a global and never appears in the
-    /// "globals/statics" list.
-    QMap<QString, QVector<VariableNode>> m_functionsByFile;
-    /// Every file worth a row: the union of files that declare a variable, define a
-    /// function with locals, or define a type. Using only the variable files hid
-    /// headers entirely -- `Encoder` is defined in one, so its members were
-    /// unreachable from the tree.
-    QStringList m_allFiles;
-    /// Static class members as sample points: "Class::member" -> (address, size).
-    QHash<QString, QPair<quint32, int>> m_staticMembers;
-    /// Show chip-pack / compiler-header files (CMSIS, libcxx, ARMCLANG, ThirdParty).
-    /// Off by default: CMSIS-DSP lookup tables would otherwise dominate the tree.
-    bool m_showSystemFiles = false;
-    /// The FileGroup backing each top-level row, in row order (created rows must not
-    /// dangle, so they are copied here rather than pointing into m_groups).
+    /// The FileGroup backing each top-level row, in row order.
     QVector<FileGroup> m_fileRowGroups;
-    /// Resolved addresses of the halted function's locals, keyed by tree path.
-    /// Filled by applyLocals; empty while the core runs (locals have no address then).
-    QHash<QString, quint32> m_localAddr;
-    /// Name of the function those addresses belong to.
-    QString m_resolvedFunction;
-
-    RttControlBlock m_rtt;
-    bool m_attached = false;
-
-    SampleCollector m_collector;
-    /// Coalesces the burst of itemChanged signals an auto-tristate parent produces.
-    QTimer m_selectionTimer;
-    /// Debounces the filter box: rebuilding on every keystroke of a 637-root tree
-    /// stutters visibly.
-    QTimer m_filterTimer;
+    /// Functions with locals, per source file.
+    QMap<QString, QVector<VariableNode>> m_functionsByFile;
+    /// Every file worth a row: union of files with variables, functions or types.
+    QStringList m_allFiles;
+    /// Members that resolved to a real address through a known instance, keyed by the
+    /// name used in the tree. Without this the checkboxes on those rows did nothing.
+    QHash<QString, WatchVariable> m_memberVariables;
+    /// Type name -> the (path, address) of a global instance of it.
+    QHash<QString, QPair<QString, quint32>> m_typeInstances;
+    /// Type name -> byte size of that known instance.
+    QHash<QString, int> m_typeInstanceSizes;
+    /// Ticked leaf paths -- the source of truth for what gets exported.
+    QSet<QString> m_selectedLeaves;
+    /// Active search term (needed when children are created lazily).
+    QString m_filterNeedle;
+    /// Show chip-pack / compiler-header files.
+    bool m_showSystemFiles = false;
     /// Guards against re-entering the checkbox handlers while we propagate.
     bool m_syncingChecks = false;
-    /// Ticked leaf paths -- the source of truth for what gets sampled.
-    ///
-    /// Widget check states are only a view of this set. With a lazily built tree the
-    /// leaves of a big struct do not exist yet, so ticking the struct has to be
-    /// recorded here; otherwise the selection would silently lose everything that
-    /// was not expanded (and the generated frame would not match what the user saw).
-    QSet<QString> m_selectedLeaves;
 
+    /// Coalesces the burst of itemChanged signals an auto-tristate parent produces.
+    QTimer m_selectionTimer;
+    /// Debounces the filter box.
+    QTimer m_filterTimer;
+
+    QWidget *m_selectorBox = nullptr;
     QLineEdit *m_pathEdit = nullptr;
     QPushButton *m_browseButton = nullptr;
-    QWidget *m_selectorBox = nullptr;
     QLineEdit *m_filterEdit = nullptr;
     QTreeWidget *m_variableTree = nullptr;
     QCheckBox *m_selectAll = nullptr;
     QCheckBox *m_showSystemCheck = nullptr;
-    QPushButton *m_startButton = nullptr;
-    QPushButton *m_codeButton = nullptr;
-    QPushButton *m_localsButton = nullptr;
-    QComboBox *m_windowCombo = nullptr;
-    QCheckBox *m_autoScale = nullptr;
+
+    /// Local capture: read memory on demand, no continuous sampling.
+    SnapshotReader *m_reader = nullptr;
+    /// Last finished capture, so switching tabs does not re-read the target.
+    SnapshotReader::Snapshot m_snapshot;
+    /// Backing store for the plot; owned here so its lifetime covers the widget.
+    SampleHistory *m_history = nullptr;
+
+    QPushButton *m_captureButton = nullptr;
+    QPushButton *m_liveButton = nullptr;
     QLabel *m_stateLabel = nullptr;
-    QLabel *m_statsLabel = nullptr;
-    PlotWidget *m_plot = nullptr;
+    QPushButton *m_pauseButton = nullptr;
+    QPushButton *m_clearButton = nullptr;
+    /// True while a started capture is paused: sampling stopped, chart kept as-is.
+    bool m_paused = false;
+    /// Rate limit for the status-bar readout (the chart page shows no live text line).
+    qint64 m_lastStatusMs = 0;
+    int m_lastClippedSeen = 0;
+    /// Guards against repeating the "capture stopped" line.
+    int m_reportedStopSamples = -1;
+    QPushButton *m_fftButton = nullptr;
+    QPushButton *m_csvButton = nullptr;
+    QSpinBox *m_periodSpin = nullptr;
+    HssSampler *m_sampler = nullptr;
+    /// Consecutive catch-up drains without a repaint, to bound the loop.
+    int m_catchUpRounds = 0;
+    QTimer m_liveTimer;
+    QSpinBox *m_roundsSpin = nullptr;
+    QSpinBox *m_intervalSpin = nullptr;
+    QPushButton *m_viewToggle = nullptr;
+    GlPlotWidget *m_plot = nullptr;
 };
 
 } // namespace mrd

@@ -15,7 +15,7 @@ endif()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets Network)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets Network OpenGL OpenGLWidgets)
 qt_standard_project_setup()
 
 set(CORE_SOURCES
@@ -41,10 +41,6 @@ set(CORE_SOURCES
     src/core/GdbRspClient.cpp
     src/core/JLinkGdbProbe.h
     src/core/JLinkGdbProbe.cpp
-    src/core/ProbeRsRunner.h
-    src/core/ProbeRsRunner.cpp
-    src/core/ProbeRsProbe.h
-    src/core/ProbeRsProbe.cpp
     src/core/ProbeController.h
     src/core/ProbeController.cpp
     src/core/DeviceIdentifier.h
@@ -63,12 +59,25 @@ set(CORE_SOURCES
     src/core/DwarfReader.cpp
     src/core/SymbolFile.h
     src/core/SymbolFile.cpp
-    src/core/RttClient.h
-    src/core/RttClient.cpp
-    src/core/SampleHistory.h
+    src/core/SnapshotReader.cpp
+    src/core/JLinkDllApi.cpp
+    src/core/JLinkDllProbe.cpp
+    src/core/HssSampler.cpp
+    src/core/Fft.cpp
+    # KFR (third_party/kfr): spectrum analysis backend. GPL v2 -- see
+    # third_party/kfr/LICENSE.txt. Only the DFT module is built; audio/io/dsp are not
+    # used by this program and were removed to keep the tree small.
+    third_party/kfr/src/dft/bitrev-impl-f32.cpp
+    third_party/kfr/src/dft/bitrev-impl-f64.cpp
+    third_party/kfr/src/dft/dft.cpp
+    third_party/kfr/src/dft/dft-impl-f32.cpp
+    third_party/kfr/src/dft/dft-impl-f64.cpp
+    third_party/kfr/src/dft/fft-impl-f32.cpp
+    third_party/kfr/src/dft/fft-impl-f64.cpp
+    third_party/kfr/src/dft/ngfft-impl-f32.cpp
+    third_party/kfr/src/dft/ngfft-impl-f64.cpp
+    third_party/kfr/src/dft/version.cpp
     src/core/SampleHistory.cpp
-    src/core/SampleCollector.h
-    src/core/SampleCollector.cpp
     src/core/MemoryProbe.h
     src/core/MemoryProbe.cpp
     src/core/PeripheralRoles.h
@@ -97,8 +106,7 @@ set(UI_SOURCES
     src/ui/BitFieldStrip.cpp
     src/ui/ScopePage.h
     src/ui/ScopePage.cpp
-    src/ui/PlotWidget.h
-    src/ui/PlotWidget.cpp
+    src/ui/GlPlotWidget.cpp
     src/ui/RegisterBlockView.h
     src/ui/RegisterBlockView.cpp
     src/ui/InspectorPanel.h
@@ -121,11 +129,18 @@ qt_add_executable(mcuRegDebugger WIN32
 
 target_include_directories(mcuRegDebugger PRIVATE src)
 
+# KFR ships as headers plus a few translation units, so it needs the include root and
+# a C++20 compile (its templates require it).
+target_include_directories(mcuRegDebugger PRIVATE third_party/kfr/include)
+target_compile_features(mcuRegDebugger PRIVATE cxx_std_20)
+
 target_link_libraries(mcuRegDebugger PRIVATE
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets
     Qt6::Network
+    Qt6::OpenGL
+    Qt6::OpenGLWidgets
 )
 
 target_compile_definitions(mcuRegDebugger PRIVATE

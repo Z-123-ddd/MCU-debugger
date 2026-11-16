@@ -1,5 +1,7 @@
 #include "core/SampleHistory.h"
 
+#include <limits>
+
 #include <QtGlobal>
 
 #include <algorithm>
@@ -48,7 +50,7 @@ int SampleHistory::slot(int index) const
     return (m_head + index) % m_capacity;
 }
 
-void SampleHistory::append(qint64 timeMs, const QVector<double> &values)
+void SampleHistory::append(qint64 timeUs, const QVector<double> &values)
 {
     if (m_names.isEmpty())
         return;
@@ -56,7 +58,7 @@ void SampleHistory::append(qint64 timeMs, const QVector<double> &values)
         m_series.resize(m_names.size());
         for (QVector<double> &series : m_series) {
             if (series.size() != m_capacity)
-                series.assign(m_capacity, 0.0);
+                series.assign(m_capacity, std::numeric_limits<double>::quiet_NaN());
         }
     }
     const int writeIndex = m_count < m_capacity ? slot(m_count) : m_head;
@@ -65,11 +67,14 @@ void SampleHistory::append(qint64 timeMs, const QVector<double> &values)
     else
         ++m_count;
 
-    m_times[writeIndex] = timeMs;
+    m_times[writeIndex] = timeUs;
     for (int t = 0; t < m_series.size(); ++t) {
         if (m_series[t].size() != m_capacity)
-            m_series[t].assign(m_capacity, 0.0);
-        m_series[t][writeIndex] = t < values.size() ? values.at(t) : 0.0;
+            m_series[t].assign(m_capacity, std::numeric_limits<double>::quiet_NaN());
+        // A missing trace must read as a *gap*, not as zero: filling with 0 draws a
+        // line to the baseline, which looks like a real measurement of zero.
+        m_series[t][writeIndex] = t < values.size() ? values.at(t)
+                                                    : std::numeric_limits<double>::quiet_NaN();
     }
 }
 

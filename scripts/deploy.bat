@@ -1,6 +1,6 @@
 @echo off
 rem ---------------------------------------------------------------------------
-rem Stage a standalone folder (Qt runtime + data + probe-rs when available).
+rem Stage a standalone folder (Qt runtime + data).
 rem   scripts\deploy.bat
 rem Result: deploy\mcuRegDebugger.exe  (+ Qt DLLs, plugins, data\)
 rem NOTE: messages are ASCII only - cmd.exe uses the OEM codepage and would
@@ -45,13 +45,6 @@ if exist "%QT%\plugins\platforms\qoffscreen.dll" (
 echo [INFO] copying data
 if exist "%ROOT%\data" xcopy /e /i /y /q "%ROOT%\data" "%DEPLOY%\data" >nul
 
-if exist "%ROOT%\tools\probe-rs\probe-rs.exe" (
-    echo [INFO] bundling probe-rs
-    xcopy /e /i /y /q "%ROOT%\tools\probe-rs" "%DEPLOY%\tools\probe-rs" >nul
-) else (
-    echo [WARN] tools\probe-rs\probe-rs.exe not found
-    echo        install probe-rs separately, or run scripts\fetch-probe-rs.ps1 and re-deploy
-)
 
 if exist "%ROOT%\README.md" copy /y "%ROOT%\README.md" "%DEPLOY%\" >nul
 

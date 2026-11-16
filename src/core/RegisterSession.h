@@ -51,7 +51,7 @@ public:
     void setValueLocally(quint32 address, quint32 value);
 
     // --- access ------------------------------------------------------------
-    /// Read the whole window of \a peripheral (one probe-rs call per poll).
+    /// Read the whole window of \a peripheral (one probe call per poll).
     void requestPeripheralRead(const SvdPeripheral &peripheral);
     void requestRegisterRead(const SvdPeripheral &peripheral, const SvdRegister &reg);
 

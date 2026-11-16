@@ -98,11 +98,13 @@ int main(int argc, char *argv[])
         return mrd::cli::runSelftest(options);
     if (options.bench)
         return mrd::cli::runBench(options);
+    // --probe-info wins over --symbols: it consumes the symbol file (to resolve
+    // --read-var addresses), so "just dump the symbols" would ignore the request.
+    if (options.probeInfo)
+        return mrd::cli::runProbeInfo(options);
     if (!options.symbolPath.isEmpty())
         return options.benchScope ? mrd::cli::runBenchScope(options)
                                   : mrd::cli::runSymbols(options);
-    if (options.probeInfo)
-        return mrd::cli::runProbeInfo(options);
 
     mrd::MainWindow window;
     window.show();

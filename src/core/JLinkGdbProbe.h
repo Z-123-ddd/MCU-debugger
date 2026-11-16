@@ -3,6 +3,7 @@
 #include "core/GdbRspClient.h"
 #include "core/IProbe.h"
 
+#include <QSet>
 #include <QString>
 
 class QProcess;
@@ -12,7 +13,7 @@ namespace mrd {
 /// IProbe implementation on top of `JLinkGDBServerCL.exe` + GDB remote protocol.
 ///
 /// Why this and not the J-Link DLL or Commander:
-///   * the official SEGGER USB driver keeps working (probe-rs would need WinUSB);
+///   * the official SEGGER USB driver keeps working (no WinUSB swap needed);
 ///   * J-Link Commander buffers stdout when piped, so it cannot be driven
 ///     interactively;
 ///   * a GDB server session is persistent and unbuffered, so register polling
@@ -51,6 +52,7 @@ public:
 
     Status readCoreRegisters(QVector<quint32> *out) override;
     Status exec(const QString &command) override;
+
 
     ProbeInfo info() const override;
     QString lastError() const { return m_lastError; }

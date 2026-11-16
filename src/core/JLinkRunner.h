@@ -23,7 +23,7 @@ struct JLinkInstallInfo
 /// Locates `JLink.exe` (J-Link Commander) and runs short one-shot scripts.
 ///
 /// The app talks to the J-Link through the vendor CLI so the official USB
-/// driver stays in place (probe-rs would require WinUSB instead). Long-lived
+/// driver stays in place. Long-lived
 /// register access uses JLinkProbe's persistent session; this class only covers
 /// discovery and version/emulator queries.
 class JLinkRunner

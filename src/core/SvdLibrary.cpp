@@ -231,7 +231,7 @@ int SvdLibrary::scan(bool force)
         m_cached.insert(entry.path, entry);
 
     saveCache();
-    Logger::instance()->info(QStringLiteral("SVD 库: %1 个文件 / %2 个根目录")
+    Logger::instance()->debug(QStringLiteral("SVD 库: %1 个文件 / %2 个根目录")
                                  .arg(m_entries.size())
                                  .arg(m_roots.size()));
     return m_entries.size();

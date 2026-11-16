@@ -11,9 +11,9 @@ namespace mrd {
 namespace {
 constexpr const char *kSvRoots = "svd/roots";
 constexpr const char *kLastSvd = "svd/lastPath";
+constexpr const char *kBackendVersion = "probe/backendVersion";
 constexpr const char *kBackend = "probe/backend";
 constexpr const char *kJlinkPath = "probe/jlinkPath";
-constexpr const char *kProbeRsPath = "probe/probeRsPath";
 constexpr const char *kProbeSelector = "probe/selector";
 constexpr const char *kInterface = "probe/interface";
 constexpr const char *kSpeed = "probe/speedKHz";
@@ -53,10 +53,22 @@ void AppSettings::setLastSvdPath(const QString &path)
 
 QString AppSettings::probeBackend()
 {
-    const QString stored = QSettings().value(QLatin1String(kBackend)).toString();
-    if (stored == QLatin1String("probe-rs") || stored == QLatin1String("jlink"))
+    QSettings settings;
+    // One-time migration. The DLL backend became the default because it is the only
+    // one that can do HSS live sampling, but a previously saved "jlink" would keep
+    // overriding that default forever -- the user never chose GDB, it was simply the
+    // old fallback. After this runs once, an explicit choice is respected again.
+    constexpr int kBackendDefaultVersion = 2;
+    if (settings.value(QLatin1String(kBackendVersion), 0).toInt() < kBackendDefaultVersion) {
+        settings.setValue(QLatin1String(kBackendVersion), kBackendDefaultVersion);
+        settings.setValue(QLatin1String(kBackend), QStringLiteral("jlink-dll"));
+        return QStringLiteral("jlink-dll");
+    }
+
+    const QString stored = settings.value(QLatin1String(kBackend)).toString();
+    if (stored == QLatin1String("jlink") || stored == QLatin1String("jlink-dll"))
         return stored;
-    return QStringLiteral("jlink"); // J-Link keeps the official USB driver in place
+    return QStringLiteral("jlink-dll");
 }
 
 void AppSettings::setProbeBackend(const QString &backend)
@@ -72,16 +84,6 @@ QString AppSettings::jlinkPath()
 void AppSettings::setJlinkPath(const QString &path)
 {
     QSettings().setValue(QLatin1String(kJlinkPath), path);
-}
-
-QString AppSettings::probeRsPath()
-{
-    return QSettings().value(QLatin1String(kProbeRsPath)).toString();
-}
-
-void AppSettings::setProbeRsPath(const QString &path)
-{
-    QSettings().setValue(QLatin1String(kProbeRsPath), path);
 }
 
 QString AppSettings::probeSelector()
@@ -227,4 +229,13 @@ void AppSettings::setPinnedPeripherals(const QStringList &names)
     QSettings().setValue(QLatin1String(kPinned), names);
 }
 
+QString AppSettings::jlinkDllPath()
+{
+    return QSettings().value(QLatin1String("probe/jlinkDllPath")).toString();
+}
+
+void AppSettings::setJlinkDllPath(const QString &path)
+{
+    QSettings().setValue(QLatin1String("probe/jlinkDllPath"), path);
+}
 } // namespace mrd

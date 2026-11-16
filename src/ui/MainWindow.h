@@ -18,6 +18,7 @@ class QComboBox;
 class QLabel;
 class QLineEdit;
 class QDockWidget;
+class QMenu;
 class QPlainTextEdit;
 class QSpinBox;
 class QTabWidget;
@@ -150,7 +151,9 @@ private:
     PackagePage *m_packagePage = nullptr;
     PortGridView *m_portGrid = nullptr;
     ScopePage *m_scopePage = nullptr;
-    QDockWidget *m_variableDock = nullptr;
+    QDockWidget *m_leftDock = nullptr;
+    QTabWidget *m_leftTabs = nullptr;
+    QMenu *m_viewMenu = nullptr;
     QPlainTextEdit *m_logView = nullptr;
     QLabel *m_connLabel = nullptr;
     QLabel *m_pollLabel = nullptr;

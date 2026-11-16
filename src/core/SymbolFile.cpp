@@ -142,6 +142,44 @@ QVector<VariableNode> SymbolTable::filteredRoots(const QString &needle) const
     return out;
 }
 
+const TypeDecl *SymbolTable::typeByName(const QString &name, int expectedSize) const
+{
+    if (name.isEmpty())
+        return nullptr;
+
+    // A typedef name may be spelled with an array suffix; compare on the base name.
+    QString base = name;
+    const int bracket = base.indexOf(QLatin1Char('['));
+    if (bracket > 0)
+        base = base.left(bracket);
+
+    const TypeDecl *firstMatch = nullptr;
+    const TypeDecl *bestSizeMatch = nullptr;
+    int definitions = 0;
+    for (const TypeDecl &type : types) {
+        if (type.name != base && type.name != name)
+            continue;
+        ++definitions;
+        if (!firstMatch)
+            firstMatch = &type;
+        if (expectedSize > 0 && type.byteSize == expectedSize) {
+            // Exact size: unambiguous. Prefer the one with more members if several
+            // share it (a forward-declared shell could match the size by accident).
+            if (!bestSizeMatch || type.members.size() > bestSizeMatch->members.size())
+                bestSizeMatch = &type;
+        }
+    }
+    if (bestSizeMatch)
+        return bestSizeMatch;
+    // A size was given but no definition has it: this member refers to a different
+    // type of the same name (a project can declare `Config_t` in several scopes).
+    // Expanding the wrong one would list fields that are not there, so refuse.
+    if (expectedSize > 0)
+        return nullptr;
+    // No size hint: only answer when the name is unique, for the same reason.
+    return definitions == 1 ? firstMatch : nullptr;
+}
+
 bool SymbolTable::isSystemFile(const QString &file) const
 {
     // The directory was recorded at parse time; fall back to the variable's own flag
@@ -344,6 +382,9 @@ Result<SymbolTable> SymbolFile::load(const QString &path)
     /// Counted across the whole load, reported once at the end.
     int unresolvedAddresses = 0;
     int staticMembersResolved = 0;
+    /// DWARF base addresses that the symbol table contradicted and corrected.
+    int addressesCorrected = 0;
+    (void)addressesCorrected;
     table.source = elfResult.value;
     table.dwarfVersion = DwarfReader::dwarfVersion(elf);
 
@@ -397,6 +438,34 @@ Result<SymbolTable> SymbolFile::load(const QString &path)
                         root.elementCount = deduced;
                 }
             }
+            else {
+                // DWARF had an address, but DWARF is not always right. armclang
+                // describes several statics that live in one `.L_MergedGlobals` block
+                // with the *block base* and leaves the per-variable offsets to the
+                // symbol table. Trusting DWARF blindly made 26% of variables point at
+                // the wrong memory -- reading `pos_actual` returned `torque_actual`,
+                // and an attempt to poll every variable would silently mix them up.
+                // The linker's value is authoritative, so it wins on disagreement.
+                const QString leafName = root.name.section(QStringLiteral("::"), -1);
+                const ElfSymbol *sym = nullptr;
+                if (!root.linkageName.isEmpty())
+                    sym = symbols.value(root.linkageName, nullptr);
+                if (!sym)
+                    sym = symbols.value(root.name, nullptr);
+                if (sym && sym->value != 0 && sym->value != root.address) {
+                    // Refuse the override when the symbol's size contradicts the
+                    // variable: that means the name matched something else entirely
+                    // (same-named statics in different translation units).
+                    const bool sizeCompatible = sym->size == 0 || root.byteSize == 0
+                        || static_cast<int>(sym->size) == root.byteSize;
+                    if (sizeCompatible) {
+                        root.address = sym->value;
+                        root.addressFromSymbol = true;
+                        ++addressesCorrected;
+                    }
+                }
+            }
+
             if (root.address < 0x1000) {
                 // A mis-parsed location expression (or a genuine 0): report it as
                 // unreadable rather than inventing an address or hiding the variable.
@@ -513,6 +582,8 @@ Result<SymbolTable> SymbolFile::load(const QString &path)
             QStringLiteral("%1 里没有可用变量：需要带调试信息的 ELF（Keil 里勾选 Debug Information，"
                            "GCC 里加 -g），且至少有一个全局或静态变量")
                 .arg(info.fileName()));
+
+    table.addressesCorrected = addressesCorrected;
 
     std::sort(table.variables.begin(), table.variables.end(),
               [](const WatchVariable &a, const WatchVariable &b) {

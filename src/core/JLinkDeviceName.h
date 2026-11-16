@@ -39,6 +39,17 @@ public:
     /// Empty for families SEGGER does not ship; the caller then keeps the generic
     /// core instead of pretending.
     static QStringList knownNames(const QString &family);
+
+    /// True when  jlinkName is in the catalogue measured from JLinkARM.dll.
+    ///
+    /// Needed because `candidates()` falls back to returning the input when nothing
+    /// matches. That fallback is useful for a human to read, but handing such a name to
+    /// the DLL is not harmless: `device = N32G455` makes V8.26 *crash* (measured), while
+    /// `device = N32G455CC` connects. So callers must be able to ask before trying.
+    static bool isKnown(const QString &jlinkName);
+
+    /// True when the measured catalogue is loaded (so `isKnown` is meaningful).
+    static bool hasCatalogue();
 };
 
 } // namespace mrd

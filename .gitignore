@@ -1,6 +1,8 @@
 # ---- build outputs -------------------------------------------------------
 build/
 build-debug/
+build-dbg/
+build-*/
 deploy/
 dist/
 out-render/

@@ -72,6 +72,10 @@ struct SymbolTable
     ElfFile source;
     int dwarfVersion = 0;
     bool usedSymbolFallback = false; ///< DWARF lacked addresses; .symtab supplied them
+    /// DWARF base addresses that disagreed with the linker's symbol table and were
+    /// corrected. Non-zero means DWARF was describing a merged block base, so the
+    /// values here would otherwise have pointed at a neighbour's memory.
+    int addressesCorrected = 0;
 
     bool isValid() const { return !variables.isEmpty() || !roots.isEmpty(); }
     /// Look up a leaf by its dotted name.
@@ -90,6 +94,14 @@ struct SymbolTable
     /// `.debug_frame` for this exact PC.
     /// Types defined in  file (empty name = the unknown-file bucket).
     QVector<TypeDecl> typesInFile(const QString &file) const;
+
+    /// Type definition by name (typedefs already resolved to the aggregate name).
+    ///
+    ///  expectedSize disambiguates same-named types: a project can define
+    /// `Config_t` in several scopes, and picking the first one made `Encoder`'s
+    /// 14628-byte `config_` resolve to an unrelated 6-member type. A byte-size match
+    /// is the reliable signal, because it comes from the member being expanded.
+    const TypeDecl *typeByName(const QString &name, int expectedSize = 0) const;
 
     /// True when  file belongs to the chip pack / compiler / SDK rather than the
     /// project (CMSIS, libcxx, ARMCLANG, ThirdParty, bare system headers).

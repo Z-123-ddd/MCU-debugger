@@ -22,7 +22,7 @@ struct DeviceIdEntry
     QString family;      ///< "STM32F103"
     QString vendor;      ///< "ST"
     QString svdHint;     ///< SVD device name, e.g. "STM32F103xx"
-    QString probeRsChip; ///< name passed to `probe-rs --chip`
+    QString probeRsChip; ///< human-readable alias, used only for matching typed names
     quint32 devId = 0;   ///< DBGMCU_IDCODE DEV_ID; 0 = not verified yet
     quint32 idcodeAddress = 0xE0042000u;
     bool verified = true;

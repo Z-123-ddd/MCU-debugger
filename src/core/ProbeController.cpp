@@ -1,11 +1,9 @@
 #include "core/ProbeController.h"
 
-#include "core/RttClient.h"
-
 #include "core/AppSettings.h"
 #include "core/Logger.h"
+#include "core/JLinkDllProbe.h"
 #include "core/JLinkRunner.h"
-#include "core/ProbeRsRunner.h"
 
 #include <QMetaObject>
 
@@ -43,8 +41,12 @@ QString ProbeWorker::probeSerial() const
 void ProbeWorker::doOpen(const QString &backend, const QString &binaryPath, const QString &interfaceName,
                          int speedKHz)
 {
-    const QString wanted = (backend == QLatin1String("probe-rs")) ? QStringLiteral("probe-rs")
-                                                                  : QStringLiteral("jlink");
+    // Two backends: `jlink` (GDB server + RSP) and `jlink-dll` (the DLL directly).
+    // Only the DLL one can do HSS background sampling, because that engine is not
+    // exposed over the GDB protocol.
+    const QString wanted = (backend == QLatin1String("jlink-dll"))
+        ? QStringLiteral("jlink-dll")
+        : QStringLiteral("jlink");
 
     // Rebuild the probe when the backend changes.
     if (m_probe && m_backend != wanted) {
@@ -54,23 +56,31 @@ void ProbeWorker::doOpen(const QString &backend, const QString &binaryPath, cons
     m_backend = wanted;
 
     if (!m_probe) {
-        if (wanted == QLatin1String("probe-rs"))
-            m_probe = std::make_unique<ProbeRsProbe>();
+        if (wanted == QLatin1String("jlink-dll"))
+            m_probe = std::make_unique<JLinkDllProbe>();
         else
             m_probe = std::make_unique<JLinkGdbProbe>();
     }
 
-    if (auto *jlink = dynamic_cast<JLinkGdbProbe *>(m_probe.get())) {
+    if (dynamic_cast<JLinkDllProbe *>(m_probe.get())) {
+        // The DLL backend needs no external executable; binaryPath is unused.
+    } else if (auto *jlink = dynamic_cast<JLinkGdbProbe *>(m_probe.get())) {
         jlink->setExecutable(binaryPath.isEmpty() ? JLinkRunner::locate(AppSettings::jlinkPath()) : binaryPath);
-    } else if (auto *probeRs = dynamic_cast<ProbeRsProbe *>(m_probe.get())) {
-        if (probeRs->runner())
-            probeRs->runner()->setBinary(binaryPath);
     }
 
     m_probe->setInterface(interfaceName);
     m_probe->setSpeed(speedKHz);
 
     const Status st = m_probe->open();
+
+    // Publish HSS availability *after* opening: the DLL is only loaded by open(), so
+    // asking earlier always answers "unsupported" and the UI then refuses to sample.
+    m_supportsHss = false;
+    if (auto *dll = dynamic_cast<JLinkDllProbe *>(m_probe.get()))
+        m_supportsHss = dll->api() != nullptr && dll->api()->hasHss();
+    // Tell the controller: the UI asks it, because the probe is unreachable there.
+    emit hssAvailability(m_supportsHss);
+
     emit opened(static_cast<bool>(st), st.error, m_probe->info());
 }
 
@@ -80,6 +90,8 @@ void ProbeWorker::doClose()
         m_probe->close();
         m_probe.reset();
     }
+    m_supportsHss = false;
+    emit hssAvailability(false);
     emit closed();
 }
 
@@ -129,8 +141,8 @@ void ProbeWorker::doConnect(const QString &chipName)
         QString jlinkName;
         if (identified)
             jlinkName = identified.value.jlinkDeviceName;
-        if (jlinkName.isEmpty() && identified)
-            jlinkName = identified.value.probeRsChip;
+        // No probeRsChip fallback: that name belongs to the probe-rs catalogue and
+        // crashes the DLL. An empty name means "stay on the generic core".
 
         if (!jlinkName.isEmpty()
             && jlinkName.compare(QLatin1String("Cortex-M4"), Qt::CaseInsensitive) != 0) {
@@ -209,6 +221,62 @@ void ProbeWorker::doRead(quint64 requestId, quint32 address, int length)
     emit readFinished(requestId, address, data, static_cast<bool>(st), st.error);
 }
 
+void ProbeWorker::doHssStart(const QVector<QPair<quint32, int>> &blocks, int periodUs)
+{
+    auto *dll = dynamic_cast<JLinkDllProbe *>(m_probe.get());
+    if (!dll) {
+        emit hssStarted(false,
+                        QStringLiteral("当前后端不是 J-Link DLL，无法使用 HSS 实时采样"));
+        return;
+    }
+    JLinkDllApi *api = dll->api();
+    if (!api || !api->hasHss()) {
+        emit hssStarted(false, QStringLiteral("该 J-Link DLL 不提供 HSS 接口"));
+        return;
+    }
+    if (blocks.isEmpty()) {
+        emit hssStarted(false, QStringLiteral("没有可采样的变量"));
+        return;
+    }
+
+    QVector<JLinkDllApi::HssBlock> hss;
+    hss.reserve(blocks.size());
+    for (const auto &block : blocks) {
+        JLinkDllApi::HssBlock entry;
+        entry.address = block.first;
+        entry.numBytes = quint32(qBound(1, block.second, 8));
+        hss.append(entry);
+    }
+    if (const Status st = api->hssStart(hss, periodUs); !st) {
+        emit hssStarted(false, st.error);
+        return;
+    }
+    emit hssStarted(true, QString());
+}
+
+void ProbeWorker::doHssRead(quint64 requestId, int maxSamples, int sampleBytes)
+{
+    auto *dll = dynamic_cast<JLinkDllProbe *>(m_probe.get());
+    if (!dll || !dll->api() || !dll->api()->hssRunning()) {
+        emit hssReadFinished(requestId, QByteArray(), 0, sampleBytes, false,
+                             QStringLiteral("HSS 未在运行"));
+        return;
+    }
+    QByteArray records;
+    int samples = 0;
+    const Status st = dll->api()->hssRead(maxSamples, sampleBytes, &records, &samples);
+    emit hssReadFinished(requestId, records, samples, sampleBytes, static_cast<bool>(st),
+                         st.error);
+}
+
+void ProbeWorker::doHssStop()
+{
+    if (auto *dll = dynamic_cast<JLinkDllProbe *>(m_probe.get())) {
+        if (dll->api())
+            dll->api()->hssStop();
+    }
+}
+
 void ProbeWorker::doWrite(quint64 requestId, quint32 address, const QByteArray &data)
 {
     if (!m_probe) {
@@ -255,13 +323,12 @@ void ProbeWorker::doExec(const QString &command)
         return;
     const Status st = m_probe->exec(command);
     if (!st)
-        Logger::instance()->warn(QStringLiteral("probe-rs 命令失败: %1").arg(st.error));
+        Logger::instance()->warn(QStringLiteral("探针命令失败: %1").arg(st.error));
 }
 
 void ProbeWorker::doListProbes()
 {
-    // J-Link: report the emulator list from the vendor CLI.
-    if (m_backend != QLatin1String("probe-rs")) {
+    {
         const QString exe = JLinkRunner::locate(AppSettings::jlinkPath());
         if (exe.isEmpty()) {
             emit probesListed({}, QStringLiteral("未找到 JLink.exe"));
@@ -278,31 +345,7 @@ void ProbeWorker::doListProbes()
                 lines << line.trimmed();
         }
         emit probesListed(lines, lines.isEmpty() ? QStringLiteral("未发现 J-Link") : QString());
-        return;
     }
-
-    ProbeRsRunner runner;
-    if (auto *probeRs = dynamic_cast<ProbeRsProbe *>(m_probe.get())) {
-        if (probeRs->runner())
-            runner.setBinary(probeRs->runner()->binary());
-    }
-    const QString error = runner.ensureBinary();
-    if (!error.isEmpty()) {
-        emit probesListed({}, error);
-        return;
-    }
-    const ProbeRsRun run = runner.run({QStringLiteral("list")}, 30000);
-    if (!run.ok()) {
-        emit probesListed({}, run.errorText().trimmed());
-        return;
-    }
-    QStringList serials;
-    for (const QString &line : run.stdOut.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
-        const QString trimmed = line.trimmed();
-        if (trimmed.startsWith(QLatin1Char('[')))
-            serials << trimmed;
-    }
-    emit probesListed(serials, QString());
 }
 
 void ProbeWorker::doScanDeviceTree(const QString &svdPath)
@@ -368,6 +411,9 @@ ProbeController::ProbeController(QObject *parent)
         m_info = info;
         emit opened(ok, error, info);
     });
+    connect(m_worker, &ProbeWorker::hssAvailability, this, [this](bool supported) {
+        m_supportsHss = supported;
+    });
     connect(m_worker, &ProbeWorker::closed, this, [this] {
         m_info = ProbeInfo();
         emit closed();
@@ -384,11 +430,13 @@ ProbeController::ProbeController(QObject *parent)
             });
     connect(m_worker, &ProbeWorker::identifyFinished, this, &ProbeController::identifyFinished);
     connect(m_worker, &ProbeWorker::readFinished, this, &ProbeController::readFinished);
+    connect(m_worker, &ProbeWorker::hssStarted, this, &ProbeController::hssStarted);
+    connect(m_worker, &ProbeWorker::hssReadFinished, this,
+            &ProbeController::hssReadFinished);
+    connect(m_worker, &ProbeWorker::hssFailed, this, &ProbeController::hssFailed);
     connect(m_worker, &ProbeWorker::writeFinished, this, &ProbeController::writeFinished);
     connect(m_worker, &ProbeWorker::probesListed, this, &ProbeController::probesListed);
     connect(m_worker, &ProbeWorker::deviceTreeScanned, this, &ProbeController::deviceTreeScanned);
-    connect(m_worker, &ProbeWorker::rttLocated, this, &ProbeController::rttLocated);
-    connect(m_worker, &ProbeWorker::registersRead, this, &ProbeController::registersRead);
     connect(m_worker, &ProbeWorker::chipValidated, this, &ProbeController::chipValidated);
     connect(m_worker, &ProbeWorker::cpuStateChanged, this, [this](bool halted, bool ok, const QString &error) {
         if (ok)
@@ -471,6 +519,25 @@ void ProbeController::requestSelectChip(const QString &chipName)
     dispatch([worker = m_worker, chipName] { worker->doSelectChip(chipName); });
 }
 
+void ProbeController::requestHssStart(const QVector<QPair<quint32, int>> &blocks, int periodUs)
+{
+    dispatch([worker = m_worker, blocks, periodUs] {
+        worker->doHssStart(blocks, periodUs);
+    });
+}
+
+void ProbeController::requestHssRead(quint64 requestId, int maxSamples, int sampleBytes)
+{
+    dispatch([worker = m_worker, requestId, maxSamples, sampleBytes] {
+        worker->doHssRead(requestId, maxSamples, sampleBytes);
+    });
+}
+
+void ProbeController::requestHssStop()
+{
+    dispatch([worker = m_worker] { worker->doHssStop(); });
+}
+
 void ProbeController::requestExec(const QString &command)
 {
     dispatch([worker = m_worker, command] { worker->doExec(command); });
@@ -481,46 +548,9 @@ void ProbeController::requestListProbes()
     dispatch([worker = m_worker] { worker->doListProbes(); });
 }
 
-void ProbeWorker::doFindRtt(quint32 hintAddress, quint32 ramStart, quint32 ramSize)
-{
-    if (!m_probe) {
-        emit rttLocated(RttControlBlock(), QStringLiteral("探针未打开"));
-        return;
-    }
-    const auto found = RttClient::find(*m_probe, hintAddress, ramStart, ramSize);
-    if (!found) {
-        emit rttLocated(RttControlBlock(), found.error);
-        return;
-    }
-    emit rttLocated(found.value, QString());
-}
-
 void ProbeController::requestScanDeviceTree(const QString &svdPath)
 {
     dispatch([worker = m_worker, svdPath] { worker->doScanDeviceTree(svdPath); });
-}
-
-void ProbeWorker::doReadRegisters()
-{
-    if (!m_probe) {
-        emit registersRead({}, false, QStringLiteral("探针未打开"));
-        return;
-    }
-    QVector<quint32> registers;
-    const Status st = m_probe->readCoreRegisters(&registers);
-    emit registersRead(registers, static_cast<bool>(st), st.error);
-}
-
-void ProbeController::requestReadRegisters()
-{
-    dispatch([worker = m_worker] { worker->doReadRegisters(); });
-}
-
-void ProbeController::requestFindRtt(quint32 hintAddress, quint32 ramStart, quint32 ramSize)
-{
-    dispatch([worker = m_worker, hintAddress, ramStart, ramSize] {
-        worker->doFindRtt(hintAddress, ramStart, ramSize);
-    });
 }
 
 void ProbeController::requestValidateChip(const QString &chipName)

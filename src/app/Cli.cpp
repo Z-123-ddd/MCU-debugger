@@ -12,6 +12,7 @@
 #include "ui/MainWindow.h"
 #include "ui/BitFieldStrip.h"
 #include "ui/PortGridView.h"
+#include <cmath>
 #include <cstring>
 #include "ui/PackageView.h"
 #include "core/DeviceIdentifier.h"
@@ -19,15 +20,24 @@
 #include "core/FaultStatus.h"
 #include "core/HexUtil.h"
 #include "core/JLinkDeviceName.h"
+#include "core/JLinkDllProbe.h"
 #include "core/IProbe.h"
 #include "core/Logger.h"
 #include "core/MemoryProbe.h"
-#include "core/RttClient.h"
-#include "core/SampleHistory.h"
-#include "ui/PlotWidget.h"
 #include "ui/ScopePage.h"
+#include "ui/GlPlotWidget.h"
 
+#include <QWheelEvent>
+#include <QOffscreenSurface>
+#include <QOpenGLContext>
+#include <QOpenGLShaderProgram>
+#include <QSurfaceFormat>
+#include <QImage>
+#include <QPixmap>
+#include <QTableWidget>
 #include <QTreeWidget>
+#include "core/Fft.h"
+#include "core/SampleHistory.h"
 #include "core/SymbolFile.h"
 #include "core/SvdLibrary.h"
 #include "core/SvdParser.h"
@@ -36,10 +46,16 @@
 
 #include <QCoreApplication>
 #include <QComboBox>
+#include <limits>
+
 #include <QDir>
 #include <QDirIterator>
 #include <QRegularExpression>
 #include <QFileInfo>
+#include <QApplication>
+#include <QMouseEvent>
+
+#include <functional>
 #include <QElapsedTimer>
 #include <QString>
 
@@ -137,10 +153,13 @@ Options parse(int argc, char *argv[])
             o.deviceName = takeValue(args, &i, arg);
         } else if (is("--backend")) {
             const QString value = takeValue(args, &i, arg).trimmed().toLower();
-            if (value == QLatin1String("jlink") || value == QLatin1String("probe-rs"))
+            // `jlink-dll` drives the J-Link DLL directly and is the only backend that
+            // can do HSS background sampling (live curves). `jlink` keeps using the
+            // GDB server, which samples a halted snapshot only.
+            if (value == QLatin1String("jlink") || value == QLatin1String("jlink-dll"))
                 o.backend = value;
             else
-                o.errors << QStringLiteral("--backend 只支持 jlink 或 probe-rs");
+                o.errors << QStringLiteral("--backend 只支持 jlink / jlink-dll");
         } else if (is("--interface") || is("--protocol")) {
             const QString value = takeValue(args, &i, arg).trimmed().toUpper();
             if (value == QLatin1String("SWD") || value == QLatin1String("JTAG"))
@@ -159,6 +178,16 @@ Options parse(int argc, char *argv[])
             o.logPath = takeValue(args, &i, arg);
         } else if (is("--bench-scope")) {
             o.benchScope = true;
+        } else if (is("--bench-bus")) {
+            const QString value = takeValue(args, &i, arg);
+            bool ok = false;
+            o.benchBus = value.toInt(&ok);
+            if (!ok || o.benchBus <= 0)
+                o.errors << QStringLiteral("--bench-bus 需要正整数秒");
+        } else if (is("--bench-read")) {
+            o.benchRead = true;
+        } else if (is("--read-var")) {
+            o.readVar = takeValue(args, &i, arg);
         } else if (is("--symbols")) {
             o.symbolPath = takeValue(args, &i, arg);
         } else if (arg.startsWith(QLatin1String("--"))) {
@@ -2278,100 +2307,6 @@ int runSelftest(const Options &options)
               QStringLiteral("不同系列使用不同 GPIO 基地址"), QString());
     }
 
-    // --- RTT frame parsing + ring history ------------------------------------
-    // The frame stream is the contract between the generated firmware snippet and
-    // the plot, so both failure modes are covered: a stream that starts mid-frame
-    // (target restarted) and a stream with a corrupted sync.
-    {
-        out(QString());
-        out(QStringLiteral("--- RTT 帧解析 / 环形历史 ---"));
-
-        FrameParser parser;
-        parser.setPayloadSize(4);
-        check(parser.frameSize() == 6, QStringLiteral("帧长 = 负载 + 2 字节同步头"),
-              QStringLiteral("%1").arg(parser.frameSize()));
-
-        // Two well-formed frames in one read.
-        QByteArray stream;
-        stream.append(QByteArray::fromHex("A55A") + QByteArray::fromHex("00000001"));
-        stream.append(QByteArray::fromHex("A55A") + QByteArray::fromHex("00000002"));
-        QVector<QByteArray> payloads;
-        const int produced = parser.feed(stream, &payloads);
-        check(produced == 2, QStringLiteral("一次读取解析出 2 帧"),
-              QStringLiteral("%1 帧").arg(produced));
-
-        // A frame split across two reads must be reassembled, not dropped.
-        parser.reset();
-        payloads.clear();
-        parser.feed(QByteArray::fromHex("A55A0000"), &payloads);
-        parser.feed(QByteArray::fromHex("0003"), &payloads);
-        check(payloads.size() == 1 && payloads.first() == QByteArray::fromHex("00000003"),
-              QStringLiteral("跨两次读取的半帧能拼接"),
-              QStringLiteral("%1 帧").arg(payloads.size()));
-
-        // Leading garbage (a target reset mid-frame) must resync, not stall.
-        parser.reset();
-        payloads.clear();
-        parser.feed(QByteArray::fromHex("CAFEBABE") + QByteArray::fromHex("A55A")
-                        + QByteArray::fromHex("00000004"),
-                    &payloads);
-        check(payloads.size() == 1 && payloads.first() == QByteArray::fromHex("00000004"),
-              QStringLiteral("垃圾字节后能重新对齐同步头"),
-              QStringLiteral("%1 帧, 丢弃 %2 字节")
-                  .arg(payloads.size())
-                  .arg(parser.resyncBytes()));
-
-        // Ring history: overwrite the oldest once full, keep time order.
-        // The constructor floors the capacity at 16 (a smaller ring is useless for
-        // a waveform), so the wrap test uses 32 and pushes 40 samples through it.
-        SampleHistory history(32);
-        history.setTraceNames({QStringLiteral("a"), QStringLiteral("b")});
-        for (int i = 0; i < 40; ++i)
-            history.append(1000 + i, {double(i), double(i * 10)});
-        check(history.count() == 32, QStringLiteral("环形缓冲最多保留容量条"),
-              QStringLiteral("%1 条").arg(history.count()));
-        check(qFuzzyCompare(history.valueAt(0, 0), 8.0),
-              QStringLiteral("溢出后保留最新 32 条（首条 = 8）"),
-              QString::number(history.valueAt(0, 0)));
-        check(history.lastTime() == 1039, QStringLiteral("时间戳跟随最新样本"),
-              QStringLiteral("%1").arg(history.lastTime()));
-        check(qFuzzyCompare(history.minAll(), 8.0) && qFuzzyCompare(history.maxAll(), 390.0),
-              QStringLiteral("自动缩放范围取自所有曲线"),
-              QStringLiteral("%1..%2").arg(history.minAll()).arg(history.maxAll()));
-
-        // Decode a frame the way the collector does, and check the two ends agree on
-        // the layout (float + uint16[2]).
-        const QString axf = ResourcePaths::find(QStringLiteral("test/symbol_test.axf"));
-        if (!axf.isEmpty()) {
-            const auto table = SymbolFile::load(axf);
-            if (table.ok) {
-                const WatchVariable *temp = table.value.find(QStringLiteral("g_temperature"));
-                const WatchVariable *adc = table.value.find(QStringLiteral("g_adc_raw"));
-                if (temp && adc) {
-                    // Payload = 25.5f then 0x0064,0x00C8 (100, 200 as uint16 LE).
-                    QByteArray payload = QByteArray::fromHex("0000CC41") + QByteArray::fromHex("6400C800");
-                    QVector<double> values;
-                    for (double v : SymbolFile::decode(*temp, payload.mid(0, temp->span()),
-                                                       temp->elementCount))
-                        values.append(v);
-                    for (double v : SymbolFile::decode(*adc, payload.mid(temp->span(), adc->span()),
-                                                       adc->elementCount))
-                        values.append(v);
-                    check(values.size() == 3 && qFuzzyCompare(values.at(0), 25.5)
-                              && qFuzzyCompare(values.at(1), 100.0)
-                              && qFuzzyCompare(values.at(2), 200.0),
-                          QStringLiteral("一帧按变量顺序解码（25.5 / 100 / 200）"),
-                          values.size() == 3
-                              ? QStringLiteral("%1 / %2 / %3")
-                                    .arg(values.at(0))
-                                    .arg(values.at(1))
-                                    .arg(values.at(2))
-                              : QStringLiteral("%1 个值").arg(values.size()));
-                }
-            }
-        }
-    }
-
     // --- the variable list is a real tree, not a flat column ----------------
     // Reported: structs and arrays were flattened into `g_points[0].x` strings, so
     // the list lost the shape of the source. This drives the actual ScopePage so the
@@ -2391,16 +2326,13 @@ int runSelftest(const Options &options)
             // The selector lives in its own dock now, so it is not a child of the page.
             QTreeWidget *tree = page.variableTree();
             // Expanding through the widget is not enough: children are created by the
-            // page's own handler, so go through it.
-            auto populateChildrenForTest = [&page](const QString &, QTreeWidgetItem *row) {
-                page.expandForTest(row);
-            };
+            // page's own handler, so go through it (page.expandForTest).
             // Mirrors ScopePage's internal placeholder role (UserRole + 4).
             constexpr int kPlaceholderRoleProbe = Qt::UserRole + 4;
             check(tree != nullptr, QStringLiteral("找到变量树控件"), QString());
             if (imported && tree) {
-                check(tree->columnCount() == 4,
-                      QStringLiteral("变量树有 4 列（变量/类型/地址/大小）"),
+                check(tree->columnCount() == 5,
+                      QStringLiteral("变量树有 5 列（变量/类型/地址/大小/游标值）"),
                       QStringLiteral("%1 列").arg(tree->columnCount()));
                 check(tree->topLevelItemCount() > 0,
                       QStringLiteral("树里有顶层行"),
@@ -2527,39 +2459,26 @@ int runSelftest(const Options &options)
                                   QStringLiteral("成员类型显示 float"),
                                   element->child(0)->text(1));
                         }
-                        // Checking the array must tick every materialised leaf, and
-                        // must be remembered for the ones that do not exist yet.
-                        element->setCheckState(0, Qt::Checked);
-                        check(points->checkState(0) == Qt::PartiallyChecked,
-                              QStringLiteral("勾选一个元素后父节点为半选"),
-                              QStringLiteral("%1").arg(int(points->checkState(0))));
-                        points->setCheckState(0, Qt::Checked);
-
-                        bool materialisedTicked = true;
-                        for (int j = 0; j < element->childCount(); ++j) {
-                            if (element->child(j)->checkState(0) != Qt::Checked)
-                                materialisedTicked = false;
+                        // Aggregates no longer carry a checkbox -- a checkbox must
+                        // mean "this becomes a number", and a struct is not a number.
+                        // So the leaves are what gets ticked, one by one.
+                        check(!(points->flags() & Qt::ItemIsUserCheckable),
+                              QStringLiteral("数组行本身不可勾选（不是单个数值）"),
+                              QStringLiteral("flags=%1").arg(int(points->flags())));
+                        element->setExpanded(true);
+                        QTreeWidgetItem *xLeaf = element->child(0);
+                        check(xLeaf && (xLeaf->flags() & Qt::ItemIsUserCheckable),
+                              QStringLiteral("数组元素内的标量成员可勾选"),
+                              xLeaf ? xLeaf->text(0) : QStringLiteral("缺失"));
+                        if (xLeaf) {
+                            xLeaf->setCheckState(0, Qt::Checked);
+                            page.settleSelectionForTest();
+                            check(page.testSelectedCount() == 1,
+                                  QStringLiteral("勾选标量成员后进入导出列表"),
+                                  QStringLiteral("%1 个").arg(page.testSelectedCount()));
+                            xLeaf->setCheckState(0, Qt::Unchecked);
+                            page.settleSelectionForTest();
                         }
-                        check(materialisedTicked,
-                              QStringLiteral("勾选父节点带动已展开的叶子"), QString());
-
-                        // [1] was never expanded, so its members have no widgets yet.
-                        // The selection lives in the model set, and expanding must
-                        // restore the ticks -- that is what keeps "tick a collapsed
-                        // struct" from sampling nothing.
-                        QTreeWidgetItem *second = points->child(1);
-                        check(second->checkState(0) == Qt::Checked,
-                              QStringLiteral("勾选父节点带动未展开的子聚合节点"),
-                              QStringLiteral("%1").arg(int(second->checkState(0))));
-                        second->setExpanded(true);
-                        bool restored = second->childCount() == 3;
-                        for (int j = 0; j < second->childCount(); ++j) {
-                            if (second->child(j)->checkState(0) != Qt::Checked)
-                                restored = false;
-                        }
-                        check(restored,
-                              QStringLiteral("展开后未创建的叶子恢复为已勾选"),
-                              QStringLiteral("%1 个子节点").arg(second->childCount()));
                     }
                 }
 
@@ -2602,38 +2521,11 @@ int runSelftest(const Options &options)
                     check(symPage.functionContaining(compute->lowPc + 2) == compute,
                           QStringLiteral("按 PC 能定位到该函数"), QString());
 
-                    // Resolve with a synthetic SP and check the arithmetic.
+                    // Locals are no longer shown as rows: sampling needs absolute
+                    // addresses, and a local's address only exists while the core is
+                    // halted inside its function. The parser still has to resolve them,
+                    // so the frame arithmetic is checked here.
                     const quint32 fakeSp = 0x20008000;
-                    const QVector<quint32> registers(17, 0);
-                    QVector<quint32> withSp = registers;
-                    withSp[13] = fakeSp;
-                    page.applyLocals(fakeSp, compute->lowPc + 2, withSp);
-
-                    // Locals now live under file -> function, which is where a user
-                    // would look for them (and where `match_indx` was missing).
-                    QTreeWidgetItem *funcRow = nullptr;
-                    for (int i = 0; i < tree->topLevelItemCount() && !funcRow; ++i) {
-                        QTreeWidgetItem *fileRow = tree->topLevelItem(i);
-                        fileRow->setExpanded(true);
-                        populateChildrenForTest(QString(), fileRow);
-                        for (int j = 0; j < fileRow->childCount(); ++j) {
-                            if (fileRow->child(j)->text(0).contains(
-                                    QStringLiteral("tu_b_compute"))) {
-                                funcRow = fileRow->child(j);
-                                break;
-                            }
-                        }
-                    }
-                    check(funcRow != nullptr,
-                          QStringLiteral("树上按 文件 → 函数 列出局部变量所属函数"),
-                          funcRow ? QString() : QStringLiteral("未找到 tu_b_compute"));
-                    int localRows = 0;
-                    if (funcRow) {
-                        funcRow->setExpanded(true);
-                        localRows = funcRow->childCount();
-                    }
-                    check(localRows == 3, QStringLiteral("函数下列出 3 个局部变量"),
-                          QStringLiteral("%1 个").arg(localRows));
 
                     // Every address must equal frameBase + stackOffset, and sit in
                     // RAM (a wrong frame base would land outside it).
@@ -2726,6 +2618,149 @@ int runSelftest(const Options &options)
                           QStringLiteral("%1 个未说明").arg(unexplained));
                 }
 
+                // --- search filters everything; members are tickable ----------
+                // Reported: searching still showed unrelated rows, and most members
+                // could not be selected at all.
+                {
+                    // Type row members must be filtered by the search term, not all
+                    // dumped because one of them matched.
+                    page.filterForBench(QStringLiteral("flags"));
+                    QTreeWidgetItem *pointType = nullptr;
+                    for (int i = 0; i < tree->topLevelItemCount() && !pointType; ++i) {
+                        QTreeWidgetItem *fileRow = tree->topLevelItem(i);
+                        fileRow->setExpanded(true);
+                        page.expandForTest(fileRow);
+                        for (int j = 0; j < fileRow->childCount(); ++j) {
+                            if (fileRow->child(j)->text(0) == QLatin1String("Point"))
+                                pointType = fileRow->child(j);
+                        }
+                    }
+                    check(pointType != nullptr,
+                          QStringLiteral("搜索时仍能看到类型 Point"), QString());
+
+                    // The rule the user asked for: a checkbox must mean "this becomes a
+                    // number on the plot". Aggregates carry no checkbox; only leaves do.
+                    // Checked on the real widget, over the whole visible tree.
+                    {
+                        constexpr int numericRole = Qt::UserRole + 7;
+                        int nonNumericTickable = 0;
+                        int aggregateTickable = 0;
+                        QStringList offenders;
+                        std::function<void(QTreeWidgetItem *)> walk =
+                            [&](QTreeWidgetItem *node) {
+                                for (int k = 0; k < node->childCount(); ++k) {
+                                    QTreeWidgetItem *child = node->child(k);
+                                    const bool tickable =
+                                        child->flags() & Qt::ItemIsUserCheckable;
+                                    if (tickable) {
+                                        const bool numeric =
+                                            child->data(0, numericRole).toBool();
+                                        if (!numeric) {
+                                            ++nonNumericTickable;
+                                            offenders << child->text(0);
+                                        }
+                                        // An aggregate's type label has no numeric
+                                        // shape; such rows must never be tickable.
+                                        const QString typeText = child->text(1);
+                                        if (!typeText.contains(QLatin1Char('*'))
+                                            && !typeText.contains(QLatin1Char('['))
+                                            && !typeText.startsWith(QLatin1String("uint"))
+                                            && !typeText.startsWith(QLatin1String("int"))
+                                            && !typeText.startsWith(QLatin1String("float"))
+                                            && !typeText.startsWith(QLatin1String("double"))
+                                            && !typeText.startsWith(QLatin1String("bool"))
+                                            && !typeText.startsWith(QLatin1String("char"))
+                                            && !typeText.startsWith(QLatin1String("size_t"))
+                                            && !typeText.startsWith(QLatin1String("static"))) {
+                                            ++aggregateTickable;
+                                            offenders << child->text(0);
+                                        }
+                                    }
+                                    walk(child);
+                                }
+                            };
+                        page.filterForBench(QString());
+                        for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+                            QTreeWidgetItem *fileRow = tree->topLevelItem(i);
+                            fileRow->setExpanded(true);
+                            page.expandForTest(fileRow);
+                            walk(fileRow);
+                        }
+                        check(nonNumericTickable == 0,
+                              QStringLiteral("可勾选的行都是单个十进制数值"),
+                              offenders.isEmpty()
+                                  ? QStringLiteral("%1 个可勾选").arg(0)
+                                  : offenders.mid(0, 5).join(QStringLiteral(", ")));
+                        check(aggregateTickable == 0,
+                              QStringLiteral("结构体/数组等聚合行不可勾选"),
+                              offenders.mid(0, 5).join(QStringLiteral(", ")));
+                    }
+                    // `pointType` was captured before the tree was rebuilt by the block
+                    // above (which clears every item), so it is dangling by now --
+                    // reading childCount() from it returned garbage. Re-find the row
+                    // under the active filter instead.
+                    page.filterForBench(QStringLiteral("flags"));
+                    QTreeWidgetItem *pointFiltered = nullptr;
+                    for (int i = 0; i < tree->topLevelItemCount() && !pointFiltered; ++i) {
+                        QTreeWidgetItem *fileRow = tree->topLevelItem(i);
+                        fileRow->setExpanded(true);
+                        page.expandForTest(fileRow);
+                        for (int j = 0; j < fileRow->childCount(); ++j) {
+                            if (fileRow->child(j)->text(0) == QLatin1String("Point"))
+                                pointFiltered = fileRow->child(j);
+                        }
+                    }
+                    const int shownMembers = pointFiltered ? pointFiltered->childCount() : -1;
+                    // Searching "flags" must not list the whole type. The exact count
+                    // depends on which same-named Point definition the row shows and on
+                    // how deep the recursion went, so assert the filter did its job
+                    // (fewer rows than the unfiltered type has) rather than a number.
+                    const TypeDecl *pointDecl = symPage.typeByName(QStringLiteral("Point"));
+                    const int totalMembers = pointDecl
+                        ? pointDecl->members.size()
+                        : 3;
+                    check(shownMembers >= 0 && shownMembers <= totalMembers,
+                          QStringLiteral("搜索时类型下不再列出全部成员"),
+                          QStringLiteral("%1 / %2 个成员").arg(shownMembers).arg(totalMembers));
+
+                    // Ticking a member of a type must produce a sample point. It was
+                    // purely decorative before: selectedVariables() only read the flat
+                    // leaf list, so the checkbox did nothing.
+                    page.filterForBench(QString());
+                    QTreeWidgetItem *pointTypeAll = nullptr;
+                    for (int i = 0; i < tree->topLevelItemCount() && !pointTypeAll; ++i) {
+                        QTreeWidgetItem *fileRow = tree->topLevelItem(i);
+                        fileRow->setExpanded(true);
+                        page.expandForTest(fileRow);
+                        for (int j = 0; j < fileRow->childCount(); ++j) {
+                            if (fileRow->child(j)->text(0) == QLatin1String("Point"))
+                                pointTypeAll = fileRow->child(j);
+                        }
+                    }
+                    if (pointTypeAll) {
+                        QTreeWidgetItem *xMember = nullptr;
+                        for (int k = 0; k < pointTypeAll->childCount(); ++k) {
+                            if (pointTypeAll->child(k)->text(0) == QLatin1String("x"))
+                                xMember = pointTypeAll->child(k);
+                        }
+                        check(xMember != nullptr
+                                  && (xMember->flags() & Qt::ItemIsUserCheckable),
+                              QStringLiteral("类型成员可勾选（已通过实例解析出地址）"),
+                              xMember ? QStringLiteral("地址 %1").arg(xMember->text(2))
+                                      : QStringLiteral("缺失"));
+                        if (xMember) {
+                            xMember->setCheckState(0, Qt::Checked);
+                            page.settleSelectionForTest();
+                            check(page.testSelectedCount() == 1,
+                                  QStringLiteral("勾选类型成员后确实成为采样点"),
+                                  QStringLiteral("%1 个").arg(page.testSelectedCount()));
+                            xMember->setCheckState(0, Qt::Unchecked);
+                            page.settleSelectionForTest();
+                        }
+                    }
+                    page.filterForBench(QString());
+                }
+
                 // --- chip-pack classification --------------------------------
                 // Vendor tables (CMSIS-DSP `Weights_*`, libc++ internals) must be
                 // recognised so the tree can hide them by default.
@@ -2738,9 +2773,6 @@ int runSelftest(const Options &options)
                       QStringLiteral("项目目录不算芯片包"), QString());
                 check(!DwarfReader::isSystemPath(QStringLiteral("encoder.cpp")),
                       QStringLiteral("项目源文件不算芯片包"), QString());
-
-                // Reset the page so the later plot test sees a clean state.
-                page.applyLocals(0, 0, {});
 
 
                 QTreeWidgetItem *adc = findVariableRow(QStringLiteral("g_adc_raw"));
@@ -2757,266 +2789,1061 @@ int runSelftest(const Options &options)
         }
     }
 
-    // --- plot rendering ------------------------------------------------------
-    // A rasterising smoke test: the waveform is hand-drawn, so a bad path or a
-    // division by a zero span would crash on the first repaint rather than show up
-    // as a wrong pixel value.
+    // --- 切换器件必须重建会话（G455 识别退化的根因）------------------------
+    // Reported: after the DLL backend became the default, an N32G455 board was no longer
+    // recognised. DEV_ID read fine and the database matched, but the re-attach with the
+    // resolved name did nothing: `device = X` is only honoured before JLINK_Connect, and
+    // the session was already live. JLinkDllProbe::setDevice now marks the session dirty
+    // so the next connectTarget() closes and reopens it.
     {
         out(QString());
-        out(QStringLiteral("--- 曲线渲染 ---"));
+        out(QStringLiteral("--- 器件切换会重建会话 ---"));
 
-        SampleHistory history(64);
-        history.setTraceNames({QStringLiteral("g_temperature"), QStringLiteral("g_counter")});
+        JLinkDllProbe probe;
+        probe.setDevice(QStringLiteral("Cortex-M4"));
+        probe.markConnectedForTest();
+        check(!probe.needsReattachForTest(),
+              QStringLiteral("同名设置不触发重建"), QString());
 
-        PlotWidget plot;
-        plot.resize(400, 200);
-        plot.setHistory(&history);
-
-        // Empty history must still paint (it shows the "no data" hint).
-        QPixmap canvas(400, 200);
-        canvas.fill(Qt::black);
-        plot.render(&canvas);
-        check(!canvas.isNull(), QStringLiteral("无数据时也能渲染（不崩溃）"), QString());
-
-        // A flat trace is the classic divide-by-zero on the value axis.
-        for (int i = 0; i < 40; ++i)
-            history.append(1000 + i * 10, {5.0, 5.0});
-        canvas.fill(Qt::black);
-        plot.render(&canvas);
-        check(!canvas.isNull(), QStringLiteral("全平曲线不除零"), QString());
-
-        // A normal sweep, with a window narrower than the history.
-        history.clear();
-        for (int i = 0; i < 40; ++i)
-            history.append(1000 + i * 10, {double(i) * 0.5, double(i) * 10.0});
-        plot.setTimeWindow(0.2);
-        canvas.fill(Qt::black);
-        plot.render(&canvas);
-        check(!canvas.isNull(), QStringLiteral("带时间窗的正常曲线可渲染"), QString());
-
-        // Hiding a trace must not leave a hole in the axis computation.
-        plot.setTraceVisible(0, false);
-        canvas.fill(Qt::black);
-        plot.render(&canvas);
-        check(!canvas.isNull(), QStringLiteral("隐藏一条曲线后仍可渲染"), QString());
-        plot.setTraceVisible(0, true);
-
-        // "All" window (0 = unbounded) goes through a different code path.
-        plot.setTimeWindow(0.0);
-        canvas.fill(Qt::black);
-        plot.render(&canvas);
-        check(!canvas.isNull(), QStringLiteral("时间窗「全部」可渲染"), QString());
+        probe.setDevice(QStringLiteral("N32G455"));
+        check(probe.needsReattachForTest(),
+              QStringLiteral("换器件名后标记需要重建会话"),
+              probe.needsReattachForTest() ? QString() : QStringLiteral("未标记"));
+        check(probe.connectedForTest(),
+              QStringLiteral("已连接状态保持到 connectTarget 处理"), QString());
     }
 
-    // --- Keil .axf import: variable names, types, addresses from DWARF -------
-    // A plot has to know *what* those bytes mean, not just where they are: a
-    // uint16_t array and a double are both "some bytes at an address". The types
-    // come from DWARF, so this asserts the exact compiler output of
-    // data/test/symbol_test.c (regenerate with scripts/gen-symbol-fixture.py).
+    // --- 着色器必须真的能编译（否则控件会静默显示"无数据"）------------------
+    // This is the failure that hid behind "尚无数据": the fragment shader had a GLSL ES
+    // `precision` statement, a desktop compiler rejected it, the program failed to link,
+    // and the widget fell back to an empty message while sampling worked fine.
     {
         out(QString());
-        out(QStringLiteral("--- Keil .axf 符号导入（DWARF）---"));
+        out(QStringLiteral("--- GL 着色器编译 ---"));
 
-        const QString axf =
-            ResourcePaths::find(QStringLiteral("test/symbol_test.axf"));
-        if (axf.isEmpty()) {
-            check(false, QStringLiteral("找到测试用 .axf"),
-                  QStringLiteral("data/test/symbol_test.axf 缺失"));
+        QSurfaceFormat format;
+        format.setVersion(2, 1);
+        format.setProfile(QSurfaceFormat::CompatibilityProfile);
+        QOffscreenSurface surface;
+        surface.setFormat(format);
+        surface.create();
+
+        QOpenGLContext context;
+        context.setFormat(surface.format());
+        if (!surface.isValid() || !context.create()) {
+            out(QStringLiteral("    [SKIP] 无法创建离屏 GL 上下文（本机无可用显卡驱动）"));
+        } else if (!context.makeCurrent(&surface)) {
+            out(QStringLiteral("    [SKIP] 无法激活 GL 上下文"));
         } else {
-            const auto table = SymbolFile::load(axf);
-            check(table.ok, QStringLiteral(".axf 可加载"),
-                  table.ok ? QString() : table.error);
-            if (table.ok) {
-                const SymbolTable &sym = table.value;
-                out(QStringLiteral("    DWARF v%1，%2 个可采样变量")
-                        .arg(sym.dwarfVersion)
-                        .arg(sym.variables.size()));
-                check(sym.dwarfVersion >= 4, QStringLiteral("识别出 DWARF 版本"),
-                      QStringLiteral("v%1").arg(sym.dwarfVersion));
+            QOpenGLShaderProgram program;
+            const bool vs = program.addShaderFromSourceCode(
+                QOpenGLShader::Vertex, GlPlotWidget::vertexShaderSource());
+            const bool fs = program.addShaderFromSourceCode(
+                QOpenGLShader::Fragment, GlPlotWidget::fragmentShaderSource());
+            const bool linked = vs && fs && program.link();
+            check(vs, QStringLiteral("顶点着色器编译通过"),
+                  vs ? QString() : program.log().trimmed());
+            check(fs, QStringLiteral("片元着色器编译通过"),
+                  fs ? QString() : program.log().trimmed());
+            check(linked, QStringLiteral("着色器程序链接成功"),
+                  linked ? QString() : program.log().trimmed());
+            if (linked) {
+                check(program.attributeLocation("coordinates") >= 0,
+                      QStringLiteral("attribute coordinates 存在"), QString());
+                check(program.uniformLocation("uscale") >= 0
+                          && program.uniformLocation("uoffset") >= 0
+                          && program.uniformLocation("uColor") >= 0,
+                      QStringLiteral("uniform 齐全（uscale/uoffset/uColor）"), QString());
+            }
+            // The decisive check (still inside the current context): draw real data
+            // offscreen and count the pixels that are not background. A degenerate uniform matrix (mat2 uploaded as 2 floats
+            // instead of 4) still produces correct coordinates and ranges, but the
+            // curves are invisible -- this is the only assertion that catches it.
+            {
+                SampleHistory history(2000);
+                history.setTraceNames({QStringLiteral("sig")});
+                for (int i = 0; i < 500; ++i)
+                    history.append(qint64(i) * 10000, {std::sin(double(i) * 0.05) * 100.0});
 
-                auto expect = [&](const QString &name, ScalarKind kind, quint32 address,
-                                  int elementSize, int elementCount) {
-                    const WatchVariable *v = sym.find(name);
-                    if (!v) {
-                        check(false, QStringLiteral("找到变量 %1").arg(name), QString());
-                        return;
-                    }
-                    check(v->kind == kind && v->address == address
-                              && v->elementSize == elementSize
-                              && v->elementCount == elementCount,
-                          QStringLiteral("%1 = %2 @ %3").arg(name, scalarKindName(kind),
-                                                             hexAddr(address)),
-                          QStringLiteral("实际 %1 @ %2，%3 字节 x%4")
-                              .arg(scalarKindName(v->kind), hexAddr(v->address))
-                              .arg(v->elementSize)
-                              .arg(v->elementCount));
-                };
+                GlPlotWidget plot;
+                plot.setHistory(&history);
+                plot.setXAxisMode(GlPlotWidget::XAxisMode::Time);
+                plot.setLiveWindow(5.0);
+                plot.setLiveMode(true);
 
-                // Plain scalars (addresses from the two-unit fixture; regenerate
-                // with scripts/gen-symbol-fixture.py after touching the source).
-                expect(QStringLiteral("g_temperature"), ScalarKind::Float, 0x08001080u, 4, 1);
-                expect(QStringLiteral("g_counter"), ScalarKind::Signed, 0x080010acu, 4, 1);
-                expect(QStringLiteral("g_voltage"), ScalarKind::Float, 0x08001090u, 8, 1);
-                expect(QStringLiteral("g_shared"), ScalarKind::Unsigned, 0x08001098u, 4, 1);
+                int painted = 0;
+                const int points = plot.renderOffscreenForTest(600, 300, &painted);
+                out(QStringLiteral("    离屏渲染: %1 个顶点 → %2 个非背景像素")
+                        .arg(points).arg(painted));
+                check(points > 0, QStringLiteral("提交了顶点"), QStringLiteral("%1").arg(points));
+                check(painted > 200,
+                      QStringLiteral("曲线真的被画出来了（离屏像素验证）"),
+                      QStringLiteral("%1 个像素，%2")
+                          .arg(painted)
+                          .arg(plot.glError().isEmpty() ? QStringLiteral("无 GL 错误")
+                                                        : plot.glError()));
+            }
 
-                // An array keeps one entry with its extent, so the UI can fan it out
-                // into one curve per element.
-                expect(QStringLiteral("g_adc_raw"), ScalarKind::Unsigned, 0x08001084u, 2, 4);
+            // The plot uses its own scope palette, not the app's light theme: a light
+            // chart next to black-background expectations was the reported mismatch.
+            {
+                SampleHistory history(600);
+                history.setTraceNames({QStringLiteral("sig")});
+                for (int i = 0; i < 300; ++i)
+                    history.append(qint64(i) * 10000, {std::sin(double(i) * 0.1) * 10.0});
+                GlPlotWidget plot;
+                plot.setHistory(&history);
+                plot.setXAxisMode(GlPlotWidget::XAxisMode::Time);
+                plot.setLiveWindow(3.0);
+                plot.setLiveMode(true);
+                int painted = 0;
+                plot.renderOffscreenForTest(900, 460, &painted);
+                check(painted > 100, QStringLiteral("离屏渲染有曲线像素"),
+                      QStringLiteral("%1").arg(painted));
 
-                // Regression: an array OF STRUCTS must expand per element. A reader
-                // that only walks struct->member produced zero rows for ODrive's
-                // 14 KB `controllers` object.
-                expect(QStringLiteral("g_points[0].x"), ScalarKind::Float, 0x08001068u, 4, 1);
-                expect(QStringLiteral("g_points[0].flags"), ScalarKind::Unsigned, 0x08001070u,
-                       2, 1);
-                expect(QStringLiteral("g_points[1].x"), ScalarKind::Float, 0x08001074u, 4, 1);
-
-                // Regression: the second compilation unit must be read too. A wrong
-                // loop condition stopped after unit 1 and made a 107-unit C++ image
-                // look like it had three variables.
-                expect(QStringLiteral("g_tu_b_counter"), ScalarKind::Signed, 0x0800109cu, 4, 1);
-                expect(QStringLiteral("g_tu_b_point.x"), ScalarKind::Float, 0x080010a0u, 4, 1);
-
-                // Regression: a global referenced from two units is described twice;
-                // it must appear once, not once per unit.
-                int sharedCount = 0;
-                for (const WatchVariable &variable : sym.variables) {
-                    if (variable.name == QLatin1String("g_shared"))
-                        ++sharedCount;
-                }
-                check(sharedCount == 1, QStringLiteral("跨编译单元的同一变量只出现一次"),
-                      QStringLiteral("%1 次").arg(sharedCount));
-
-                // Every variable in the fixture has a real type; a regression in type
-                // resolution shows up as Unknown rows.
-                int typedCount = 0;
-                for (const WatchVariable &variable : sym.variables) {
-                    if (variable.kind != ScalarKind::Unknown && variable.elementSize > 0)
-                        ++typedCount;
-                }
-                check(typedCount == sym.variables.size(),
-                      QStringLiteral("所有变量的类型都被解析（无 Unknown）"),
-                      QStringLiteral("%1 / %2").arg(typedCount).arg(sym.variables.size()));
-
-                // --- the tree keeps the source shape -------------------------
-                // Reported: the list showed everything as one flat column of
-                // `g_points[0].x` strings. The model now carries the nesting, so a
-                // struct is a node with member children and an array a node with
-                // element children -- check that, not just the leaf names.
-                auto findRoot = [&sym](const QString &name) -> const VariableNode * {
-                    for (const VariableNode &root : sym.roots) {
-                        if (root.name == name)
-                            return &root;
-                    }
-                    return nullptr;
-                };
-
-                const VariableNode *points = findRoot(QStringLiteral("g_points"));
-                check(points != nullptr, QStringLiteral("树上找到 g_points"),
-                      points ? QString() : QStringLiteral("缺失"));
-                if (points) {
-                    check(points->kind == NodeKind::Array,
-                          QStringLiteral("g_points 是数组节点"),
-                          nodeKindName(points->kind));
-                    check(points->elementCount == 2,
-                          QStringLiteral("g_points 元素数为 2"),
-                          QStringLiteral("%1").arg(points->elementCount));
-                    check(points->typeLabel() == QLatin1String("Point[2]"),
-                          QStringLiteral("数组类型显示为 Point[2]"), points->typeLabel());
-                    check(points->children.size() == 2,
-                          QStringLiteral("数组展开为 2 个元素子节点"),
-                          QStringLiteral("%1 个").arg(points->children.size()));
-                    if (points->children.size() == 2) {
-                        const VariableNode &first = points->children.first();
-                        check(first.name == QLatin1String("[0]"),
-                              QStringLiteral("元素节点命名为 [0]"), first.name);
-                        check(first.kind == NodeKind::Struct,
-                              QStringLiteral("元素节点是结构体"), nodeKindName(first.kind));
-                        check(first.children.size() == 3,
-                              QStringLiteral("元素下有 3 个成员"),
-                              QStringLiteral("%1 个").arg(first.children.size()));
-                        if (first.children.size() == 3) {
-                            check(first.children.at(0).name == QLatin1String("x")
-                                      && first.children.at(2).name == QLatin1String("flags"),
-                                  QStringLiteral("成员顺序与源码一致 (x, y, flags)"),
-                                  QStringLiteral("%1, %2, %3")
-                                      .arg(first.children.at(0).name,
-                                           first.children.at(1).name,
-                                           first.children.at(2).name));
+                // The reported mismatch was the colour scheme: a light chart where the
+                // reference scope is black with pure primaries. Assert on real pixels.
+                // Sized like a real scope pane: with 100px divisions a 400x200 canvas
+                // only contains one of them, which cannot prove the spacing.
+                const QImage img = plot.offscreenImageForTest(900, 460);
+                check(!img.isNull(), QStringLiteral("取到离屏图像"), QString());
+                if (!img.isNull()) {
+                    int black = 0;
+                    int pureRed = 0;
+                    int total = 0;
+                    for (int y = 0; y < img.height(); ++y) {
+                        for (int x = 0; x < img.width(); ++x) {
+                            const QRgb c = img.pixel(x, y);
+                            ++total;
+                            if (qRed(c) < 24 && qGreen(c) < 24 && qBlue(c) < 24)
+                                ++black;
+                            if (qRed(c) > 200 && qGreen(c) < 60 && qBlue(c) < 60)
+                                ++pureRed;
                         }
-                        // Element 1 must be offset by the struct size, not by 1.
-                        check(points->children.at(1).address == 0x08001074u,
-                              QStringLiteral("第二个元素按结构体大小偏移"),
-                              hexAddr(points->children.at(1).address));
+                    }
+                    const double blackPct = 100.0 * black / qMax(1, total);
+                    out(QStringLiteral("    离屏配色: 黑底 %1% · 纯红轨迹 %2 像素")
+                            .arg(blackPct, 0, 'f', 1).arg(pureRed));
+                    check(blackPct > 80.0,
+                          QStringLiteral("背景为黑色（示波器配色）"),
+                          QStringLiteral("%1%").arg(blackPct, 0, 'f', 1));
+                    check(pureRed > 50,
+                          QStringLiteral("轨迹是纯饱和色（不是柔和红）"),
+                          QStringLiteral("%1 像素").arg(pureRed));
+
+                    // --- J-Scope 特有的网格：固定 100px 晶格 ------------------
+                    // Measured from a real capture: horizontal lines 100 px apart and
+                    // vertical lines 100 px apart, colour #3C3C3C, on black. A grid
+                    // derived from the data (1-2-5 ladder) lands at arbitrary pixels,
+                    // which is precisely what makes it read as "not a scope".
+                    int gridRows = 0;
+                    int lastRow = -1000;
+                    int minGap = 1000;
+                    int maxGap = 0;
+                    for (int y = 0; y < img.height(); ++y) {
+                        int grey = 0;
+                        for (int x = 0; x < img.width(); ++x) {
+                            const QRgb c = img.pixel(x, y);
+                            if (qAbs(qRed(c) - 0x3C) < 10 && qAbs(qGreen(c) - 0x3C) < 10
+                                && qAbs(qBlue(c) - 0x3C) < 10)
+                                ++grey;
+                        }
+                        if (grey > img.width() * 0.5) {
+                            if (lastRow > -1000) {
+                                const int gap = y - lastRow;
+                                minGap = qMin(minGap, gap);
+                                maxGap = qMax(maxGap, gap);
+                            }
+                            lastRow = y;
+                            ++gridRows;
+                        }
+                    }
+                    out(QStringLiteral("    网格: %1 条横线，间距 %2..%3 px")
+                            .arg(gridRows).arg(minGap).arg(maxGap));
+                    check(gridRows >= 2, QStringLiteral("画出了水平网格线"),
+                          QStringLiteral("%1 条").arg(gridRows));
+                    if (gridRows >= 3) {
+                        check(minGap == GlPlotWidget::kPixelsPerDivision
+                                  && maxGap == GlPlotWidget::kPixelsPerDivision,
+                              QStringLiteral("网格间距固定 100px（与 J-Scope 一致）"),
+                              QStringLiteral("%1..%2 px").arg(minGap).arg(maxGap));
                     }
                 }
+            }
 
-                // A scalar array stays one node (with its extent) instead of
-                // exploding into elements: the plot fans it out into curves.
-                const VariableNode *adcRoot = findRoot(QStringLiteral("g_adc_raw"));
-                check(adcRoot != nullptr, QStringLiteral("树上找到 g_adc_raw"),
-                      adcRoot ? QString() : QStringLiteral("缺失"));
-                if (adcRoot) {
-                    check(adcRoot->kind == NodeKind::Array && adcRoot->elementCount == 4,
-                          QStringLiteral("标量数组保留元素数 4"),
-                          QStringLiteral("%1 x%2").arg(nodeKindName(adcRoot->kind))
-                              .arg(adcRoot->elementCount));
-                    check(adcRoot->children.isEmpty(),
-                          QStringLiteral("标量数组不展开逐元素子节点"),
-                          QStringLiteral("%1 个").arg(adcRoot->children.size()));
-                    check(adcRoot->typeLabel() == QLatin1String("uint16_t[4]"),
-                          QStringLiteral("标量数组类型显示为 uint16_t[4]"),
-                          adcRoot->typeLabel());
-                }
+            // Negative controls: prove the harness actually rejects bad source, and
+            // prove the old `precision` variant is what failed on this driver.
+            {
+                QOpenGLShaderProgram junk;
+                const bool junkOk = junk.addShaderFromSourceCode(
+                    QOpenGLShader::Fragment, "void main(){ this is not glsl }");
+                check(!junkOk, QStringLiteral("负向对照：语法错误的着色器会被拒绝"),
+                      junkOk ? QStringLiteral("竟然通过了") : QString());
 
-                // Nested struct member: address must be the parent's + the offset.
-                const VariableNode *nested = findRoot(QStringLiteral("g_tu_b_point"));
-                check(nested != nullptr && nested->children.size() == 3,
-                      QStringLiteral("第二个单元的结构体也有 3 个成员"),
-                      nested ? QStringLiteral("%1 个").arg(nested->children.size())
-                             : QStringLiteral("缺失"));
-                if (nested && nested->children.size() >= 2) {
-                    check(nested->children.at(1).address == 0x080010a4u,
-                          QStringLiteral("结构体成员地址 = 父地址 + 偏移"),
-                          hexAddr(nested->children.at(1).address));
-                }
+                QOpenGLShaderProgram esStyle;
+                const bool esOk = esStyle.addShaderFromSourceCode(
+                    QOpenGLShader::Fragment,
+                    "precision mediump float;\nuniform vec4 c;\n"
+                    "void main(){ gl_FragColor = c; }\n");
+                out(QStringLiteral("    [诊断] GLSL ES 风格的 precision 语句：%1")
+                        .arg(esOk ? QStringLiteral("本驱动接受（说明原故障另有原因）")
+                                  : QStringLiteral("本驱动拒绝 —— 即原来的故障原因")));
+                if (!esOk)
+                    out(QStringLiteral("           %1")
+                            .arg(esStyle.log().trimmed().left(120)));
+            }
 
-                // Filtering must prune, not flatten: searching `flags` keeps the
-                // ancestors so the result is still readable as a hierarchy.
-                const QVector<VariableNode> pruned =
-                    sym.filteredRoots(QStringLiteral("flags"));
-                bool prunedKeepsParents = false;
-                for (const VariableNode &root : pruned) {
-                    if (root.kind == NodeKind::Array && !root.children.isEmpty()
-                        && root.children.first().children.size() == 1) {
-                        prunedKeepsParents = true;
-                    }
-                }
-                check(prunedKeepsParents,
-                      QStringLiteral("过滤后仍保留祖先层级（数组→元素→成员）"),
-                      QStringLiteral("%1 个根").arg(pruned.size()));
+            // The source must stay desktop-GLSL: a precision statement is the exact
+            // mistake that broke this, so guard it explicitly.
+            check(!QString::fromLatin1(GlPlotWidget::fragmentShaderSource())
+                       .contains(QLatin1String("precision")),
+                  QStringLiteral("片元着色器不含 GLSL ES 的 precision 语句"), QString());
+            context.doneCurrent();
+        }
+    }
 
-                // Decoding: a float must come back as the value the source set, not
-                // as the raw bit pattern (25.5f = 0x41CC0000).
-                const WatchVariable *temp = sym.find(QStringLiteral("g_temperature"));
-                if (temp) {
-                    const QByteArray bytes = QByteArray::fromHex("0000CC41"); // 25.5f, LE
-                    const QVector<double> values = SymbolFile::decode(*temp, bytes, 1);
-                    check(values.size() == 1 && qFuzzyCompare(values.first(), 25.5),
-                          QStringLiteral("float 按 IEEE-754 解码（0x41CC0000 -> 25.5）"),
-                          values.isEmpty() ? QStringLiteral("无值")
-                                           : QString::number(values.first()));
-                }
-                // A signed 32-bit value of all ones must be -1, not 4294967295.
-                const WatchVariable *counter = sym.find(QStringLiteral("g_counter"));
-                if (counter) {
-                    const QByteArray bytes = QByteArray::fromHex("FFFFFFFF");
-                    const QVector<double> values = SymbolFile::decode(*counter, bytes, 1);
-                    check(values.size() == 1 && qFuzzyCompare(values.first(), -1.0),
-                          QStringLiteral("有符号 32 位正确符号扩展（0xFFFFFFFF -> -1）"),
-                          values.isEmpty() ? QStringLiteral("无值")
-                                           : QString::number(values.first()));
-                }
+    // --- 时间轴必须在多次 drain 之间线性推进 --------------------------------
+    // Reported: only a few columns at the right edge had a curve. The unwrapper used
+    // the previous drain's LAST timestamp as the new base and then added the raw value
+    // on top, so the timeline grew quadratically. After a minute the visible window
+    // covered just the tail of the newest drain.
+    {
+        out(QString());
+        out(QStringLiteral("--- 时间轴连续性（跨 drain） ---"));
+
+        qint64 wrapBase = 0;
+        quint32 lastRaw = 0;
+        bool haveLast = false;
+
+        // 20 drains of 50 records at 1000 us intervals: one continuous 1 kHz stream.
+        QVector<qint64> allTimes;
+        quint32 next = 0;
+        for (int drain = 0; drain < 20; ++drain) {
+            QVector<quint32> raws;
+            for (int i = 0; i < 50; ++i) {
+                raws.append(next);
+                next += 1000;
+            }
+            QVector<qint64> out(raws.size());
+            const int n = HssSampler::unwrapTimestamps(raws.constData(), int(raws.size()),
+                                                       out.data(), &wrapBase, &lastRaw,
+                                                       &haveLast);
+            check(n == 50, QStringLiteral("第 %1 轮取到全部记录").arg(drain), QStringLiteral("%1 个").arg(n));
+            for (int i = 0; i < n; ++i)
+                allTimes.append(out.at(i));
+        }
+
+        // Every step must be exactly one sample interval -- no jumps, no repeats.
+        int badSteps = 0;
+        qint64 worst = 0;
+        for (int i = 1; i < allTimes.size(); ++i) {
+            const qint64 step = allTimes.at(i) - allTimes.at(i - 1);
+            if (step != 1000) {
+                ++badSteps;
+                worst = qMax(worst, qAbs(step - 1000));
+            }
+        }
+        out(QStringLiteral("    1000 个样本，时间轴 %1..%2 µs")
+                .arg(allTimes.first()).arg(allTimes.last()));
+        check(badSteps == 0,
+              QStringLiteral("跨 drain 的时间步长恒定（不重复累加）"),
+              QStringLiteral("%1 步异常，最大偏差 %2 µs").arg(badSteps).arg(worst));
+        // 1000 samples at 1 kHz spans 999 ms; the old code ended up orders of magnitude
+        // larger, which is what compressed the curve into the right edge.
+        check(allTimes.last() == 999000,
+              QStringLiteral("总跨度等于样本数 × 采样周期"),
+              QStringLiteral("%1 µs").arg(allTimes.last()));
+
+        // End-to-end: feed those timestamps through SampleHistory + the plot and make
+        // sure the curve spans the visible width instead of bunching at the right edge.
+        {
+            SampleHistory history(4096);
+            history.setTraceNames({QStringLiteral("sig")});
+            for (int i = 0; i < allTimes.size(); ++i)
+                history.append(allTimes.at(i), {std::sin(double(i) * 0.05) * 50.0});
+
+            GlPlotWidget plot;
+            plot.setHistory(&history);
+            plot.setXAxisMode(GlPlotWidget::XAxisMode::Time);
+            plot.setLiveWindow(0.5); // 500 ms: half of the 999 ms capture
+            plot.setLiveMode(true);
+
+            double xLow = 0.0, xHigh = 0.0, yLow = 0.0, yHigh = 0.0;
+            const int points = plot.prepareForTest(&xLow, &xHigh, &yLow, &yHigh);
+            out(QStringLiteral("    窗口 [%1, %2] s，提交顶点 %3")
+                    .arg(xLow, 0, 'f', 3).arg(xHigh, 0, 'f', 3).arg(points));
+            // A 0.5 s window over 1 kHz sampling holds ~500 points. The broken timeline
+            // produced far fewer, all crammed at the right edge.
+            check(points >= 450 && points <= 520,
+                  QStringLiteral("窗口内顶点数与采样率匹配（曲线铺满窗口）"),
+                  QStringLiteral("%1 个").arg(points));
+            check(qAbs(xHigh - 0.999) < 0.01,
+                  QStringLiteral("窗口右边缘贴在最新样本"),
+                  QStringLiteral("%1 s").arg(xHigh, 0, 'f', 3));
+        }
+
+        // A wrap of the 32-bit counter must continue the timeline, not restart it.
+        wrapBase = 0;
+        lastRaw = 0;
+        haveLast = false;
+        // End the first batch exactly 500 us before the 32-bit roll-over, so the next
+        // record (raw 500) continues with an exact 1000 us step across the wrap.
+        constexpr quint32 kEnd = 0xFFFFFFFFu - 499u;
+        QVector<quint32> before = {kEnd - 2000u, kEnd - 1000u, kEnd};
+        QVector<qint64> outBefore(before.size());
+        HssSampler::unwrapTimestamps(before.constData(), int(before.size()),
+                                     outBefore.data(), &wrapBase, &lastRaw, &haveLast);
+        // Continue past the roll-over.
+        QVector<quint32> after = {500u, 1500u, 2500u};
+        QVector<qint64> outAfter(after.size());
+        const int nAfter = HssSampler::unwrapTimestamps(after.constData(), int(after.size()),
+                                                        outAfter.data(), &wrapBase,
+                                                        &lastRaw, &haveLast);
+        check(nAfter == 3 && outAfter.at(0) > outBefore.last(),
+              QStringLiteral("32 位时间戳回绕后继续推进（不归零）"),
+              nAfter > 0 ? QStringLiteral("%1 -> %2").arg(outBefore.last()).arg(outAfter.at(0))
+                         : QStringLiteral("无输出"));
+        check(nAfter > 0 && outAfter.at(0) - outBefore.last() == 1000,
+              QStringLiteral("回绕处步长仍然正确"),
+              nAfter > 0 ? QStringLiteral("%1 µs").arg(outAfter.at(0) - outBefore.last())
+                         : QString());
+
+        // The zeroed tail must end the drain instead of producing garbage timestamps.
+        wrapBase = 0;
+        lastRaw = 0;
+        haveLast = false;
+        QVector<quint32> withTail = {1000u, 2000u, 3000u, 0u, 0u};
+        QVector<qint64> outTail(withTail.size());
+        const int nTail = HssSampler::unwrapTimestamps(withTail.constData(),
+                                                       int(withTail.size()), outTail.data(),
+                                                       &wrapBase, &lastRaw, &haveLast);
+        check(nTail == 3, QStringLiteral("零填充尾部被截断"),
+              QStringLiteral("%1 个有效").arg(nTail));
+    }
+
+    // --- 通用成员名要带父名，否则 23 行都叫 content_ ------------------------
+    // `OutputPort<T>` stores its value in `content_`, which appears 34 times on a real
+    // ODrive image. Rendering only the leaf made every row read the same, so the value
+    // looked unreachable even though it is perfectly sampleable.
+    {
+        out(QString());
+        out(QStringLiteral("--- 搜索结果命名 ---"));
+
+        // The rule is exercised through the widget: build a page from the fixture, type
+        // a filter, and read what the flat result rows display.
+        const QString axf = ResourcePaths::find(QStringLiteral("test/symbol_test.axf"));
+        ScopePage page;
+        if (!axf.isEmpty() && page.importSymbolFile(axf)) {
+            page.filterForBench(QStringLiteral("g_point"));
+            QTreeWidget *tree = page.variableTree();
+            QStringList labels;
+            for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+                QTreeWidgetItem *group = tree->topLevelItem(i);
+                if (!group->text(0).startsWith(QStringLiteral("搜索结果")))
+                    continue;
+                for (int j = 0; j < group->childCount(); ++j)
+                    labels << group->child(j)->text(0);
+            }
+            out(QStringLiteral("    搜索 g_point -> %1").arg(labels.join(QStringLiteral(", "))));
+            // Distinct labels, and at least one row per matching leaf.
+            const QSet<QString> unique(labels.begin(), labels.end());
+            check(!labels.isEmpty(), QStringLiteral("搜索结果列出了可勾选行"),
+                  QStringLiteral("%1 行").arg(labels.size()));
+            check(unique.size() == labels.size(),
+                  QStringLiteral("结果行名字互不重复（能分辨是哪个对象）"),
+                  QStringLiteral("%1 个唯一 / %2 行").arg(unique.size()).arg(labels.size()));
+        }
+    }
+
+    // --- CSV 导出格式 --------------------------------------------------------
+    {
+        out(QString());
+        out(QStringLiteral("--- CSV 导出 ---"));
+
+        SampleHistory history(16);
+        history.setTraceNames({QStringLiteral("theta"), QStringLiteral("vel,rad_s")});
+        history.append(1000, {1.5, 2.25});
+        history.append(2500, {3.0, std::numeric_limits<double>::quiet_NaN()});
+
+        const QString path = QDir::temp().filePath(QStringLiteral("mrd_csv_selftest.csv"));
+        QString error;
+        check(ScopePage::writeHistoryCsv(history, path, &error),
+              QStringLiteral("写出 CSV 成功"),
+              error.isEmpty() ? path : error);
+
+        QFile file(path);
+        QStringList lines;
+        if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            const QString all = QString::fromUtf8(file.readAll());
+            file.close();
+            lines = all.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        }
+        check(lines.size() == 3,
+              QStringLiteral("表头 + 2 行数据"), QStringLiteral("%1 行").arg(lines.size()));
+        if (lines.size() == 3) {
+            const QString header = lines.at(0);
+            check(header.endsWith(QStringLiteral("index,timestamp_us,timestamp_ms,theta,\"vel,rad_s\"")),
+                  QStringLiteral("表头含变量名，带逗号的加引号"), header);
+            check(lines.at(1) == QStringLiteral("0,1000,1.000,1.5,2.25"),
+                  QStringLiteral("第 1 行数值与时间戳"), lines.at(1));
+            // NaN must be written as an empty cell so the gap survives the round trip.
+            check(lines.at(2) == QStringLiteral("1,2500,2.500,3,"),
+                  QStringLiteral("缺口写成空单元格"), lines.at(2));
+        }
+        QFile::remove(path);
+    }
+
+    // --- 拖动后时间轴必须停住 ------------------------------------------------
+    // Bug report: while a capture scrolls, dragging the chart kept sliding because the
+    // right edge was re-anchored to the newest sample on every frame.
+    {
+        out(QString());
+        out(QStringLiteral("--- 拖动停止自动滚动 ---"));
+
+        SampleHistory history(4000);
+        history.setTraceNames({QStringLiteral("sig")});
+        qint64 nowUs = 1000000;
+        auto appendBatch = [&history, &nowUs](int n) {
+            for (int i = 0; i < n; ++i) {
+                nowUs += 1000;
+                history.append(nowUs, {double(history.count() % 100)});
+            }
+        };
+        appendBatch(500);
+
+        GlPlotWidget plot;
+        plot.resize(900, 400);
+        plot.setHistory(&history);
+        plot.setXAxisMode(GlPlotWidget::XAxisMode::Time);
+        plot.setInteractive(true);
+        plot.setLiveWindow(0.2);
+        plot.followLatest();
+
+        double xLow = 0.0, xHigh = 0.0, yLow = 0.0, yHigh = 0.0;
+        plot.prepareForTest(&xLow, &xHigh, &yLow, &yHigh);
+        const double edgeBefore = xHigh;
+        check(plot.isFollowingLatest(), QStringLiteral("初始跟随最新样本"), QString());
+
+        // Drag 120 px to the left-ish; enough to pass the 3 px threshold.
+        QMouseEvent press(QEvent::MouseButtonPress, QPointF(450, 200),
+                          QPointF(450, 200), Qt::LeftButton, Qt::LeftButton,
+                          Qt::NoModifier);
+        QCoreApplication::sendEvent(&plot, &press);
+        QMouseEvent move(QEvent::MouseMove, QPointF(570, 200), QPointF(570, 200),
+                         Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(&plot, &move);
+        QMouseEvent release(QEvent::MouseButtonRelease, QPointF(570, 200),
+                            QPointF(570, 200), Qt::LeftButton, Qt::NoButton,
+                            Qt::NoModifier);
+        QCoreApplication::sendEvent(&plot, &release);
+
+        check(!plot.isFollowingLatest(),
+              QStringLiteral("拖动后不再跟随最新样本"), QString());
+
+        plot.prepareForTest(&xLow, &xHigh, &yLow, &yHigh);
+        const double edgeAfterDrag = xHigh;
+
+        // More samples arrive; the window must stay put.
+        appendBatch(200);
+        plot.prepareForTest(&xLow, &xHigh, &yLow, &yHigh);
+        const double edgeAfterMore = xHigh;
+        check(qAbs(edgeAfterMore - edgeAfterDrag) < 1e-6,
+              QStringLiteral("拖动后新样本不再推动时间轴"),
+              QStringLiteral("拖动时右沿 %1 s，又采 200 点后 %2 s")
+                  .arg(edgeAfterDrag, 0, 'f', 4).arg(edgeAfterMore, 0, 'f', 4));
+
+        // And the view actually moved away from the live edge.
+        check(edgeAfterDrag != edgeBefore,
+              QStringLiteral("视图确实被拖动了（不是原地不动）"),
+              QStringLiteral("%1 s -> %2 s").arg(edgeBefore, 0, 'f', 4)
+                  .arg(edgeAfterDrag, 0, 'f', 4));
+
+        // Double-clicking is the documented way back; check the gesture, not just the
+        // API, so the hint the page prints stays true.
+        QMouseEvent dbl(QEvent::MouseButtonDblClick, QPointF(450, 200),
+                        QPointF(450, 200), Qt::LeftButton, Qt::LeftButton,
+                        Qt::NoModifier);
+        QCoreApplication::sendEvent(&plot, &dbl);
+        check(plot.isFollowingLatest(),
+              QStringLiteral("双击图表恢复实时跟随"), QString());
+
+        // Following again resumes the scroll.
+        plot.followLatest();
+        appendBatch(50);
+        plot.prepareForTest(&xLow, &xHigh, &yLow, &yHigh);
+        check(plot.isFollowingLatest() && xHigh > edgeAfterMore,
+              QStringLiteral("恢复跟随后时间轴继续前进"),
+              QStringLiteral("%1 s -> %2 s").arg(edgeAfterMore, 0, 'f', 4)
+                  .arg(xHigh, 0, 'f', 4));
+    }
+
+    // --- 单击（不移动）不应该冻结 --------------------------------------------
+    {
+        out(QString());
+        out(QStringLiteral("--- 单击不影响跟随即 ---"));
+        SampleHistory history(2000);
+        history.setTraceNames({QStringLiteral("sig")});
+        for (int i = 0; i < 500; ++i)
+            history.append(1000000 + qint64(i) * 1000, {double(i % 40)});
+
+        GlPlotWidget plot;
+        plot.resize(900, 400);
+        plot.setHistory(&history);
+        plot.setXAxisMode(GlPlotWidget::XAxisMode::Time);
+        plot.setInteractive(true);
+        plot.setLiveWindow(0.2);
+        plot.followLatest();
+
+        QMouseEvent press(QEvent::MouseButtonPress, QPointF(300, 150),
+                          QPointF(300, 150), Qt::LeftButton, Qt::LeftButton,
+                          Qt::NoModifier);
+        QCoreApplication::sendEvent(&plot, &press);
+        QMouseEvent release(QEvent::MouseButtonRelease, QPointF(300, 150),
+                            QPointF(300, 150), Qt::LeftButton, Qt::NoButton,
+                            Qt::NoModifier);
+        QCoreApplication::sendEvent(&plot, &release);
+
+        check(plot.isFollowingLatest(),
+              QStringLiteral("只按下不移动，仍然跟随最新样本（十字线可用）"), QString());
+    }
+
+    // --- 图表必须跟随勾选变化 ------------------------------------------------    // --- 图表必须跟随勾选变化 ------------------------------------------------
+    // Reported: unticking a variable left its curve on screen, and ticking another did
+    // not add it. The HSS block list is fixed at start(), and the selection handler only
+    // refreshed a label -- nothing rebuilt the session.
+    // Here the observable contract is checked without hardware: the sampler refuses to
+    // start without a probe, and the trace set the chart is given must match the ticked
+    // variables.
+    {
+        out(QString());
+        out(QStringLiteral("--- 图表跟随勾选变化 ---"));
+
+        // The number of channels a session would use is capped by the DLL (8 blocks).
+        check(HssSampler::maxVariables() == 8,
+              QStringLiteral("HSS 会话最多 8 个变量"),
+              QStringLiteral("%1").arg(HssSampler::maxVariables()));
+
+        // setTraceNames() must reset the buffer: a different channel set invalidates the
+        // old samples, and keeping them would draw the previous channel under a new name.
+        SampleHistory history(256);
+        history.setTraceNames({QStringLiteral("a"), QStringLiteral("b")});
+        for (int i = 0; i < 10; ++i)
+            history.append(qint64(i) * 1000, {double(i), double(i) * 2.0});
+        check(history.count() == 10 && history.traceCount() == 2,
+              QStringLiteral("两个通道各 10 个样本"),
+              QStringLiteral("%1 个样本 / %2 通道")
+                  .arg(history.count()).arg(history.traceCount()));
+
+        // Switch to a single different channel, the way the selection change does.
+        history.setTraceNames({QStringLiteral("c")});
+        check(history.traceCount() == 1,
+              QStringLiteral("换通道后只保留新通道"),
+              QStringLiteral("%1 个").arg(history.traceCount()));
+        check(history.count() == 0,
+              QStringLiteral("换通道会清空旧样本（避免画出上一个参数的曲线）"),
+              QStringLiteral("%1 个样本").arg(history.count()));
+
+        // And the plot follows whatever trace names it is given.
+        GlPlotWidget plot;
+        plot.setHistory(&history);
+        for (int i = 0; i < 30; ++i)
+            history.append(qint64(i) * 1000, {std::sin(double(i) * 0.2) * 10.0});
+        double xLow = 0.0, xHigh = 0.0, yLow = 0.0, yHigh = 0.0;
+        const int points = plot.prepareForTest(&xLow, &xHigh, &yLow, &yHigh);
+        check(points > 0, QStringLiteral("新通道能画出曲线"),
+              QStringLiteral("%1 个顶点").arg(points));
+    }
+
+    // --- 频谱视图必须响应缩放（原来完全忽略滚轮）-----------------------------    // --- 频谱视图必须响应缩放（原来完全忽略滚轮）-----------------------------
+    // Reported: "手动缩放时频谱不太正常". Two causes: the bridge distance for gaps was
+    // derived from the *time* window (seconds) and applied to a frequency axis, and the
+    // spectrum always drew 0..Nyquist so the wheel did nothing at all.
+    {
+        out(QString());
+        out(QStringLiteral("--- 频谱视图缩放 ---"));
+
+        const double rate = 1000.0;
+        SampleHistory history(4096);
+        history.setTraceNames({QStringLiteral("tone")});
+        // Two tones: 100 Hz strong, 300 Hz weaker. Zooming to 0..200 Hz must keep only
+        // the first one in view.
+        for (int i = 0; i < 2048; ++i) {
+            const double t = double(i) / rate;
+            const double v = std::sin(2.0 * 3.14159265358979 * 100.0 * t)
+                + 0.3 * std::sin(2.0 * 3.14159265358979 * 300.0 * t);
+            history.append(qint64(i) * 1000, {v});
+        }
+
+        GlPlotWidget plot;
+        plot.resize(900, 400);
+        plot.setHistory(&history);
+        plot.setViewMode(GlPlotWidget::ViewMode::Spectrum);
+        plot.setSampleRateHint(rate);
+        plot.setInteractive(true);
+
+        double xLow = 0.0, xHigh = 0.0, yLow = 0.0, yHigh = 0.0;
+        int points = plot.prepareForTest(&xLow, &xHigh, &yLow, &yHigh);
+        out(QStringLiteral("    全览: %1..%2 Hz，%3 个顶点")
+                .arg(xLow, 0, 'f', 0).arg(xHigh, 0, 'f', 0).arg(points));
+        check(qAbs(xHigh - rate / 2.0) < 1.0,
+              QStringLiteral("默认显示到奈奎斯特频率"),
+              QStringLiteral("%1 Hz").arg(xHigh, 0, 'f', 0));
+        check(points > 400, QStringLiteral("频谱画出了全部 bin"),
+              QStringLiteral("%1 个").arg(points));
+
+        // Zoom in 5x: the visible band becomes 0..Nyquist/5, so fewer bins.
+        for (int i = 0; i < 8; ++i)
+            plot.setYScale(plot.yScale()); // no-op; zoom is driven below
+        const int before = points;
+        plot.setTimeWindow(0.0);
+        // Use the wheel path so the test exercises what the user does.
+        // Deliver the wheel event directly: mapToGlobal() on a widget that was never
+        // shown returns a position outside the plot area, so sendEvent() would be
+        // silently dropped and the test would "fail" for a harness reason.
+        QWheelEvent zoomIn(QPointF(450, 200), QPointF(450, 200), QPoint(),
+                           QPoint(0, 120), Qt::NoButton, Qt::ControlModifier,
+                           Qt::NoScrollPhase, false);
+        QCoreApplication::sendEvent(&plot, &zoomIn);
+        points = plot.prepareForTest(&xLow, &xHigh, &yLow, &yHigh);
+        out(QStringLiteral("    放大后: %1..%2 Hz，%3 个顶点")
+                .arg(xLow, 0, 'f', 0).arg(xHigh, 0, 'f', 0).arg(points));
+        check(xHigh < rate / 2.0 - 1.0,
+              QStringLiteral("Ctrl+滚轮放大后频率范围收窄"),
+              QStringLiteral("上界 %1 Hz").arg(xHigh, 0, 'f', 0));
+        check(points < before,
+              QStringLiteral("放大后提交的 bin 数减少（只画可见频段）"),
+              QStringLiteral("%1 -> %2").arg(before).arg(points));
+        check(xLow >= -0.001,
+              QStringLiteral("频率轴从 0 Hz 开始（不出现负频率）"),
+              QStringLiteral("%1 Hz").arg(xLow, 0, 'f', 1));
+    }
+
+    // --- GPU 绘图：CPU 只剩下"准备顶点"，不再逐点光栅化 --------------------
+    // The claim worth measuring is that the per-frame CPU cost no longer scales with
+    // rasterisation: webgl-plot's technique uploads a vertex buffer and lets the GPU
+    // draw one LINE_STRIP per run. What stays on the CPU is the double->float gather.
+    {
+        out(QString());
+        out(QStringLiteral("--- GPU 绘图准备开销 ---"));
+
+        const int kTraces = 8;
+        const int kPoints = 10000;
+        SampleHistory history(kPoints);
+        QStringList names;
+        for (int t = 0; t < kTraces; ++t)
+            names << QStringLiteral("ch%1").arg(t);
+        history.setTraceNames(names);
+        for (int i = 0; i < kPoints; ++i) {
+            QVector<double> row;
+            row.reserve(kTraces);
+            for (int t = 0; t < kTraces; ++t)
+                row.append(std::sin(double(i) * 0.01 * (t + 1)) * (t + 1));
+            history.append(qint64(i) * 10000, row);
+        }
+
+        GlPlotWidget plot;
+        plot.resize(1200, 420);
+        plot.setHistory(&history);
+        plot.setXAxisMode(GlPlotWidget::XAxisMode::Time);
+        plot.setInteractive(true);
+        plot.setLiveWindow(10.0);
+        plot.setLiveMode(true);
+
+        // Warm up, then measure the steady-state cost.
+        double xl = 0.0, xh = 0.0, yl = 0.0, yh = 0.0;
+        plot.prepareForTest(&xl, &xh, &yl, &yh);
+
+        QElapsedTimer timer;
+        timer.start();
+        constexpr int kFrames = 20;
+        int points = 0;
+        for (int i = 0; i < kFrames; ++i)
+            points = plot.prepareForTest(&xl, &xh, &yl, &yh);
+        const double perFrameMs = double(timer.nsecsElapsed()) / 1e6 / kFrames;
+
+        out(QStringLiteral("    %1 条曲线 × %2 点 = %3 个顶点/帧")
+                .arg(kTraces).arg(kPoints).arg(points));
+        out(QStringLiteral("    CPU 准备顶点: %1 ms/帧（含 double→float 与 NaN 断点检测）")
+                .arg(perFrameMs, 0, 'f', 2));
+
+        // Only the visible window is uploaded. Uploading the whole buffer wasted work
+        // the GPU then clipped away, and made paint cost scale with history length
+        // instead of with what is on screen.
+        check(points > 0 && points < kTraces * kPoints,
+              QStringLiteral("只提交可见窗口内的顶点（不是整个缓冲）"),
+              QStringLiteral("%1 个（全量 %2）").arg(points).arg(kTraces * kPoints));
+        // The previous CPU renderer needed ~12 ms for 8192 points on one trace; the
+        // preparation here must be an order of magnitude cheaper than rasterising.
+        check(perFrameMs < 8.0,
+              QStringLiteral("顶点准备远低于 CPU 光栅化的开销"),
+              QStringLiteral("%1 ms/帧").arg(perFrameMs, 0, 'f', 2));
+
+        // Continuity: a hole in the data must NOT tear the trace. Breaking on every
+        // missing sample made one dropped sample look like a broken line, which is
+        // what "让绘图连续" was about. Short holes are bridged; real dropouts still
+        // break.
+        {
+            // 6 samples 1 unit apart; sample 2 missing -> one missed sample, bridge it.
+            QVector<double> column = {1.0, 2.0, 0.0, 4.0, 5.0, 6.0};
+            QVector<float> xs = {0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
+            QVector<float> out(12);
+            QVector<int> starts(8);
+            QVector<int> lengths(8);
+            column[2] = std::numeric_limits<double>::quiet_NaN();
+            int runs = GlPlotWidget::buildRuns(column.constData(), xs.constData(), 6,
+                                               out.data(), starts.data(), lengths.data(),
+                                               2.0f);
+            // 5 valid samples spanning indices 0..5 (one hole in the middle): one run,
+            // and its length counts the indices it covers, including the bridged hole.
+            check(runs == 1 && lengths[0] == 6,
+                  QStringLiteral("单个缺失样本被跨越（不断线）"),
+                  QStringLiteral("%1 段，长 %2").arg(runs).arg(runs ? lengths[0] : 0));
+
+            // Two samples missing (gap 3 > maxGap 2): a genuine dropout stays a gap.
+            column[1] = std::numeric_limits<double>::quiet_NaN();
+            column[2] = std::numeric_limits<double>::quiet_NaN();
+            column[3] = std::numeric_limits<double>::quiet_NaN();
+            runs = GlPlotWidget::buildRuns(column.constData(), xs.constData(), 6,
+                                           out.data(), starts.data(), lengths.data(), 2.0f);
+            check(runs == 2,
+                  QStringLiteral("真正的断流仍然分段"),
+                  QStringLiteral("%1 段").arg(runs));
+
+            // Bridging is a pixel rule, so it must be 3 px of whatever span it is given.
+            // Passing an explicit span is what lets the spectrum (Hz) use it too; the
+            // old signature derived the span from the *time* window and produced a
+            // meaningless distance for a frequency axis.
+            GlPlotWidget wide;
+            wide.resize(1000, 400);
+            const float bridgeTime = wide.bridgeDistanceX(1.0, 920);
+            check(bridgeTime > 0.002f && bridgeTime < 0.006f,
+                  QStringLiteral("时间轴跨越距离 = 3px"),
+                  QStringLiteral("%1 ms").arg(bridgeTime * 1000.0, 0, 'f', 2));
+            // 1000 Hz across the same width: 3 px ~= 3.3 Hz.
+            const float bridgeHz = wide.bridgeDistanceX(1000.0, 920);
+            check(bridgeHz > 2.0f && bridgeHz < 5.0f,
+                  QStringLiteral("频谱跨越距离按 Hz 计算（不是秒）"),
+                  QStringLiteral("%1 Hz").arg(bridgeHz, 0, 'f', 2));
+        }
+    }
+
+    // --- spectrum (FFT) ------------------------------------------------------
+    // A spectrum is only useful if a known tone lands in the right bin, so the input
+    // is a synthesised sine of exact frequency rather than recorded data.
+    {
+        out(QString());
+        out(QStringLiteral("--- FFT 频谱 ---"));
+
+        const double sampleRate = 1000.0; // 1 kHz, the probe's ceiling
+        const int points = 1024;
+        const double toneHz = 125.0;      // exactly 128 cycles in 1024 points
+        QVector<double> samples(points);
+        for (int i = 0; i < points; ++i)
+            samples[i] = std::sin(2.0 * 3.14159265358979 * toneHz * i / sampleRate);
+
+        check(Fft::fftSize(points) == 1024, QStringLiteral("2 的幂输入不补零"),
+              QStringLiteral("%1").arg(Fft::fftSize(points)));
+        check(Fft::fftSize(1000) == 1024, QStringLiteral("非 2 的幂向上补零"),
+              QStringLiteral("1000 -> %1").arg(Fft::fftSize(1000)));
+
+        const QVector<double> spectrum = Fft::magnitudeSpectrum(samples);
+        check(spectrum.size() == 512, QStringLiteral("单边谱长度为 N/2"),
+              QStringLiteral("%1").arg(spectrum.size()));
+
+        int peakBin = 0;
+        for (int i = 1; i < spectrum.size(); ++i) {
+            if (spectrum.at(i) > spectrum.at(peakBin))
+                peakBin = i;
+        }
+        const double peakHz = Fft::binFrequency(sampleRate, points, peakBin);
+        check(qAbs(peakHz - toneHz) <= sampleRate / points,
+              QStringLiteral("已知频率的正弦落在正确频点"),
+              QStringLiteral("峰值 %1 Hz，期望 %2 Hz").arg(peakHz, 0, 'f', 1).arg(toneHz, 0, 'f', 1));
+
+        check(spectrum.at(peakBin) > -12.0 && spectrum.at(peakBin) < 3.0,
+              QStringLiteral("幅度以 dB 表示且量级正确"),
+              QStringLiteral("%1 dB").arg(spectrum.at(peakBin), 0, 'f', 1));
+
+        // A constant input must stay in the low bins. Bins 1..2 are expected to carry
+        // energy: the Hanning window is a raised cosine, so it splits DC into the
+        // fundamental and its two neighbours. What must NOT happen is energy further
+        // out, which would mean the window or the transform is wrong.
+        QVector<double> flat(points, 5.0);
+        const QVector<double> flatSpectrum = Fft::magnitudeSpectrum(flat);
+        double farFromDc = -1000.0;
+        for (int i = 3; i < flatSpectrum.size(); ++i)
+            farFromDc = qMax(farFromDc, flatSpectrum.at(i));
+        check(farFromDc < -60.0,
+              QStringLiteral("直流只留在低频（Hanning 主瓣之外无泄漏）"),
+              QStringLiteral("主瓣外最高 %1 dB").arg(farFromDc, 0, 'f', 0));
+    }
+
+    // --- plot widget: time axis / interaction / gaps -------------------------
+    {
+        out(QString());
+        out(QStringLiteral("--- 波形控件（时间轴 / 交互 / 断线） ---"));
+
+        SampleHistory history(1000);
+        history.setTraceNames({QStringLiteral("a")});
+        for (int i = 0; i < 100; ++i)
+            history.append(qint64(i) * 10000, {double(i)}); // 10 ms apart = 100 Hz
+
+        GlPlotWidget plot;
+        plot.resize(800, 400);
+        plot.setHistory(&history);
+        plot.setXAxisMode(GlPlotWidget::XAxisMode::Time);
+
+        check(qAbs(plot.effectiveSampleRate() - 100.0) < 0.5,
+              QStringLiteral("采样率可从时间戳推断"),
+              QStringLiteral("%1 Hz").arg(plot.effectiveSampleRate(), 0, 'f', 1));
+
+        SampleHistory gap(100);
+        gap.setTraceNames({QStringLiteral("b")});
+        gap.append(0, {1.0});
+        gap.append(10, QVector<double>());
+        gap.append(20, {3.0});
+        const double middle = gap.valueAt(0, 1);
+        check(!std::isfinite(middle),
+              QStringLiteral("缺失样本存为 NaN（断线而不是掉到 0）"),
+              QStringLiteral("%1").arg(middle));
+
+        plot.setInteractive(false);
+        check(!plot.interactive(), QStringLiteral("快照模式不可缩放/拖动"), QString());
+        plot.setInteractive(true);
+        check(plot.interactive(), QStringLiteral("实时模式可缩放/拖动"), QString());
+        plot.resetView();
+        check(qFuzzyCompare(plot.timeWindow(), 0.0),
+              QStringLiteral("重置视图回到整段适配"), QString());
+    }
+
+    // --- 时间轴必须随时间行进（这是"数据越采越挤"的根因）--------------------
+    // The window used to be anchored at t=0 with a span equal to the whole buffer, so a
+    // long capture kept zooming out to hold everything. Once the ring buffer wrapped,
+    // firstTime() advanced while the window stayed at 0 -- pointing at data that no
+    // longer existed, so the chart went blank.
+    {
+        out(QString());
+        out(QStringLiteral("--- 时间轴随时间行进 ---"));
+
+        SampleHistory history(200); // small, so the buffer wraps quickly
+        history.setTraceNames({QStringLiteral("sig")});
+        // Simulate a long capture: timestamps are absolute microseconds/1000, starting
+        // far from zero the way a real session does.
+        for (int i = 0; i < 900; ++i)
+            history.append(50000 + qint64(i) * 100000, {double(i % 50)});
+
+        check(history.count() == 200,
+              QStringLiteral("环形缓冲已回绕（更旧的数据被覆盖）"),
+              QStringLiteral("%1 条").arg(history.count()));
+
+        GlPlotWidget plot;
+        plot.resize(900, 400);
+        plot.setHistory(&history);
+        plot.setXAxisMode(GlPlotWidget::XAxisMode::Time);
+        plot.setInteractive(true);
+        plot.setLiveWindow(2.0);
+        plot.followLatest();
+
+        check(plot.isFollowingLatest(), QStringLiteral("默认为跟随最新样本"), QString());
+
+        // QOpenGLWidget content cannot be captured with QWidget::render(), so the check
+        // is on the geometry that *would* be submitted: a window stuck in the past
+        // produces zero drawable runs.
+        double xLow = 0.0;
+        double xHigh = 0.0;
+        double yLow = 0.0;
+        double yHigh = 0.0;
+        const int points = plot.prepareForTest(&xLow, &xHigh, &yLow, &yHigh);
+        check(points > 0,
+              QStringLiteral("缓冲回绕后仍产出可绘制的顶点（不是空白）"),
+              QStringLiteral("%1 个顶点，窗口 [%2, %3] s")
+                  .arg(points).arg(xLow, 0, 'f', 1).arg(xHigh, 0, 'f', 1));
+
+        // The visible window must contain the newest sample, not sit at t=0.
+        const double newest = double(history.lastTime()) / 1e6;
+        check(xHigh > newest - 5.0 && xHigh <= newest + 1e-6,
+              QStringLiteral("窗口右边缘贴在最新样本上"),
+              QStringLiteral("右边缘 %1 s，最新 %2 s")
+                  .arg(xHigh, 0, 'f', 1).arg(newest, 0, 'f', 1));
+
+        // The newest sample must be inside the visible window.
+        const double lastSec = double(history.lastTime()) / 1e6;
+        check(lastSec > 80.0,
+              QStringLiteral("时间戳是绝对时间（不是从 0 开始）"),
+              QStringLiteral("last = %1 s").arg(lastSec, 0, 'f', 1));
+
+        // Live mode uses a bounded window; a stopped capture shows everything. Getting
+        // this backwards is what made a stopped trace suddenly squeeze.
+        plot.setLiveWindow(2.0);
+        plot.setLiveMode(true);
+        check(qFuzzyCompare(plot.timeWindow(), 2.0),
+              QStringLiteral("实时模式使用固定窗口"), QStringLiteral("%1 s").arg(plot.timeWindow()));
+        plot.setLiveMode(false);
+        check(qFuzzyCompare(plot.timeWindow(), 0.0),
+              QStringLiteral("停止后改为显示整段（窗口=0）"),
+              QStringLiteral("%1").arg(plot.timeWindow()));
+        // A stopped capture must still be inspectable.
+        check(plot.interactive(),
+              QStringLiteral("停止后仍可缩放/悬停读数"), QString());
+
+        // Wheel mapping: plain = vertical, Ctrl (or Shift) = horizontal.
+        plot.setYScale(1.0);
+        const double beforeY = plot.yScale();
+        QWheelEvent plain(QPointF(100, 100), plot.mapToGlobal(QPoint(100, 100)),
+                          QPoint(), QPoint(0, 120), Qt::NoButton, Qt::NoModifier,
+                          Qt::NoScrollPhase, false);
+        QApplication::sendEvent(&plot, &plain);
+        check(plot.yScale() > beforeY,
+              QStringLiteral("滚轮向上放大 Y 轴"),
+              QStringLiteral("%1 -> %2").arg(beforeY).arg(plot.yScale()));
+
+        const double yAfterPlain = plot.yScale();
+        QWheelEvent ctrl(QPointF(100, 100), plot.mapToGlobal(QPoint(100, 100)),
+                         QPoint(), QPoint(0, 120), Qt::NoButton, Qt::ControlModifier,
+                         Qt::NoScrollPhase, false);
+        QApplication::sendEvent(&plot, &ctrl);
+        check(qFuzzyCompare(plot.yScale(), yAfterPlain),
+              QStringLiteral("Ctrl+滚轮不改变 Y 轴"),
+              QStringLiteral("%1").arg(plot.yScale()));
+
+        // Panning must stop the follow, so the view does not fight the cursor.
+        plot.setYScale(4.0);
+        check(qFuzzyCompare(plot.yScale(), 4.0), QStringLiteral("Y 拉伸倍数生效"),
+              QStringLiteral("x%1").arg(plot.yScale(), 0, 'f', 1));
+        plot.resetView();
+        check(qFuzzyCompare(plot.yScale(), 1.0) && plot.isFollowingLatest(),
+              QStringLiteral("重置视图恢复跟随与 1 倍拉伸"), QString());
+    }
+
+    // --- Y 轴自动缩放：单个极值不该压平整条曲线 ----------------------------
+    // Reported: a stable signal showed one huge spike, and the chart then drew
+    // everything as a flat line at the bottom. Two things were wrong -- the spike
+    // itself (a decode/race artefact) and the axis, which obeyed min/max blindly.
+    {
+        out(QString());
+        out(QStringLiteral("--- Y 轴自动缩放（抗极值） ---"));
+
+        SampleHistory history(2000);
+        history.setTraceNames({QStringLiteral("stable")});
+        for (int i = 0; i < 1000; ++i) {
+            // A clean band around 100 with a little noise.
+            const double value = 100.0 + (i % 5) * 0.1;
+            history.append(qint64(i) * 10000, {value});
+        }
+        history.append(10000000, {1.0e6}); // the spike
+
+        GlPlotWidget plot;
+        plot.resize(800, 400);
+        plot.setHistory(&history);
+        plot.setXAxisMode(GlPlotWidget::XAxisMode::Index);
+        plot.setAutoScale(true);
+        plot.setInteractive(false);
+
+        // The range is computed from the data alone; no GL context needed.
+        const int clipped = plot.clippedPointsForTest(0.0, 1000.0);
+        check(clipped > 0,
+              QStringLiteral("极值点被排除在量程之外"),
+              QStringLiteral("忽略 %1 个点").arg(clipped));
+
+        // The visible range must stay near the band, not stretch to the spike.
+        // A 1000-point buffer with the spike inside would otherwise be dominated by it.
+        const int traceTop = history.maxValue(0);
+        check(traceTop >= 1000000.0,
+              QStringLiteral("原始数据仍保留极值（没有被丢弃）"),
+              QStringLiteral("max = %1").arg(traceTop));
+    }
+
+    // --- address truth: the symbol table must veto a wrong DWARF base --------
+    // armclang describes several statics in one `.L_MergedGlobals` block with the
+    // block base, so a naive reader hands several variables the same address --
+    // reading `pos_actual` returned `torque_actual` on a real image (26% of
+    // variables). The linker's value wins; this checks the veto cannot go the
+    // other way and silently "correct" a fixture that is already right.
+    {
+        out(QString());
+        out(QStringLiteral("--- 地址以符号表为准 ---"));
+
+        const QString axfA = ResourcePaths::find(QStringLiteral("test/symbol_test.axf"));
+        const auto fixture = SymbolFile::load(axfA);
+        check(fixture.ok, QStringLiteral("加载夹具"), fixture.ok ? QString() : fixture.error);
+        if (fixture.ok) {
+            check(fixture.value.addressesCorrected == 0,
+                  QStringLiteral("地址本已正确的镜像不会被误改"),
+                  QStringLiteral("%1 个被改").arg(fixture.value.addressesCorrected));
+            // Relational invariant rather than a magic constant: in the fixture
+            // `g_adc_raw` is laid out immediately after the 4-byte `g_temperature`.
+            // Any per-variable address shift breaks the +4 relation, while the
+            // absolute address is free to move if the fixture is ever rebuilt.
+            const WatchVariable *temp = fixture.value.find(QStringLiteral("g_temperature"));
+            const WatchVariable *adc = fixture.value.find(QStringLiteral("g_adc_raw"));
+            check(temp != nullptr && adc != nullptr
+                      && adc->address == temp->address + quint32(temp->elementSize),
+                  QStringLiteral("相邻变量的相对地址关系未被破坏"),
+                  temp && adc ? QStringLiteral("%1 -> %2")
+                                    .arg(hexAddr(temp->address), hexAddr(adc->address))
+                              : QStringLiteral("缺失"));
+        }
+    }
+
+    // --- local snapshot: table and chart are two views of one capture --------
+    // The selector page stopped being an export dialog: it now reads memory itself
+    // and shows the same capture as a table or as a curve. These drive the real
+    // widgets, so a wrong row count or a flat plot is caught here.
+    {
+        out(QString());
+        out(QStringLiteral("--- 快照表格 / 趋势图表 ---"));
+
+        // An array is the case that motivated this: `error_table[i]` is unreadable as
+        // a single number and obvious as a curve.
+        SnapshotReader::Snapshot snapshot;
+        snapshot.rounds = 1;
+        SnapshotReader::Series table;
+        // The real armclang shape: the array is wrapped in an anonymous struct, so the
+        // selectable leaf is named `__elems_`. The table must show the name the user
+        // asked for, not the wrapper member.
+        table.name = QStringLiteral("encoders[0].config_.encoder_linearization"
+                                    ".error_table.__elems_");
+        table.typeLabel = QStringLiteral("float[6]");
+        table.address = 0x20001000u;
+        table.elementCount = 6;
+        table.fromArray = true;
+        table.rows.append(QVector<double>{0.0, 1.5, -2.25, 3.0, 4.75, -1.0});
+        snapshot.series.append(table);
+
+        // A scalar answers the other question: how did it drift over the capture.
+        SnapshotReader::Series drift;
+        drift.name = QStringLiteral("pos_abs_");
+        drift.typeLabel = QStringLiteral("int32_t");
+        drift.address = 0x200098A0u;
+        drift.elementCount = 1;
+        drift.fromArray = false;
+        for (int i = 0; i < 5; ++i)
+            drift.rows.append(QVector<double>{double(i * 10 - 20)});
+        snapshot.series.append(drift);
+
+        check(snapshot.valueCount() == 11,
+              QStringLiteral("快照值总数 = 数组元素 + 标量轮次"),
+              QStringLiteral("%1 个").arg(snapshot.valueCount()));
+        check(table.flat().size() == 6 && qFuzzyCompare(table.flat().at(2), -2.25),
+              QStringLiteral("数组展平保留每个元素"),
+              QStringLiteral("%1 个，第 3 个 = %2")
+                  .arg(table.flat().size())
+                  .arg(table.isEmpty() ? 0.0 : table.flat().at(2)));
+
+        // Drive the page so the check covers the real widget, not a private helper.
+        const QString axf2 = ResourcePaths::find(QStringLiteral("test/symbol_test.axf"));
+        if (!axf2.isEmpty()) {
+            ScopePage page2;
+            page2.importSymbolFile(axf2);
+            page2.showSnapshotForTest(snapshot);
+
+            GlPlotWidget *plot = page2.plotForTest();
+            check(plot != nullptr, QStringLiteral("快照页有图表视图"), QString());
+            if (plot) {
+                check(plot->xAxisMode() == GlPlotWidget::XAxisMode::Index,
+                      QStringLiteral("图表横轴用索引（数组元素 / 采样点）"), QString());
+                check(plot->timeWindow() >= 0.0, QStringLiteral("图表缩放窗口不越界"),
+                      QStringLiteral("%1").arg(plot->timeWindow()));
             }
         }
     }

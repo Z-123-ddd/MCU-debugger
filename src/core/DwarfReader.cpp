@@ -5,6 +5,8 @@
 
 #include <QHash>
 #include <QSet>
+#include <QFileInfo>
+#include <QDir>
 
 #include <algorithm>
 #include <cstring>
@@ -207,6 +209,7 @@ constexpr quint64 AT_HIGH_PC = 0x12;
 constexpr quint64 AT_FRAME_BASE = 0x40;
 constexpr quint64 AT_DECL_FILE = 0x3a;
 constexpr quint64 AT_STMT_LIST = 0x10;
+constexpr quint64 AT_COMP_DIR = 0x1b;
 constexpr quint64 AT_COUNT = 0x37;
 constexpr quint64 AT_DATA_MEMBER_LOCATION = 0x38;
 constexpr quint64 AT_DECLARATION = 0x3c;
@@ -448,6 +451,13 @@ struct UnitContext
     QStringList fileNames;
     /// Directory of each entry in fileNames, parallel to it.
     QStringList fileDirs;
+    /// Resolved absolute path of each entry in fileNames (best effort).
+    QStringList filePaths;
+    /// DW_AT_comp_dir: the directory the compiler ran in, used to resolve the
+    /// relative directories the line table stores.
+    QString compDir;
+    /// Offset of this unit's line program, captured from DW_AT_stmt_list.
+    quint64 stmtList = 0;
 };
 
 class Parser
@@ -518,6 +528,7 @@ public:
     /// a self-describing one; it is left unsupported and yields an empty table so
     /// grouping simply falls back to a flat list rather than guessing.
     QStringList fileTableAt(quint64 offset);
+
 
 private:
     static qint64 readSleb(const char **cursor, const char *end);
@@ -893,10 +904,10 @@ bool Parser::readUnit(Cursor &info, UnitContext *unit, QVector<Die> *dies, quint
             // Offset 0 is a *valid* line table (it is the first one in the section),
             // so the presence of the attribute is what matters, not a non-zero value
             // -- testing `!= 0` silently dropped the first compilation unit's files.
-            if (spec.name == AT_STMT_LIST) {
-                unit->fileNames = fileTableAt(value.u);
-                unit->fileDirs = m_fileDirs.value(value.u);
-            }
+            if (spec.name == AT_STMT_LIST)
+                unit->stmtList = value.u;
+            if (spec.name == AT_COMP_DIR)
+                unit->compDir = value.text;
         }
         if (!info.ok())
             break;
@@ -910,6 +921,31 @@ bool Parser::readUnit(Cursor &info, UnitContext *unit, QVector<Die> *dies, quint
         m_dies.insert(die.offset, die);
         if (die.tag == TAG_VARIABLE)
             ++m_variablesSeen;
+    }
+
+    // The file table and the line program are only meaningful once both
+    // DW_AT_stmt_list and DW_AT_comp_dir are known -- and comp_dir can appear in any
+    // order relative to stmt_list, so both are resolved here at the end of the unit.
+    if (unit->stmtList < static_cast<quint64>(m_debugLine.size()) || !m_debugLine.isEmpty()) {
+        unit->fileNames = fileTableAt(unit->stmtList);
+        unit->fileDirs = m_fileDirs.value(unit->stmtList);
+
+        // Absolute paths: the line table directories are often relative to the
+        // directory the compiler ran in (`../MotorControl`), which is what
+        // DW_AT_comp_dir records.
+        unit->filePaths.clear();
+        for (int i = 0; i < unit->fileNames.size(); ++i) {
+            QString dir = i < unit->fileDirs.size() ? unit->fileDirs.at(i) : QString();
+            if (dir.isEmpty())
+                dir = unit->compDir;
+            else if (!unit->compDir.isEmpty() && QDir::isRelativePath(dir))
+                dir = unit->compDir + QLatin1Char('/') + dir;
+            const QString name = unit->fileNames.at(i);
+            QString full = QDir::isAbsolutePath(name) || dir.isEmpty()
+                ? name
+                : dir + QLatin1Char('/') + name;
+            unit->filePaths << QDir::cleanPath(full);
+        }
     }
 
     *nextOffset = static_cast<quint64>(unitEnd);
@@ -2007,10 +2043,28 @@ Result<DwarfContents> Parser::run()
                 if (name.isEmpty())
                     continue;
             }
-            // Keep the first real definition: later duplicates describe the same
-            // type and would only make the result order-dependent.
-            if (!m_typeDefinitions.contains(name)) {
+            // m_typeDefinitions keeps the first definition per name: it is what a
+            // forward declaration is resolved through, and one answer is enough there.
+            const bool firstForName = !m_typeDefinitions.contains(name);
+            if (firstForName)
                 m_typeDefinitions.insert(name, &die);
+            // The per-file index needs *every distinct* definition instead: a project
+            // legitimately defines `Config_t` in several scopes, and collapsing them
+            // by name made Encoder's 14628-byte `config_` resolve to an unrelated
+            // 6-member type. DWARF repeats the same DIE in every CU that uses it, so
+            // the identity used for dedupe is (name, size, member count).
+            {
+                const int candidates = static_cast<int>(die.u(AT_BYTE_SIZE, 0));
+                bool duplicate = false;
+                for (const TypeDecl &known : m_types) {
+                    if (known.name == name && known.byteSize == candidates
+                        && known.members.size() == m_children.value(die.offset).size()) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (duplicate)
+                    goto typeIndexDone;
                 // Also record it for the per-file type index, so a member such as
                 // `Encoder::index_found_` is findable from the file that defines the
                 // class, not only through whichever file declares an instance.
@@ -2042,7 +2096,11 @@ Result<DwarfContents> Parser::run()
                         : static_cast<int>(member.s(AT_DATA_MEMBER_LOCATION, 0));
                     const TypeInfo memberType = resolveType(member.u(AT_TYPE, 0), 1);
                     info.typeLabel = memberType.display;
+                    info.kind = memberType.kind;
                     info.byteSize = memberType.elementSize;
+                    info.elementCount = memberType.elementCount > 0
+                        ? memberType.elementCount
+                        : 1;
                     type.members.append(info);
                     if (type.members.size() >= 512)
                         break; // keep one huge class from dominating the index
@@ -2050,6 +2108,7 @@ Result<DwarfContents> Parser::run()
                 if (!type.members.isEmpty())
                     m_types.append(type);
             }
+        typeIndexDone:;
         }
     }
 
@@ -2115,6 +2174,7 @@ Result<DwarfContents> Parser::run()
     }
     for (const QString &failure : m_failures)
         Logger::instance()->debug(QStringLiteral("DWARF CU 失败: %1").arg(failure));
+
     DwarfContents contents;
     contents.globals = variables;
     contents.functions = functions;

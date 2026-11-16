@@ -20,6 +20,15 @@ struct Options
     /// --verbose: also log the per-step details (now DEBUG level).
     bool verbose = false;
     bool probeInfo = false;
+    /// --bench-bus <seconds>: measure whether polling every variable slows the target
+    /// (compares its own tick rate idle vs under read load).
+    int benchBus = 0;
+    /// --bench-read: time one full read of every static variable through the DLL and
+    /// check whether the core keeps running (DHCSR.C_HALT + its own tick counter).
+    bool benchRead = false;
+    /// --read-var <name>: with --symbols + --probe-info, read that variable from the
+    /// target and print its values (proves the snapshot path on real hardware).
+    QString readVar;
     /// --bench-scope: time the variable panel instead of listing variables
     bool benchScope = false;
     bool printHelp = false;
@@ -30,9 +39,9 @@ struct Options
     QString svdPath;
     /// --render <dir>: offscreen PNG snapshots (used with --selftest)
     QString renderDir;
-    /// --device <name>: override the chip name (`probe-rs --chip`)
+    /// --device <name>: override the chip name
     QString deviceName;
-    /// --backend jlink|probe-rs
+    /// --backend jlink-dll|jlink (default: jlink-dll)
     QString backend;
     /// --interface swd|jtag
     QString interfaceName;

@@ -9,7 +9,7 @@ namespace mrd {
 /// Live CPU health read from the Armv7-M System Control Block.
 ///
 /// The SCB fault registers are plain memory (no probe-specific register access
-/// needed), which is what lets this work on both the J-Link/GDB and probe-rs
+/// needed), which is what lets this work on both the J-Link DLL and GDB backends
 /// backends:
 ///
 ///   0xE000ED24 SHCSR   handler active/pending + enable bits

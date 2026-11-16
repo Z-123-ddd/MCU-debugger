@@ -147,8 +147,12 @@ struct TypeMember
 {
     QString name;
     QString typeLabel;
+    /// How to decode the bytes; needed to turn a member into a sample point.
+    ScalarKind kind = ScalarKind::Unknown;
     int byteOffset = 0;
     int byteSize = 0;
+    /// Element count for an array member (1 otherwise).
+    int elementCount = 1;
     /// A `static` member (DW_AT_declaration / no data_member_location).
     ///
     /// It has its own address rather than an offset inside an instance, so it is a
@@ -217,11 +221,11 @@ struct DwarfContents
 /// Extract every statically allocated variable from an ELF image's DWARF, as a
 /// forest (one root per global/static).
 ///
-/// This is what makes a J-Scope-style variable browser possible without asking the
+/// This is what makes a usable variable browser possible without asking the
 /// user to type addresses: the compiler already recorded each variable's name,
 /// type, size and location, including the nesting of structs and arrays. Only
 /// globals and statics are found -- locals live on the stack and have no fixed
-/// address, so every tool of this kind (J-Scope included) is limited to the same
+/// address, so every tool of this kind is limited to the same
 /// set.
 ///
 /// Addresses come from `DW_OP_addr` when the compiler emits one; `SymbolFile`

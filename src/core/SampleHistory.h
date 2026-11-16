@@ -29,12 +29,17 @@ public:
     void clear();
 
     /// Append one sample. \a values is truncated/padded to the trace count.
-    void append(qint64 timeMs, const QVector<double> &values);
+    ///
+    /// \a timeUs is in MICROSECONDS. Milliseconds were not enough: at 1 kHz two
+    /// consecutive samples are 1 ms apart, so integer ms truncation made several
+    /// samples share one X value and the trace drew as vertical spikes.
+    void append(qint64 timeUs, const QVector<double> &values);
 
     int count() const { return m_count; }
     bool isEmpty() const { return m_count == 0; }
     int headIndex() const { return m_head; } ///< index of the oldest sample
 
+    /// Sample time in MICROSECONDS.
     qint64 timeAt(int index) const;
     double valueAt(int trace, int index) const;
 

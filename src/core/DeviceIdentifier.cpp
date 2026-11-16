@@ -48,6 +48,8 @@ void appendEntry(const QJsonObject &o, QVector<DeviceIdEntry> *database)
     entry.family = o.value(QStringLiteral("family")).toString();
     entry.vendor = o.value(QStringLiteral("vendor")).toString();
     entry.svdHint = o.value(QStringLiteral("svdHint")).toString();
+    // Kept as a human-readable alias used when matching what the user typed. It is
+    // NOT a J-Link device name: handing it to the DLL crashes V8.26.
     entry.probeRsChip = o.value(QStringLiteral("probeRsChip")).toString();
     if (entry.probeRsChip.isEmpty())
         entry.probeRsChip = o.value(QStringLiteral("jlinkDevice")).toString(); // legacy key
@@ -1198,13 +1200,42 @@ Result<IdentificationResult> DeviceIdentifier::identify(IProbe &probe, SvdLibrar
     //    That mismatch is why this tool kept falling back to a generic Cortex-M4
     //    while J-Flash (which never sees the order code) worked fine.
     {
-        QStringList names = JLinkDeviceName::candidates(result.mcuName);
+        // The ORDER CODE comes first, not the family name. SEGGER's catalogue has
+        // `N32G455CC` but not `N32G455`, and handing the DLL a name it does not know is
+        // not a soft failure: `device = N32G455` crashes V8.26 outright (measured),
+        // which is why the board "stopped being recognised" once the DLL backend became
+        // the default. `N32G455CC` connects.
+        QStringList names;
         if (!result.partNumber.isEmpty() && result.partNumber != result.mcuName) {
             for (const QString &extra : JLinkDeviceName::candidates(result.partNumber)) {
                 if (!names.contains(extra))
                     names << extra;
             }
         }
+        for (const QString &extra : JLinkDeviceName::candidates(result.mcuName)) {
+            if (!names.contains(extra))
+                names << extra;
+        }
+        // Anything the catalogue actually contains wins over anything it does not.
+        QStringList knownFirst;
+        for (const QString &name : names) {
+            if (JLinkDeviceName::isKnown(name))
+                knownFirst << name;
+        }
+        if (!knownFirst.isEmpty())
+            names = knownFirst;
+        else if (JLinkDeviceName::hasCatalogue()) {
+            // The catalogue exists but none of the candidates are in it. Passing such a
+            // name is not a soft failure -- `device = N32G455` crashes JLinkARM V8.26 --
+            // so decline instead of guessing. The caller then keeps the generic
+            // Cortex-M4, which still allows register/memory access; only the vendor
+            // flash description is missing.
+            Logger::instance()->debug(
+                QStringLiteral("J-Link 目录中没有 %1 的条目，保持通用内核")
+                    .arg(names.join(QLatin1Char('/'))));
+            names.clear();
+        }
+
         if (!names.isEmpty()) {
             result.jlinkDeviceName = names.first();
             result.jlinkDeviceCandidates = names;

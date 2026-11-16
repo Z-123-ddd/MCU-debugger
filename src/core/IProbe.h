@@ -16,22 +16,22 @@ namespace mrd {
 /// target MCU.
 struct ProbeInfo
 {
-    QString backend;        ///< "probe-rs"
-    QString binaryPath;     ///< probe-rs executable
-    QString version;        ///< probe-rs version string
-    QString serialNumber;   ///< first probe serial reported by `probe-rs list`
+    QString backend;        ///< "jlink" or "jlink-dll"
+    QString binaryPath;     ///< helper executable (JLink.exe) or the DLL path
+    QString version;        ///< backend banner
+    QString serialNumber;   ///< first probe serial reported by the backend
     QStringList probeSerials;
     QString interfaceName;  ///< "SWD" / "JTAG"
     int speedKHz = 0;
     bool open = false;
     bool connected = false;
-    QString chipName;       ///< probe-rs chip name currently selected
-    QString detectedChip;   ///< chip name detected by `probe-rs info`
+    QString chipName;       ///< device name currently selected
+    QString detectedChip;   ///< device name detected by the backend
     bool halted = false;
 };
 
 /// Debug-probe abstraction. The current implementation drives the official
-/// `probe-rs` CLI (see ProbeRsProbe); keeping the interface separate keeps the
+/// J-Link DLL or its GDB server; keeping the interface separate keeps the
 /// UI testable and leaves room for other transports later.
 class IProbe
 {
@@ -60,6 +60,24 @@ public:
     virtual Status writeMemory(quint32 address, const QByteArray &data) = 0;
     virtual Status readU32(quint32 address, quint32 *out) = 0;
     virtual Status writeU32(quint32 address, quint32 value) = 0;
+
+    /// Insert a software breakpoint at  address.
+    ///
+    /// GDB RSP `Z0` writes a breakpoint instruction over the target code; the size is
+    /// the instruction width (2 bytes on Thumb, which every Cortex-M uses). Default
+    /// reports "unsupported" so test doubles stay valid.
+    virtual Status setBreakpoint(quint32 address)
+    {
+        Q_UNUSED(address)
+        return Status::failure(QStringLiteral("该后端不支持断点"));
+    }
+    virtual Status clearBreakpoint(quint32 address)
+    {
+        Q_UNUSED(address)
+        return Status::failure(QStringLiteral("该后端不支持断点"));
+    }
+    /// Remove every breakpoint this session inserted.
+    virtual Status clearAllBreakpoints() { return Status::success(); }
 
     /// Read the core registers, in the backend's own order.
     ///

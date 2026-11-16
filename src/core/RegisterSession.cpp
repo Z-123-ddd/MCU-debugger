@@ -200,7 +200,7 @@ void RegisterSession::requestPeripheralRead(const SvdPeripheral &peripheral)
     if (low == 0xFFFFFFFFu || high <= low)
         return;
 
-    // Align to 4 bytes so `probe-rs read b32` can be used.
+    // Align to 4 bytes so the window can be read as whole words.
     const quint32 alignedLow = low & ~0x3u;
     const quint32 alignedHigh = (high + 3u) & ~0x3u;
     const int length = static_cast<int>(alignedHigh - alignedLow);

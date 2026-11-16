@@ -92,6 +92,19 @@ bool JLinkDeviceName::isValidFor(const QString &jlinkName, const QString &orderC
     return known.contains(jlinkName.trimmed().toLower());
 }
 
+bool JLinkDeviceName::hasCatalogue()
+{
+    return !knownSet().isEmpty();
+}
+
+bool JLinkDeviceName::isKnown(const QString &jlinkName)
+{
+    const QSet<QString> &known = knownSet();
+    if (known.isEmpty())
+        return true; // no catalogue: cannot judge, so do not block the caller
+    return known.contains(jlinkName.trimmed().toLower());
+}
+
 QStringList JLinkDeviceName::knownNames(const QString &family)
 {
     const QString stem = family.trimmed().toUpper();
