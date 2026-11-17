@@ -548,6 +548,128 @@ int runProbeInfo(const Options &options)
         }
     }
 
+    // --- value-column polling budget (DLL backend only) ---------------------
+    // The 值 column refreshes on a 200 ms timer. Whether that is affordable depends
+    // entirely on how many variables are in the set, so measure it instead of assuming:
+    // a full-image sweep is far too slow, a screenful is not.
+    if (backend == QLatin1String("jlink-dll") && options.benchPoll > 0
+        && !options.symbolPath.isEmpty()) {
+        out(QString());
+        out(QStringLiteral("--- 数值列轮询预算（%1 行） ---").arg(options.benchPoll));
+
+        auto dll = dynamic_cast<JLinkDllProbe *>(probe.get());
+        const auto symbols = SymbolFile::load(options.symbolPath);
+        if (!dll || !symbols) {
+            check(false, QStringLiteral("需要 DLL 后端与符号文件"), QString());
+        } else {
+            QVector<WatchVariable> leaves;
+            for (const WatchVariable &variable : symbols.value.variables) {
+                if (variable.usable())
+                    leaves.append(variable);
+            }
+            check(!leaves.isEmpty(), QStringLiteral("得到可读变量"),
+                  QStringLiteral("%1 个").arg(leaves.size()));
+
+            // A screenful is not 4000 variables; take a deterministic spread so repeated
+            // runs measure the same thing.
+            QVector<WatchVariable> chosen;
+            const int wanted = qMin(options.benchPoll, leaves.size());
+            for (int i = 0; i < wanted; ++i) {
+                const int index = leaves.size() > 1
+                    ? int(qint64(i) * (leaves.size() - 1) / qMax(1, wanted - 1))
+                    : 0;
+                chosen.append(leaves.at(qMin(index, leaves.size() - 1)));
+            }
+
+            // Same coalescing rule as ValuePoller: adjacent addresses share one request.
+            QVector<QPair<quint32, int>> spans;
+            {
+                QVector<QPair<quint32, int>> raw;
+                for (const WatchVariable &variable : chosen)
+                    raw.append(qMakePair(variable.address, variable.span()));
+                std::sort(raw.begin(), raw.end());
+                for (const auto &span : raw) {
+                    const quint32 begin = span.first;
+                    const quint32 end = begin + quint32(span.second);
+                    if (!spans.isEmpty()
+                        && begin <= spans.last().first + quint32(spans.last().second)) {
+                        const quint32 mergedEnd =
+                            qMax(spans.last().first + quint32(spans.last().second), end);
+                        spans.last().second = int(mergedEnd - spans.last().first);
+                    } else {
+                        spans.append(qMakePair(begin, int(end - begin)));
+                    }
+                }
+            }
+            out(QStringLiteral("    %1 个变量 → %2 个连续区段")
+                    .arg(chosen.size()).arg(spans.size()));
+
+            auto readDhcsr = [&]() -> int {
+                quint32 dhcsr = 0;
+                if (!probe->readU32(0xE000EDF0u, &dhcsr))
+                    return -1;
+                return (dhcsr & 0x2u) ? 1 : 0;
+            };
+            probe->resume();
+            QThread::msleep(200);
+            const int haltedBefore = readDhcsr();
+
+            // Warm up, then measure how many sweeps fit in one second.
+            for (const auto &span : spans) {
+                QByteArray scratch;
+                probe->readMemory(span.first, span.second, &scratch);
+            }
+            QElapsedTimer timer;
+            timer.start();
+            int sweeps = 0;
+            int readErrors = 0;
+            while (timer.elapsed() < 1000) {
+                for (const auto &span : spans) {
+                    QByteArray scratch;
+                    if (!probe->readMemory(span.first, span.second, &scratch))
+                        ++readErrors;
+                }
+                ++sweeps;
+            }
+            const qint64 elapsedMs = timer.elapsed();
+            const double perSweepMs = sweeps > 0 ? double(elapsedMs) / double(sweeps) : 0.0;
+            const int haltedDuring = readDhcsr();
+
+            out(QStringLiteral("    单次刷新: %1 ms（1 秒内完成 %2 次）")
+                    .arg(perSweepMs, 0, 'f', 1).arg(sweeps));
+            out(QStringLiteral("    200 ms 目标: %1")
+                    .arg(perSweepMs <= 200.0 ? QStringLiteral("可达")
+                                             : QStringLiteral("不可达（需要 %1 ms）")
+                                                   .arg(perSweepMs, 0, 'f', 0)));
+            out(QStringLiteral("    DHCSR.C_HALT: 轮询前 %1，轮询后 %2（0=运行）")
+                    .arg(haltedBefore).arg(haltedDuring));
+
+            // The cost that matters is per *request*, not per byte: on a real 3777-leaf
+            // image a merged sweep is ~700 requests and ~692 ms. Measure the constant on
+            // this hardware so "200 ms buys ~N requests" is a number, not a guess.
+            {
+                const quint32 scratchAddress = chosen.isEmpty() ? 0x20000000u
+                                                                : chosen.first().address;
+                constexpr int kRequests = 200;
+                QElapsedTimer requestTimer;
+                requestTimer.start();
+                for (int i = 0; i < kRequests; ++i) {
+                    QByteArray scratch;
+                    probe->readMemory(scratchAddress, 4, &scratch);
+                }
+                const double perRequestMs = double(requestTimer.elapsed()) / double(kRequests);
+                out(QStringLiteral("    单次小请求: %1 ms → 200 ms 预算约 %2 次请求")
+                        .arg(perRequestMs, 0, 'f', 3)
+                        .arg(perRequestMs > 0.0 ? int(200.0 / perRequestMs) : 0));
+            }
+
+            check(readErrors == 0, QStringLiteral("轮询读取无失败"),
+                  QStringLiteral("%1 次失败").arg(readErrors));
+            check(haltedDuring == 0, QStringLiteral("轮询期间内核仍在运行（不停机）"),
+                  QStringLiteral("DHCSR.C_HALT=%1").arg(haltedDuring));
+        }
+    }
+
     // --- HSS live sampling (DLL backend only) ------------------------------
     // This is the capability the GDB path cannot provide at all: samples arrive while
     // the core keeps executing. A cycle counter is the proof -- if it advances between

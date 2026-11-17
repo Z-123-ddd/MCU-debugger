@@ -4,6 +4,7 @@
 #include "core/Logger.h"
 #include "core/JLinkDllProbe.h"
 #include "core/ProbeController.h"
+#include "core/ValuePoller.h"
 #include "ui/GlPlotWidget.h"
 #include "ui/Theme.h"
 
@@ -15,6 +16,7 @@
 #include <QFileDialog>
 #include <QDateTime>
 #include <QFileInfo>
+#include <QFileSystemWatcher>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -22,6 +24,8 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QScopedValueRollback>
+#include <QScrollBar>
+#include <QSet>
 #include <QDoubleSpinBox>
 #include <QSpinBox>
 #include <QTableWidget>
@@ -167,7 +171,7 @@ ScopePage::ScopePage(QWidget *parent)
     m_variableTree->setColumnCount(5);
     m_variableTree->setHeaderLabels({QStringLiteral("变量"), QStringLiteral("类型"),
                                      QStringLiteral("地址"), QStringLiteral("大小"),
-                                     QStringLiteral("游标值")});
+                                     QStringLiteral("值")});
     m_variableTree->setRootIsDecorated(true);
     m_variableTree->setIndentation(14);
     m_variableTree->setExpandsOnDoubleClick(true);
@@ -177,9 +181,11 @@ ScopePage::ScopePage(QWidget *parent)
     m_variableTree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     m_variableTree->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     m_variableTree->header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-    // A "value at cursor" column would duplicate the plot's hover read-out, so it
-    // stays hidden rather than showing an empty grid the user has to ignore.
-    m_variableTree->setColumnHidden(4, true);
+    // The 值 column shows the number as it is *right now*, refreshed by ValuePoller.
+    // It used to stay hidden because it was empty; now it is the only place an array's
+    // contents can be read without adding curves.
+    m_variableTree->header()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    m_variableTree->setColumnHidden(4, false);
     listLayout->addWidget(m_variableTree, 1);
 
     connect(m_filterEdit, &QLineEdit::textChanged, this, &ScopePage::onFilterChanged);
@@ -298,6 +304,42 @@ ScopePage::ScopePage(QWidget *parent)
     connect(m_pauseButton, &QPushButton::clicked, this, &ScopePage::onTogglePause);
     connect(m_clearButton, &QPushButton::clicked, this, &ScopePage::onClearChart);
 
+    // --- current values -----------------------------------------------------
+    // Reading memory through the debug port does NOT halt the core (verified on
+    // hardware: DHCSR.C_HALT stays 0 and the target's tick counter keeps advancing), so
+    // refreshing values behind the user's back is safe. What is *not* affordable is
+    // "every variable every 200 ms": one merged sweep of a real 3777-leaf image costs
+    // ~692 ms because the cost is per request, not per byte. So the rows on screen get
+    // 200 ms and the rest is swept slowly in the background. See ValuePoller.
+    m_poller = new ValuePoller(this); // the probe arrives via setProbe()
+    connect(m_poller, &ValuePoller::valuesUpdated, this, &ScopePage::onValuesUpdated);
+    connect(m_poller, &ValuePoller::visibleSweepFinished, this, [this](double ms) {
+        Q_UNUSED(ms);
+        // The measured cost is reported on demand (refreshState), not on every sweep:
+        // a line that changes 5 times a second is noise.
+    });
+    connect(m_variableTree, &QTreeWidget::itemExpanded, this,
+            [this](QTreeWidgetItem *) { updateVisibleValueTargets(); });
+    connect(m_variableTree, &QTreeWidget::itemCollapsed, this,
+            [this](QTreeWidgetItem *) { updateVisibleValueTargets(); });
+    connect(m_variableTree->verticalScrollBar(), &QScrollBar::valueChanged, this,
+            [this](int) { updateVisibleValueTargets(); });
+
+    // --- pick up a rebuilt .axf without asking ------------------------------
+    // Keil rewrites the file on every build, and the addresses in the chart and the
+    // selector silently go stale otherwise -- the chart keeps drawing whatever now
+    // lives at the old address. Watching the directory as well as the file is
+    // required: an editor or linker usually replaces the file rather than editing it,
+    // which invalidates the file watch.
+    m_symbolWatcher = new QFileSystemWatcher(this);
+    connect(m_symbolWatcher, &QFileSystemWatcher::fileChanged, this,
+            &ScopePage::onSymbolFileChanged);
+    connect(m_symbolWatcher, &QFileSystemWatcher::directoryChanged, this,
+            &ScopePage::onSymbolFileChanged);
+    m_reloadTimer.setSingleShot(true);
+    m_reloadTimer.setInterval(400); // a build produces a burst of events
+    connect(&m_reloadTimer, &QTimer::timeout, this, &ScopePage::reloadSymbols);
+
     m_sampler = new HssSampler(this);
     connect(m_sampler, &HssSampler::failed, this, [this](const QString &error) {
         emit statusMessage(QStringLiteral("实时采样失败：%1").arg(error));
@@ -335,6 +377,8 @@ ScopePage::ScopePage(QWidget *parent)
 void ScopePage::setProbe(ProbeController *probe)
 {
     m_probe = probe;
+    if (m_poller)
+        m_poller->setProbe(probe);
 }
 
 bool ScopePage::importSymbolFile(const QString &path, QString *error)
@@ -346,6 +390,20 @@ bool ScopePage::importSymbolFile(const QString &path, QString *error)
         return false;
     }
     m_symbols = loaded.value;
+    if (m_symbolWatcher) {
+        // Remember the previous file so a switch does not keep watching it, and watch
+        // the directory too: linkers replace the file, which breaks a file-only watch.
+        const QStringList watched = m_symbolWatcher->files() + m_symbolWatcher->directories();
+        if (!watched.isEmpty())
+            m_symbolWatcher->removePaths(watched);
+        m_symbolWatcher->addPath(path);
+        m_symbolWatcher->addPath(QFileInfo(path).absolutePath());
+    }
+    m_valueVariables.clear();
+    if (m_poller) {
+        m_poller->reset();
+        m_poller->setBackgroundTargets(allValueTargets());
+    }
     m_pathEdit->setText(path);
     m_pathEdit->setToolTip(path);
     rebuildVariableList();
@@ -371,6 +429,123 @@ void ScopePage::onBrowse()
             m_stateLabel->setText(QStringLiteral("导入失败：%1").arg(error));
         emit statusMessage(QStringLiteral("导入失败：%1").arg(error));
     }
+}
+
+void ScopePage::onSymbolFileChanged()
+{
+    // A rebuild touches the file several times (write, rename, temp file). Wait for the
+    // burst to finish instead of parsing a half-written image.
+    if (m_reloadTimer.isActive())
+        m_reloadTimer.stop();
+    m_reloadTimer.start();
+}
+
+void ScopePage::reloadSymbols()
+{
+    const QString path = m_symbols.sourcePath;
+    if (path.isEmpty())
+        return;
+    if (!QFileInfo::exists(path)) {
+        emit statusMessage(QStringLiteral("符号文件已不存在，保留上一次的解析结果：%1")
+                               .arg(QFileInfo(path).fileName()));
+        return;
+    }
+
+    // Remember where the ticked variables live now, so the report can say what moved.
+    m_addressesBeforeReload.clear();
+    for (const WatchVariable &variable : selectedVariables())
+        m_addressesBeforeReload.insert(variable.name, variable.address);
+
+    const auto loaded = SymbolFile::load(path);
+    if (!loaded) {
+        // A parse failure here usually means the linker was still writing. One retry is
+        // cheap and avoids dumping a scary error for a transient state.
+        if (m_reloadRetries < 2) {
+            ++m_reloadRetries;
+            m_reloadTimer.start();
+            return;
+        }
+        m_reloadRetries = 0;
+        emit statusMessage(QStringLiteral("自动重新导入失败，继续使用上一次的结果：%1")
+                               .arg(loaded.error));
+        return;
+    }
+    m_reloadRetries = 0;
+
+    const int previousCount = m_symbols.variables.size();
+    m_symbols = loaded.value;
+    m_valueVariables.clear();
+    if (m_poller) {
+        m_poller->reset();
+        m_poller->setBackgroundTargets(allValueTargets());
+    }
+    rebuildVariableList();
+    updateVisibleValueTargets();
+
+    // Count what happened to the selection: the whole point of reloading is that the
+    // addresses changed, and silently keeping the old ones would plot the wrong memory.
+    int moved = 0;
+    int lost = 0;
+    for (auto it = m_addressesBeforeReload.constBegin();
+         it != m_addressesBeforeReload.constEnd(); ++it) {
+        const WatchVariable *now = m_symbols.find(it.key());
+        if (!now) {
+            ++lost;
+            continue;
+        }
+        if (now->address != it.value())
+            ++moved;
+    }
+
+    // A running session samples absolute addresses, so it must be rebuilt or it keeps
+    // reading the pre-rebuild layout.
+    if (m_sampler && m_probe && m_sampler->isRunning()) {
+        const QVector<WatchVariable> chosen = selectedVariables();
+        m_liveTimer.stop();
+        m_sampler->stop();
+        if (m_history) {
+            QStringList names;
+            for (const WatchVariable &variable : chosen) {
+                if (names.size() >= HssSampler::maxVariables())
+                    break;
+                names << variable.name;
+            }
+            m_history->clear();
+            m_history->setTraceNames(names);
+        }
+        if (!chosen.isEmpty()) {
+            if (const Status st = m_sampler->start(chosen, m_sampler->periodUs()); st) {
+                m_paused = false;
+                m_catchUpRounds = 0;
+                m_liveTimer.start();
+            } else {
+                emit statusMessage(QStringLiteral("地址已更新，但实时采样重启失败：%1")
+                                       .arg(st.error));
+            }
+        }
+        if (m_plot) {
+            m_plot->followLatest();
+            m_plot->refresh();
+        }
+    }
+    // A stale snapshot belongs to the old addresses.
+    m_snapshot = SnapshotReader::Snapshot();
+
+    QStringList report;
+    report << QStringLiteral("已自动重新导入 %1（%2 个变量，%3%4）")
+                  .arg(QFileInfo(path).fileName())
+                  .arg(m_symbols.variables.size())
+                  .arg(previousCount)
+                  .arg(QStringLiteral(" → %1").arg(m_symbols.variables.size()));
+    if (!m_addressesBeforeReload.isEmpty()) {
+        report << QStringLiteral("勾选的 %1 个变量中 %2 个地址已变化")
+                      .arg(m_addressesBeforeReload.size())
+                      .arg(moved);
+        if (lost > 0)
+            report << QStringLiteral("%1 个在新文件里已不存在（可能被优化掉）").arg(lost);
+    }
+    emit statusMessage(report.join(QStringLiteral("，")));
+    refreshState();
 }
 
 void ScopePage::updateControls()
@@ -549,6 +724,8 @@ void ScopePage::onTogglePause()
         }
         m_paused = false;
         m_catchUpRounds = 0;
+        if (m_poller)
+            m_poller->setSuspended(true);
         m_liveTimer.start();
         if (m_plot)
             m_plot->followLatest(); // resume means "show me the newest again"
@@ -566,6 +743,8 @@ void ScopePage::onTogglePause()
     m_sampler->stop(); // stops the probe too: nothing accumulates while paused
     m_catchUpRounds = 0;
     m_paused = true;
+    if (m_poller)
+        m_poller->setSuspended(false); // paused means the link is idle again
     if (m_pauseButton)
         m_pauseButton->setText(QStringLiteral("继续"));
     // Deliberately touches neither m_history nor the view: the drawn data and the zoom
@@ -604,6 +783,7 @@ void ScopePage::onClearChart()
         m_plot->followLatest();
         m_plot->refresh();
     }
+    updateVisibleValueTargets();
     emit statusMessage(wasPaused ? QStringLiteral("已清空图表与采集数据（仍处于暂停）")
                                  : QStringLiteral("已清空图表与采集数据"));
     refreshState();
@@ -668,6 +848,9 @@ void ScopePage::onSelectionSettled()
 
 void ScopePage::onCaptureSnapshot()
 {
+    // One debug link: the snapshot owns it until it finishes (see onSnapshotFinished).
+    if (m_poller)
+        m_poller->setSuspended(true);
     if (!m_reader)
         return;
     if (!m_probe) {
@@ -691,6 +874,9 @@ void ScopePage::onCaptureSnapshot()
 
 void ScopePage::onSnapshotFinished(const SnapshotReader::Snapshot &snapshot)
 {
+    // The link is free again; the value column may resume.
+    if (m_poller)
+        m_poller->setSuspended(false);
     m_snapshot = snapshot;
     if (!snapshot.error.isEmpty()) {
         emit statusMessage(QStringLiteral("读取失败：%1").arg(snapshot.error));
@@ -735,6 +921,9 @@ void ScopePage::onToggleLiveCapture()
             m_plot->setLiveMode(false);
             m_plot->refresh();
         }
+        // HSS owned the debug link; hand it back to the value column.
+        if (m_poller)
+            m_poller->setSuspended(false);
         refreshLiveStatus(); // reports the final sample count once
         return;
     }
@@ -794,6 +983,10 @@ void ScopePage::onToggleLiveCapture()
     }
     m_catchUpRounds = 0;
     m_paused = false;
+    // HSS needs the whole debug link: a 200 ms value sweep would starve the sampler and
+    // show up as dropped samples, which is worse than a stale number in a cell.
+    if (m_poller)
+        m_poller->setSuspended(true);
     if (m_pauseButton)
         m_pauseButton->setText(QStringLiteral("暂停"));
     m_liveTimer.start();
@@ -1086,6 +1279,16 @@ constexpr int kFileGroupRole = Qt::UserRole + 5;
 /// Raw VariableNode pointer for rows whose node is not in m_nodeByPath (function
 /// rows under a file). Valid because the tree is rebuilt whenever the model changes.
 constexpr int kNodePtrRole = Qt::UserRole + 6;
+/// Key into ValuePoller's value map, so a row can be repainted without a full rebuild.
+constexpr int kValueKeyRole = Qt::UserRole + 8;
+/// Name of the backing WatchVariable for a row that has no VariableNode (search results
+/// and member rows), so expanding an array found in search still works.
+constexpr int kSearchVariableRole = Qt::UserRole + 9;
+/// How many elements of a scalar array are listed on expansion. 256 covers the arrays
+/// that caused this (error accumulators) without creating tens of thousands of rows; the
+/// rest is summarised in one trailing row.
+constexpr int kMaxArrayElementsShown = 256;
+
 /// True when the row decodes to a single number (i.e. it may carry a checkbox).
 /// Stored on the item so the invariant "checkable implies numeric" is testable
 /// without re-deriving types from label text.
@@ -1146,8 +1349,10 @@ QTreeWidgetItem *ScopePage::makeItem(const VariableNode &node, const QString &pa
     //   * a local has no stable address until halted, so it is not tickable either.
     // Everything below a struct is therefore reachable, while the struct itself is not
     // -- "all data structures end in something a decimal number can express".
+    // Arrays are value-only (see populateChildren): a checkbox promises a curve, and an
+    // array would need one curve per element -- 256 of them on screen and 8 into HSS.
     const bool selectable = node.samplable() && !node.stackRelative
-        && node.locListOffset == 0;
+        && node.locListOffset == 0 && !node.isArray();
     // Qt's DEFAULT flags already include ItemIsUserCheckable, so OR-ing NoItemFlags
     // would leave the checkbox in place -- the bit has to be cleared explicitly.
     Qt::ItemFlags flags = item->flags();
@@ -1157,6 +1362,24 @@ QTreeWidgetItem *ScopePage::makeItem(const VariableNode &node, const QString &pa
         flags &= ~Qt::ItemIsUserCheckable;
     item->setFlags(flags);
     item->setData(0, kNumericRole, node.samplable());
+
+    // Every row with a stable address can show its current value, whether or not it is
+    // tickable: that is what makes an array readable without plotting it.
+    if (node.hasAddress && node.address != 0 && !node.stackRelative) {
+        if (const WatchVariable *known = m_symbols.find(path)) {
+            registerValueKey(item, known->name, *known);
+        } else if (node.elementSize > 0) {
+            WatchVariable variable;
+            variable.name = path;
+            variable.typeLabel = node.typeLabel();
+            variable.kind = node.scalar;
+            variable.address = node.address;
+            variable.elementSize = node.elementSize;
+            variable.elementCount = qMax(1, node.elementCount);
+            variable.totalSize = variable.elementSize * variable.elementCount;
+            registerValueKey(item, path, variable);
+        }
+    }
 
     if (node.isAggregate()) {
         // A placeholder child makes Qt draw the expand arrow without us building
@@ -1239,6 +1462,7 @@ void ScopePage::buildMemberRows(QTreeWidgetItem *parent, const TypeMember &membe
             variable.elementCount = qMax(1, member.elementCount);
             variable.totalSize = variable.elementSize * variable.elementCount;
             m_memberVariables.insert(instanceName, variable);
+            registerValueKey(item, instanceName, variable);
         }
         item->setToolTip(0, QStringLiteral("%1\n类型: %2\n地址: %3\n"
                                            "可在曲线上按十进制数值显示")
@@ -1288,6 +1512,50 @@ void ScopePage::buildMemberRows(QTreeWidgetItem *parent, const TypeMember &membe
         buildMemberRows(item, child, depth + 1,
                         baseAddress + static_cast<quint32>(child.byteOffset), hasAddress,
                         childPath(instanceName, child.name));
+    }
+}
+
+void ScopePage::appendArrayElementRows(QTreeWidgetItem *item, const QString &path,
+                                      const QString &typeName, ScalarKind scalar,
+                                      quint32 address, int elementSize, int count)
+{
+    const int total = qMax(0, count);
+    const int shown = qMin(total, kMaxArrayElementsShown);
+    for (int index = 0; index < shown; ++index) {
+        const QString elementPath = QStringLiteral("%1[%2]").arg(path).arg(index);
+        auto *elementItem = new QTreeWidgetItem(item);
+        elementItem->setText(0, QStringLiteral("[%1]").arg(index));
+        elementItem->setText(1, typeName);
+        const quint32 elementAddress = address + static_cast<quint32>(index * elementSize);
+        elementItem->setText(2, hexAddr(elementAddress));
+        elementItem->setText(3, QStringLiteral("%1 B").arg(elementSize));
+        elementItem->setData(0, Qt::UserRole, elementPath);
+        elementItem->setData(0, Qt::UserRole + 2, false);
+        elementItem->setData(0, Qt::UserRole + 3, true); // a leaf: nothing to expand
+        elementItem->setData(0, kFileGroupRole, -1);
+        // Read-only on purpose: nothing under an array produces a curve.
+        elementItem->setFlags(Qt::ItemIsEnabled);
+        elementItem->setData(0, kNumericRole, true);
+
+        WatchVariable variable;
+        variable.name = elementPath;
+        variable.typeLabel = typeName;
+        variable.kind = scalar;
+        variable.address = elementAddress;
+        variable.elementSize = elementSize;
+        variable.elementCount = 1;
+        variable.totalSize = elementSize;
+        registerValueKey(elementItem, elementPath, variable);
+        elementItem->setToolTip(
+            0, QStringLiteral("%1\n类型: %2\n地址: %3\n只读值，不绘图")
+                   .arg(elementPath, typeName, hexAddr(elementAddress)));
+    }
+    if (total > shown) {
+        auto *more = new QTreeWidgetItem(item);
+        more->setText(0, QStringLiteral("… 还有 %1 个元素").arg(total - shown));
+        more->setFlags(Qt::ItemIsEnabled);
+        more->setData(0, Qt::UserRole + 3, true);
+        more->setText(4, QStringLiteral("（只显示前 %1 个）").arg(shown));
     }
 }
 
@@ -1421,6 +1689,7 @@ void ScopePage::populateChildren(QTreeWidgetItem *item)
                         variable.elementCount = qMax(1, member.elementCount);
                         variable.totalSize = variable.elementSize * variable.elementCount;
                         m_memberVariables.insert(staticKey, variable);
+                        registerValueKey(staticItem, staticKey, variable);
                     } else {
                         staticItem->setFlags(Qt::ItemIsEnabled);
                     }
@@ -1471,7 +1740,34 @@ void ScopePage::populateChildren(QTreeWidgetItem *item)
     const VariableNode *node = nodeOf(item);
     if (!node)
         node = m_nodeByPath.value(path, nullptr);
-    if (!node || node->children.isEmpty())
+
+    if (!node) {
+        // A search result has no tree node, but an array among them still has to open.
+        const QString key = item->data(0, kSearchVariableRole).toString();
+        const auto it = m_memberVariables.constFind(key);
+        if (it == m_memberVariables.constEnd() || it.value().elementCount <= 1)
+            return;
+        const QSignalBlocker blocker(m_variableTree);
+        const WatchVariable &variable = it.value();
+        appendArrayElementRows(item, variable.name, variable.typeLabel, variable.kind,
+                               variable.address, variable.elementSize,
+                               variable.elementCount);
+        return;
+    }
+
+    // A scalar array (`float error_accum[256]`) has no DWARF element nodes -- the reader
+    // only expands arrays of aggregates, deliberately, because 40 000 `[i]` nodes would
+    // cost more than they show. Synthesising them here keeps that saving and still lets
+    // the user open the array and read every element's current value.
+    if (node->isArray() && node->children.isEmpty() && node->samplable()) {
+        const QSignalBlocker arrayBlocker(m_variableTree);
+        appendArrayElementRows(item, path, node->typeName, node->scalar, node->address,
+                               node->elementSize, node->elementCount);
+        recomputeAncestors(item->child(0));
+        return;
+    }
+
+    if (node->children.isEmpty())
         return;
 
     const QSignalBlocker blocker(m_variableTree);
@@ -1496,6 +1792,162 @@ void ScopePage::populateChildren(QTreeWidgetItem *item)
     }
     // Newly created children can flip this node between checked/partial/unchecked.
     recomputeAncestors(item->child(0));
+}
+
+void ScopePage::registerValueKey(QTreeWidgetItem *item, const QString &key,
+                                 const WatchVariable &variable)
+{
+    if (!item || key.isEmpty() || !variable.usable())
+        return;
+    item->setData(0, kValueKeyRole, key);
+    if (!m_valueVariables.contains(key))
+        m_valueVariables.insert(key, variable);
+    if (m_poller) {
+        // A row that is already on screen should show a number now, not at the next
+        // sweep: setVisibleTargets() schedules an immediate pass.
+        const QVector<double> cached = m_poller->values().value(key);
+        if (!cached.isEmpty())
+            applyValueToItem(item);
+    }
+}
+
+void ScopePage::applyValueToItem(QTreeWidgetItem *item)
+{
+    if (!item || !m_poller)
+        return;
+    const QString key = item->data(0, kValueKeyRole).toString();
+    if (key.isEmpty())
+        return;
+    const auto it = m_poller->values().constFind(key);
+    if (it == m_poller->values().constEnd() || it.value().isEmpty()) {
+        item->setText(4, QStringLiteral("—"));
+        return;
+    }
+    const WatchVariable variable = m_valueVariables.value(key);
+    const QVector<double> &values = it.value();
+
+    // An array row summarises: "3.2e-05 … 1.4e-05 (256)". Listing 256 numbers in a
+    // single cell is unreadable; the elements are one level down.
+    if (values.size() > 1) {
+        double minimum = values.first();
+        double maximum = values.first();
+        for (double value : values) {
+            if (!std::isfinite(value))
+                continue;
+            minimum = qMin(minimum, value);
+            maximum = qMax(maximum, value);
+        }
+        item->setText(4, QStringLiteral("%1 … %2 (%3)")
+                             .arg(formatValue(minimum), formatValue(maximum))
+                             .arg(values.size()));
+        item->setToolTip(4, QStringLiteral("%1 个元素，范围 %2 … %3\n展开可逐元素查看")
+                                .arg(values.size())
+                                .arg(formatValue(minimum), formatValue(maximum)));
+        return;
+    }
+
+    const double value = values.first();
+    if (!std::isfinite(value)) {
+        item->setText(4, QStringLiteral("—"));
+        item->setToolTip(4, QStringLiteral("该值不是有限数（NaN/Inf），固件可能正在初始化"));
+        return;
+    }
+    const QString hex = formatValueHex(value);
+    item->setText(4, hex.isEmpty() ? formatValue(value)
+                                   : QStringLiteral("%1 (%2)").arg(formatValue(value), hex));
+    if (variable.elementSize > 0)
+        item->setToolTip(4, QStringLiteral("地址 %1 处的当前值，每 %2 ms 刷新一次")
+                                .arg(hexAddr(variable.address))
+                                .arg(ValuePoller::kVisiblePeriodMs));
+}
+
+void ScopePage::collectVisibleKeys(QTreeWidgetItem *item, int *budget,
+                                   QVector<WatchVariable> *out)
+{
+    if (!item || *budget <= 0)
+        return;
+    const QRect viewport = m_variableTree->viewport()->rect();
+    const QRect rect = m_variableTree->visualItemRect(item);
+    // Only rows inside the viewport are worth a request; a collapsed branch is skipped
+    // entirely because its children are not drawn.
+    const bool visible = rect.isValid() && rect.intersects(viewport);
+    if (visible && item->data(0, kValueKeyRole).isValid()) {
+        const QString key = item->data(0, kValueKeyRole).toString();
+        const auto it = m_valueVariables.constFind(key);
+        if (it != m_valueVariables.constEnd()) {
+            out->append(it.value());
+            --(*budget);
+        }
+    }
+    if (item->childCount() > 0 && !item->isExpanded())
+        return;
+    for (int i = 0; i < item->childCount() && *budget > 0; ++i)
+        collectVisibleKeys(item->child(i), budget, out);
+}
+
+void ScopePage::updateVisibleValueTargets()
+{
+    if (!m_poller)
+        return;
+    QVector<WatchVariable> targets;
+    // A hard cap: the viewport cannot show more than this, and an unbounded list would
+    // make one sweep slow enough to miss the 200 ms target it exists to meet.
+    int budget = 400;
+    for (int i = 0; i < m_variableTree->topLevelItemCount() && budget > 0; ++i)
+        collectVisibleKeys(m_variableTree->topLevelItem(i), &budget, &targets);
+    m_poller->setVisibleTargets(targets);
+}
+
+QVector<WatchVariable> ScopePage::allValueTargets() const
+{
+    // Everything addressable: the symbol file's leaves plus whatever rows the tree has
+    // materialised (array elements only exist once expanded).
+    QVector<WatchVariable> all;
+    all.reserve(m_symbols.variables.size() + m_valueVariables.size());
+    QSet<QString> seen;
+    for (const WatchVariable &variable : m_symbols.variables) {
+        if (!variable.usable())
+            continue;
+        all.append(variable);
+        seen.insert(variable.name);
+    }
+    for (auto it = m_valueVariables.constBegin(); it != m_valueVariables.constEnd(); ++it) {
+        if (seen.contains(it.key()) || !it.value().usable())
+            continue;
+        all.append(it.value());
+        seen.insert(it.key());
+    }
+    return all;
+}
+
+void ScopePage::onValuesUpdated(const QStringList &keys)
+{
+    Q_UNUSED(keys);
+    if (!m_poller || !m_variableTree)
+        return;
+    // Repaint from the tree rather than from the key list: the same key can appear on
+    // several rows (the same global listed under two files), and walking the visible
+    // part of the tree is cheap because it is bounded by what is on screen.
+    QVector<WatchVariable> targets;
+    int budget = 400;
+    QSet<QString> wanted(keys.begin(), keys.end());
+    for (int i = 0; i < m_variableTree->topLevelItemCount() && budget > 0; ++i) {
+        collectVisibleKeys(m_variableTree->topLevelItem(i), &budget, &targets);
+    }
+    std::function<void(QTreeWidgetItem *)> paint = [&](QTreeWidgetItem *item) {
+        if (!item)
+            return;
+        const QString key = item->data(0, kValueKeyRole).toString();
+        if (!key.isEmpty() && wanted.contains(key))
+            applyValueToItem(item);
+        if (item->childCount() > 0 && !item->isExpanded())
+            return;
+        for (int i = 0; i < item->childCount(); ++i)
+            paint(item->child(i));
+    };
+    const QSignalBlocker blocker(m_variableTree);
+    for (int i = 0; i < m_variableTree->topLevelItemCount(); ++i)
+        paint(m_variableTree->topLevelItem(i));
 }
 
 void ScopePage::rebuildVariableList()
@@ -1766,6 +2218,16 @@ void ScopePage::rebuildVariableList()
                                          : Qt::Unchecked);
                 // Register it as a real sample point, exactly like a member row.
                 m_memberVariables.insert(variable->name, *variable);
+                registerValueKey(row, variable->name, *variable);
+                if (variable->elementCount > 1) {
+                    // An array found by search must still open into its elements --
+                    // searching for `error_accum` is the normal way to reach it.
+                    row->setData(0, kSearchVariableRole, variable->name);
+                    auto *placeholder = new QTreeWidgetItem(row);
+                    placeholder->setData(0, kPlaceholderRole, true);
+                    placeholder->setFlags(Qt::NoItemFlags);
+                    placeholder->setText(0, QStringLiteral("…"));
+                }
             }
             group->setExpanded(true);
         }
@@ -1804,6 +2266,14 @@ void ScopePage::rebuildVariableList()
         }
     }
     Q_UNUSED(blocker);
+
+    // The tree was replaced wholesale, so the poller's idea of "what is on screen" is
+    // stale. Background targets cover every addressable leaf, which is what makes the
+    // 值 column work for rows that have never been expanded.
+    if (m_poller) {
+        m_poller->setBackgroundTargets(allValueTargets());
+        updateVisibleValueTargets();
+    }
 }
 
 void ScopePage::onFilterChanged(const QString &text)
@@ -2021,6 +2491,37 @@ QVector<WatchVariable> ScopePage::selectedVariables() const
 int ScopePage::testSelectedCount() const
 {
     return selectedVariables().size();
+}
+
+bool ScopePage::isWatchingForTest(const QString &path) const
+{
+    if (!m_symbolWatcher)
+        return false;
+    // Files and directories are separate lists: the directory watch is what survives a
+    // linker replacing the .axf instead of editing it in place.
+    return m_symbolWatcher->files().contains(path)
+        || m_symbolWatcher->directories().contains(path);
+}
+
+QTreeWidgetItem *ScopePage::findRowForTest(const QString &label) const
+{
+    std::function<QTreeWidgetItem *(QTreeWidgetItem *)> walk = [&](QTreeWidgetItem *item)
+        -> QTreeWidgetItem * {
+        if (!item)
+            return nullptr;
+        if (item->text(0) == label)
+            return item;
+        for (int i = 0; i < item->childCount(); ++i) {
+            if (QTreeWidgetItem *found = walk(item->child(i)))
+                return found;
+        }
+        return nullptr;
+    };
+    for (int i = 0; i < m_variableTree->topLevelItemCount(); ++i) {
+        if (QTreeWidgetItem *found = walk(m_variableTree->topLevelItem(i)))
+            return found;
+    }
+    return nullptr;
 }
 
 void ScopePage::showSnapshotForTest(const SnapshotReader::Snapshot &snapshot)

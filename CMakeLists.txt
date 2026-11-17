@@ -60,6 +60,7 @@ set(CORE_SOURCES
     src/core/SymbolFile.h
     src/core/SymbolFile.cpp
     src/core/SnapshotReader.cpp
+    src/core/ValuePoller.cpp
     src/core/JLinkDllApi.cpp
     src/core/JLinkDllProbe.cpp
     src/core/HssSampler.cpp

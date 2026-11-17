@@ -25,6 +25,7 @@
 #include "core/Logger.h"
 #include "core/MemoryProbe.h"
 #include "ui/ScopePage.h"
+#include "core/ValuePoller.h"
 #include "ui/GlPlotWidget.h"
 
 #include <QWheelEvent>
@@ -47,6 +48,8 @@
 #include <QCoreApplication>
 #include <QComboBox>
 #include <limits>
+
+#include <QThread>
 
 #include <QDir>
 #include <QDirIterator>
@@ -186,6 +189,12 @@ Options parse(int argc, char *argv[])
                 o.errors << QStringLiteral("--bench-bus 需要正整数秒");
         } else if (is("--bench-read")) {
             o.benchRead = true;
+        } else if (is("--bench-poll")) {
+            const QString value = takeValue(args, &i, arg);
+            bool ok = false;
+            o.benchPoll = value.toInt(&ok);
+            if (!ok || o.benchPoll <= 0)
+                o.errors << QStringLiteral("--bench-poll 需要正整数（行数）");
         } else if (is("--read-var")) {
             o.readVar = takeValue(args, &i, arg);
         } else if (is("--symbols")) {
@@ -2776,15 +2785,31 @@ int runSelftest(const Options &options)
 
 
                 QTreeWidgetItem *adc = findVariableRow(QStringLiteral("g_adc_raw"));
-                if (adc)
-                    adc->setExpanded(true); // a leaf: expanding must add nothing
-                check(adc != nullptr && adc->text(1) == QLatin1String("uint16_t[4]")
-                          && adc->childCount() == 0,
-                      QStringLiteral("标量数组显示为 uint16_t[4] 且不分子节点"),
-                      adc ? QStringLiteral("%1，%2 个子节点")
-                                .arg(adc->text(1))
-                                .arg(adc->childCount())
-                          : QStringLiteral("缺失"));
+                check(adc != nullptr && adc->text(1) == QLatin1String("uint16_t[4]"),
+                      QStringLiteral("标量数组显示为 uint16_t[4]"),
+                      adc ? adc->text(1) : QStringLiteral("缺失"));
+                if (adc) {
+                    // Arrays are value-only: the row itself gets no checkbox, because a
+                    // curve for a 256-element array is not something the chart or HSS's
+                    // 8-variable budget can absorb. The user reads the values instead.
+                    check(!(adc->flags() & Qt::ItemIsUserCheckable),
+                          QStringLiteral("数组行不可绘图（无复选框）"),
+                          QString());
+
+                    page.expandForTest(adc); // element rows are synthesised lazily
+                    check(adc->childCount() == 4,
+                          QStringLiteral("展开后得到 4 个元素行"),
+                          QStringLiteral("%1 行").arg(adc->childCount()));
+                    if (adc->childCount() == 4) {
+                        QTreeWidgetItem *first = adc->child(0);
+                        check(first->text(0) == QLatin1String("[0]")
+                                  && first->text(2).startsWith(QLatin1String("0x")),
+                              QStringLiteral("元素行有下标和地址"),
+                              QStringLiteral("%1 @ %2").arg(first->text(0), first->text(2)));
+                        check(!(first->flags() & Qt::ItemIsUserCheckable),
+                              QStringLiteral("数组元素行也不可绘图"), QString());
+                    }
+                }
             }
         }
     }
@@ -3191,6 +3216,162 @@ int runSelftest(const Options &options)
                   QStringLiteral("缺口写成空单元格"), lines.at(2));
         }
         QFile::remove(path);
+    }
+
+    // --- .axf 更新后自动重载 ------------------------------------------------
+    {
+        out(QString());
+        out(QStringLiteral("--- .axf 自动重载 ---"));
+
+        const QString src = ResourcePaths::find(QStringLiteral("test/symbol_test.axf"));
+        const QString tmp = QDir::temp().filePath(QStringLiteral("mrd_reload_test.axf"));
+        QFile::remove(tmp);
+        const bool copied = QFile::copy(src, tmp);
+        check(copied, QStringLiteral("复制夹具到临时路径"), tmp);
+
+        ScopePage page;
+        QStringList messages;
+        QObject::connect(&page, &ScopePage::statusMessage, &page,
+                         [&messages](const QString &text) { messages << text; });
+        const bool imported = page.importSymbolFile(tmp, nullptr);
+        check(imported, QStringLiteral("导入临时副本"), tmp);
+
+        // Watching the file alone is not enough: a linker replaces it, which invalidates
+        // the file watch. The directory has to be watched too.
+        check(page.isWatchingForTest(tmp), QStringLiteral("监听 .axf 文件本身"), tmp);
+        check(page.isWatchingForTest(QFileInfo(tmp).absolutePath()),
+              QStringLiteral("也监听所在目录（链接器会替换文件）"),
+              QFileInfo(tmp).absolutePath());
+
+        const int before = page.variableCountForTest();
+        check(before > 0, QStringLiteral("重载前有变量"),
+              QStringLiteral("%1 个").arg(before));
+
+        // Rewrite the file, then deliver the change the way QFileSystemWatcher would.
+        QFile::remove(tmp);
+        QFile::copy(src, tmp);
+        page.onSymbolFileChanged();
+
+        // The reload is debounced, so pump the event loop until it lands.
+        QElapsedTimer timer;
+        timer.start();
+        bool reloaded = false;
+        while (timer.elapsed() < 3000 && !reloaded) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+            for (const QString &message : messages) {
+                if (message.contains(QStringLiteral("已自动重新导入")))
+                    reloaded = true;
+            }
+            if (!reloaded)
+                QThread::msleep(20);
+        }
+        check(reloaded, QStringLiteral("文件变化触发了重新导入"),
+              QStringLiteral("等待 %1 ms").arg(timer.elapsed()));
+        check(page.variableCountForTest() == before,
+              QStringLiteral("重载后变量数与文件一致"),
+              QStringLiteral("%1 -> %2").arg(before).arg(page.variableCountForTest()));
+
+        // The report has to say the addresses were re-resolved, because that is the
+        // reason to reload at all -- silently keeping old addresses would plot the
+        // wrong memory.
+        const QString reloadMessage = [&messages]() {
+            for (const QString &message : messages) {
+                if (message.contains(QStringLiteral("已自动重新导入")))
+                    return message;
+            }
+            return QString();
+        }();
+        out(QStringLiteral("    重载报告: %1")
+                .arg(reloadMessage.isEmpty() ? QStringLiteral("(无)") : reloadMessage));
+
+        QFile::remove(tmp);
+    }
+
+    // --- 数值列与数组树 ------------------------------------------------------
+    // The 值 column is what makes an array readable without plotting it, so the check is
+    // on the rendered cell text, not on a private helper.
+    {
+        out(QString());
+        out(QStringLiteral("--- 数值列 ---"));
+
+        const QString axf = ResourcePaths::find(QStringLiteral("test/symbol_test.axf"));
+        ScopePage page;
+        if (!axf.isEmpty() && page.importSymbolFile(axf)) {
+            ValuePoller *poller = page.pollerForTest();
+            check(poller != nullptr, QStringLiteral("值列由 ValuePoller 驱动"), QString());
+
+            if (poller) {
+                // A scalar: value and its 32-bit word, which is what a register-level
+                // user needs to see for a float being written by firmware.
+                QHash<QString, QVector<double>> injected;
+                injected.insert(QStringLiteral("g_temperature"), {23.5});
+                poller->injectValuesForTest(injected);
+
+                // The tree is lazy, so reach the row the way a user does: filter for it.
+                page.filterForBench(QStringLiteral("g_temperature"));
+                QTreeWidgetItem *row = page.findRowForTest(QStringLiteral("g_temperature"));
+                check(row != nullptr && !row->text(4).isEmpty()
+                          && row->text(4) != QStringLiteral("—"),
+                      QStringLiteral("标量行显示出当前值"),
+                      row ? row->text(4) : QStringLiteral("行不存在"));
+
+                // An array summarises its range in the row, and its elements get their
+                // own numbers once expanded.
+                page.filterForBench(QStringLiteral("g_adc_raw"));
+                QTreeWidgetItem *array = page.findRowForTest(QStringLiteral("g_adc_raw"));
+                if (array) {
+                    // setExpanded before populating: a collapsed row's children are
+                    // deliberately not repainted, so the test must open it like a click.
+                    array->setExpanded(true);
+                    page.expandForTest(array);
+                    QHash<QString, QVector<double>> arrayValues;
+                    arrayValues.insert(QStringLiteral("g_adc_raw"),
+                                       {100.0, 200.0, 300.0, 400.0});
+                    poller->injectValuesForTest(arrayValues);
+                    check(array->text(4).contains(QStringLiteral("…"))
+                              && array->text(4).contains(QStringLiteral("4")),
+                          QStringLiteral("数组行显示范围与元素个数"), array->text(4));
+
+                    QHash<QString, QVector<double>> elementValues;
+                    elementValues.insert(QStringLiteral("g_adc_raw[2]"), {1234.0});
+                    poller->injectValuesForTest(elementValues);
+                    QTreeWidgetItem *element = array->childCount() > 2 ? array->child(2)
+                                                                      : nullptr;
+                    check(element && element->text(4).startsWith(QStringLiteral("1234")),
+                          QStringLiteral("数组元素行显示出自己的值"),
+                          element ? element->text(4) : QStringLiteral("行不存在"));
+                }
+            }
+
+            // Request coalescing is the only reason a 200 ms visible sweep is possible:
+            // adjacent variables must share one read. Checked directly because it is the
+            // difference between ~40 requests and ~400.
+            QVector<WatchVariable> targets;
+            for (int i = 0; i < 4; ++i) {
+                WatchVariable variable;
+                variable.name = QStringLiteral("v%1").arg(i);
+                variable.address = 0x20000000u + quint32(i * 4); // contiguous
+                variable.elementSize = 4;
+                variable.elementCount = 1;
+                variable.totalSize = 4;
+                targets.append(variable);
+            }
+            QVector<QPair<quint32, int>> spans;
+            ValuePoller::buildSpansForTest(targets, &spans);
+            check(spans.size() == 1,
+                  QStringLiteral("相邻变量合并成一次读取"),
+                  QStringLiteral("%1 次请求 / 4 个变量").arg(spans.size()));
+
+            // A gap must not be merged: reading across it would touch memory the user
+            // never asked about (and could fault on an unmapped region).
+            QVector<WatchVariable> gapped = targets;
+            gapped[3].address = 0x20000100u;
+            QVector<QPair<quint32, int>> gappedSpans;
+            ValuePoller::buildSpansForTest(gapped, &gappedSpans);
+            check(gappedSpans.size() == 2,
+                  QStringLiteral("有间隔的不合并（不会读未请求的内存）"),
+                  QStringLiteral("%1 次请求").arg(gappedSpans.size()));
+        }
     }
 
     // --- 拖动后时间轴必须停住 ------------------------------------------------

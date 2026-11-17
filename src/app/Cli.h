@@ -26,6 +26,8 @@ struct Options
     /// --bench-read: time one full read of every static variable through the DLL and
     /// check whether the core keeps running (DHCSR.C_HALT + its own tick counter).
     bool benchRead = false;
+    /// Measure the value-column polling budget: a typical screenful of rows.
+    int benchPoll = 0;
     /// --read-var <name>: with --symbols + --probe-info, read that variable from the
     /// target and print its values (proves the snapshot path on real hardware).
     QString readVar;

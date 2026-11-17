@@ -100,10 +100,21 @@ void RegisterBlockItem::paint(QPainter *painter, const QStyleOptionGraphicsItem 
     painter->drawText(QRectF(r.right() - 58, r.top() + 5, 52, 16), Qt::AlignRight | Qt::AlignVCenter,
                       hexValue(m_register->addressOffset, 3));
 
-    // Value
+    // Value: hex then decimal. The hex word is what bit-field work needs; the decimal
+    // form is what makes a counter or an ADC result readable at a glance.
     painter->setFont(small);
     painter->setPen(m_valid ? p.text : p.textDim);
-    const QString valueText = m_valid ? hex32(m_value) : QStringLiteral("-- 未读取 --");
+    QString valueText;
+    if (m_valid) {
+        valueText = hex32(m_value);
+        // Only when the block is wide enough, so the two do not overlap into noise.
+        const QString decimal = QString::number(m_value);
+        const int hexWidth = painter->fontMetrics().horizontalAdvance(valueText);
+        if (hexWidth + 8 + painter->fontMetrics().horizontalAdvance(decimal) <= kBlockWidth - 16)
+            valueText += QStringLiteral("  ") + decimal;
+    } else {
+        valueText = QStringLiteral("-- 未读取 --");
+    }
     painter->drawText(QRectF(r.left() + 8, r.top() + 24, kBlockWidth - 16, 16), Qt::AlignLeft | Qt::AlignVCenter,
                       valueText);
 

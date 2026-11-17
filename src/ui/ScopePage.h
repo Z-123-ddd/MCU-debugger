@@ -15,6 +15,7 @@ class QLineEdit;
 class QPushButton;
 class QDoubleSpinBox;
 class QSpinBox;
+class QFileSystemWatcher;
 class QTreeWidget;
 class QTreeWidgetItem;
 
@@ -23,6 +24,7 @@ namespace mrd {
 class GlPlotWidget;
 class ProbeController;
 class SampleHistory;
+class ValuePoller;
 
 /// Variable picker plus the two ways to read target memory.
 ///
@@ -59,6 +61,14 @@ public:
     /// Test hook: show a fabricated capture through the real table/plot path, so the
     /// self-test checks the widgets rather than a private helper.
     void showSnapshotForTest(const SnapshotReader::Snapshot &snapshot);
+    /// Test hook: symbol file watching state, so the auto-reload can be checked.
+    bool isWatchingForTest(const QString &path) const;
+    /// Test hook: how many variables the current symbol table holds.
+    int variableCountForTest() const { return m_symbols.variables.size(); }
+    /// Test hook: the value poller, so the 值 column can be checked without a probe.
+    ValuePoller *pollerForTest() const { return m_poller; }
+    /// Test hook: find a row by its label, at any depth.
+    QTreeWidgetItem *findRowForTest(const QString &label) const;
     /// Test hook: the two views, to assert what they ended up displaying.
     GlPlotWidget *plotForTest() const { return m_plot; }
 
@@ -81,6 +91,10 @@ private slots:
     void onSelectionSettled();
     /// Pause/resume the live capture. Paused keeps the drawn data and the zoom.
     void onTogglePause();
+    /// Fresh numbers arrived: repaint just those cells.
+    void onValuesUpdated(const QStringList &keys);
+    /// The tree scrolled or expanded: tell the poller what is now on screen.
+    void updateVisibleValueTargets();
     /// Drop collected samples and empty the chart.
     void onClearChart();
 
@@ -101,6 +115,10 @@ public:
     void onToggleFft();
     /// Write the visible history to a CSV next to the symbol file.
     void onExportCsv();
+    /// The .axf changed on disk: debounce, then re-import it.
+    void onSymbolFileChanged();
+    /// Re-import and re-resolve every address the selection depends on.
+    void reloadSymbols();
 
 private:
     void rebuildVariableList();
@@ -132,6 +150,21 @@ private:
     void refreshViews();
     /// Live HSS status line (sample rate, per-channel min/max/average).
     void refreshLiveStatus();
+    /// Register a row's current-value key so the poller can fill its 值 cell.
+    void registerValueKey(QTreeWidgetItem *item, const QString &key,
+                          const WatchVariable &variable);
+    /// Create one read-only row per array element, plus a summary row when the array is
+    /// longer than the display cap. Used both for tree nodes and for search results.
+    void appendArrayElementRows(QTreeWidgetItem *item, const QString &path,
+                                const QString &typeName, ScalarKind scalar, quint32 address,
+                                int elementSize, int count);
+    /// Paint one row's 值 cell from the poller's latest numbers.
+    void applyValueToItem(QTreeWidgetItem *item);
+    /// Rows under \a item that are currently visible in the viewport.
+    void collectVisibleKeys(QTreeWidgetItem *item, int *budget, QVector<WatchVariable> *out);
+    /// Every address the poller may refresh in the background.
+    QVector<WatchVariable> allValueTargets() const;
+
     /// Fill \a project from the current selection. Fails when nothing is ticked or no
     /// symbol file is loaded.
 
@@ -184,6 +217,19 @@ private:
     SnapshotReader::Snapshot m_snapshot;
     /// Backing store for the plot; owned here so its lifetime covers the widget.
     SampleHistory *m_history = nullptr;
+
+    /// Fills the 值 column: visible rows at 200 ms, everything else slowly.
+    ValuePoller *m_poller = nullptr;
+    /// Value key -> how to decode it. Separate from m_memberVariables so read-only rows
+    /// (array elements) never leak into the selection.
+    QHash<QString, WatchVariable> m_valueVariables;
+    /// Watches the imported .axf so a rebuild is picked up without a re-import.
+    QFileSystemWatcher *m_symbolWatcher = nullptr;
+    QTimer m_reloadTimer;
+    /// Addresses of the ticked leaves before a reload, to report what moved.
+    QHash<QString, quint32> m_addressesBeforeReload;
+    /// Reload attempts after a parse failure (the linker may still be writing).
+    int m_reloadRetries = 0;
 
     QPushButton *m_captureButton = nullptr;
     QPushButton *m_liveButton = nullptr;
