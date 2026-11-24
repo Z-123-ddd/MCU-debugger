@@ -1,7 +1,6 @@
 #pragma once
 
 #include "core/HssSampler.h"
-#include "core/SnapshotReader.h"
 #include "core/SymbolFile.h"
 
 #include <QHash>
@@ -24,7 +23,6 @@ namespace mrd {
 class GlPlotWidget;
 class ProbeController;
 class SampleHistory;
-class ValuePoller;
 
 /// Variable picker plus the two ways to read target memory.
 ///
@@ -58,15 +56,10 @@ public:
     void settleSelectionForTest() { refreshState(); }
     /// Test hook: how many variables the current ticks would export.
     int testSelectedCount() const;
-    /// Test hook: show a fabricated capture through the real table/plot path, so the
-    /// self-test checks the widgets rather than a private helper.
-    void showSnapshotForTest(const SnapshotReader::Snapshot &snapshot);
     /// Test hook: symbol file watching state, so the auto-reload can be checked.
     bool isWatchingForTest(const QString &path) const;
     /// Test hook: how many variables the current symbol table holds.
     int variableCountForTest() const { return m_symbols.variables.size(); }
-    /// Test hook: the value poller, so the 值 column can be checked without a probe.
-    ValuePoller *pollerForTest() const { return m_poller; }
     /// Test hook: find a row by its label, at any depth.
     QTreeWidgetItem *findRowForTest(const QString &label) const;
     /// Test hook: the two views, to assert what they ended up displaying.
@@ -75,8 +68,36 @@ public:
     /// Apply a filter without going through the debounce (benchmarks/tests).
     void filterForBench(const QString &text);
 
+    /// Channel names the live session is sampling (empty when idle). This is what a
+    /// model's inputs get mapped against, so it has to be the *actual* channel list, not
+    /// the whole variable table.
+    QStringList liveChannelNames() const;
+
+    /// Is an HSS live capture running?
+    bool isLiveCapturing() const;
+
+    /// Give up the HSS session so another page can use it.
+    ///
+    /// HSS is a single global session on the probe: whoever starts last owns the block
+    /// table and the previous consumer silently stops receiving its own data. The main
+    /// window arbitrates by page activity, so the register view asks for this before it
+    /// starts sampling. Returns true when a capture was actually stopped. Everything
+    /// already drawn is kept, exactly like pressing 暂停.
+    bool releaseHss();
+
 signals:
     void statusMessage(const QString &text);
+
+    /// One live sample, straight from the probe: \a timeUs is the target's own timestamp
+    /// and \a values is keyed by channel name.
+    ///
+    /// Emitted per sample rather than per repaint so a consumer (the simulation page) can
+    /// step a model at the sampling rate with a real dt. Bounded per drain, because a
+    /// stalled UI must not turn into an unbounded burst.
+    void liveSample(qint64 timeUs, const QHash<QString, double> &values);
+
+    /// Live sampling started or stopped, so a consumer can follow without polling.
+    void liveCaptureStateChanged(bool running);
     /// A symbol file was loaded: the selector has content worth showing.
     void symbolsImported(const mrd::SymbolTable &symbols);
 
@@ -86,15 +107,17 @@ private slots:
     void onFilterDebounced();
     void onItemExpanded(QTreeWidgetItem *item);
     void onVariableToggled(QTreeWidgetItem *item, int column);
-    /// Read the ticked variables once (arrays) or repeatedly (scalars) and show them.
     /// Selection settled (debounced): may need to rebuild the live session.
     void onSelectionSettled();
     /// Pause/resume the live capture. Paused keeps the drawn data and the zoom.
     void onTogglePause();
-    /// Fresh numbers arrived: repaint just those cells.
-    void onValuesUpdated(const QStringList &keys);
-    /// The tree scrolled or expanded: tell the poller what is now on screen.
-    void updateVisibleValueTargets();
+
+public slots:
+    /// Start the live session if it is not running. Used by the simulation page, which
+    /// consumes the same stream and therefore needs the same sampler.
+    void requestLiveCaptureStart();
+
+public:
     /// Drop collected samples and empty the chart.
     void onClearChart();
 
@@ -103,8 +126,6 @@ public:
     /// Separate from the slot so the self-test can verify the exact bytes.
     static bool writeHistoryCsv(const SampleHistory &history, const QString &path,
                                 QString *error);
-    void onCaptureSnapshot();
-    void onSnapshotFinished(const mrd::SnapshotReader::Snapshot &snapshot);
     /// Start/stop HSS background sampling: live curves while the target runs.
     void onToggleLiveCapture();
     /// Timer tick: drain the probe buffer into the plot.
@@ -144,26 +165,10 @@ private:
     QSet<QString> selectedLeafNames() const;
     void updateControls();
     void refreshState();
-    /// Fill the plot from a capture (one curve per variable, index on X).
-    void rebuildPlot(const SnapshotReader::Snapshot &snapshot);
-    /// Which view the user is looking at, so a fresh capture refreshes both.
-    void refreshViews();
     /// Live HSS status line (sample rate, per-channel min/max/average).
     void refreshLiveStatus();
-    /// Register a row's current-value key so the poller can fill its 值 cell.
-    void registerValueKey(QTreeWidgetItem *item, const QString &key,
-                          const WatchVariable &variable);
-    /// Create one read-only row per array element, plus a summary row when the array is
-    /// longer than the display cap. Used both for tree nodes and for search results.
-    void appendArrayElementRows(QTreeWidgetItem *item, const QString &path,
-                                const QString &typeName, ScalarKind scalar, quint32 address,
-                                int elementSize, int count);
-    /// Paint one row's 值 cell from the poller's latest numbers.
-    void applyValueToItem(QTreeWidgetItem *item);
-    /// Rows under \a item that are currently visible in the viewport.
-    void collectVisibleKeys(QTreeWidgetItem *item, int *budget, QVector<WatchVariable> *out);
-    /// Every address the poller may refresh in the background.
-    QVector<WatchVariable> allValueTargets() const;
+    /// Emit liveSample() for every history sample newer than the last one emitted.
+    void emitNewLiveSamples();
 
     /// Fill \a project from the current selection. Fails when nothing is ticked or no
     /// symbol file is loaded.
@@ -211,18 +216,9 @@ private:
     QCheckBox *m_selectAll = nullptr;
     QCheckBox *m_showSystemCheck = nullptr;
 
-    /// Local capture: read memory on demand, no continuous sampling.
-    SnapshotReader *m_reader = nullptr;
-    /// Last finished capture, so switching tabs does not re-read the target.
-    SnapshotReader::Snapshot m_snapshot;
     /// Backing store for the plot; owned here so its lifetime covers the widget.
     SampleHistory *m_history = nullptr;
 
-    /// Fills the 值 column: visible rows at 200 ms, everything else slowly.
-    ValuePoller *m_poller = nullptr;
-    /// Value key -> how to decode it. Separate from m_memberVariables so read-only rows
-    /// (array elements) never leak into the selection.
-    QHash<QString, WatchVariable> m_valueVariables;
     /// Watches the imported .axf so a rebuild is picked up without a re-import.
     QFileSystemWatcher *m_symbolWatcher = nullptr;
     QTimer m_reloadTimer;
@@ -231,7 +227,6 @@ private:
     /// Reload attempts after a parse failure (the linker may still be writing).
     int m_reloadRetries = 0;
 
-    QPushButton *m_captureButton = nullptr;
     QPushButton *m_liveButton = nullptr;
     QLabel *m_stateLabel = nullptr;
     QPushButton *m_pauseButton = nullptr;
@@ -243,6 +238,8 @@ private:
     int m_lastClippedSeen = 0;
     /// Guards against repeating the "capture stopped" line.
     int m_reportedStopSamples = -1;
+    /// Timestamp of the newest sample already forwarded through liveSample().
+    qint64 m_lastForwardedUs = 0;
     QPushButton *m_fftButton = nullptr;
     QPushButton *m_csvButton = nullptr;
     QSpinBox *m_periodSpin = nullptr;
@@ -250,8 +247,6 @@ private:
     /// Consecutive catch-up drains without a repaint, to bound the loop.
     int m_catchUpRounds = 0;
     QTimer m_liveTimer;
-    QSpinBox *m_roundsSpin = nullptr;
-    QSpinBox *m_intervalSpin = nullptr;
     QPushButton *m_viewToggle = nullptr;
     GlPlotWidget *m_plot = nullptr;
 };

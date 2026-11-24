@@ -19,8 +19,6 @@ public:
 
     // --- probe backend ------------------------------------------------------
     /// "jlink" (GDB server) or "jlink-dll" (DLL directly, needed for HSS).
-    static QString probeBackend();
-    static void setProbeBackend(const QString &backend);
 
     static QString jlinkPath(); ///< empty = auto-detect the SEGGER install
     /// Explicit path to JLink_x64.dll / JLinkARM.dll; empty = auto-detect.
@@ -42,6 +40,14 @@ public:
     ///
     /// It used to hold the last *detected* part as well, which turned every new
     /// connection into a manual override for the previous board.
+    /// Package chosen for \a chipName ("LQFP48"), empty when none was picked.
+    ///
+    /// Kept separate from the order code because one code can be bonded into several
+    /// packages and the pinout depends on which: "UQFN48/LQFP48" on N32H473CE means the
+    /// same silicon in two different pin layouts.
+    static QString chipPackage();
+    static void setChipPackage(const QString &package);
+
     static QString chipName();
 
     /// One-shot migration for the setting above.
@@ -50,6 +56,8 @@ public:
     /// would keep seeing (and connecting as) their previous chip. Clearing it once
     /// restores "auto" as the default without touching later manual choices.
     static void migrateChipNameSetting();
+    /// Remove settings that belonged to the removed GDB backend / auto-connect.
+    static void dropObsoleteBackendKeys();
     static void setChipName(const QString &name);
 
     /// Device/SVD binding remembered per J-Link serial number.
@@ -66,8 +74,6 @@ public:
     static QString theme();
     static void setTheme(const QString &theme);
 
-    static bool autoConnectOnStartup();
-    static void setAutoConnectOnStartup(bool enabled);
 
     static QStringList pinnedPeripherals(); ///< "USART1" style names
     static void setPinnedPeripherals(const QStringList &names);

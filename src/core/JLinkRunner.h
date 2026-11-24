@@ -5,6 +5,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <functional>
+
 namespace mrd {
 
 /// Identity of the local SEGGER J-Link installation (no target access needed).
@@ -37,8 +39,23 @@ public:
     static QString defaultInstallDirectory();
 
     /// Run a one-shot script (lines joined with '\n'); returns stdout.
+    ///
+    /// Blocking: it waits for the process to exit. Fine for the short queries this class
+    /// is for, but never call it from the UI thread for a long job (a flash burn takes
+    /// tens of seconds and the window would be reported as "not responding").
     static Result<QString> runScript(const QString &executable, const QStringList &lines, int timeoutMs = 30000,
                                      const QStringList &extraArgs = {});
+
+    /// Start a one-shot script without blocking, and invoke \a onFinished when the process
+    /// exits (or times out).
+    ///
+    /// The callback receives the exit code, the combined output and whether the timeout
+    /// fired; it runs on the calling thread's event loop, so the caller keeps its own
+    /// lifetime rules (see FirmwareBurner::burnAsync).
+    using ScriptCallback = std::function<void(int exitCode, const QString &output, bool timedOut)>;
+    static void runScriptAsync(const QString &executable, const QStringList &lines,
+                               int timeoutMs, ScriptCallback onFinished,
+                               const QStringList &extraArgs = {});
 
     /// Version + connected-emulator information. A short connect is performed so
     /// the DLL reports firmware/hardware/serial (they are not printed before).

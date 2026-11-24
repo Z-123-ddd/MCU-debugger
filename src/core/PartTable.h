@@ -53,6 +53,31 @@ public:
     /// All known part names whose name starts with \a stem (for diagnostics).
     static QStringList matching(const QString &stem);
 
+    /// Series identifiers, sorted ("N32G455", "N32H473", ...).
+    ///
+    /// A "series" is the part name without its package/flash/temperature suffix, which is
+    /// what a datasheet chapter and one SVD file correspond to. This is the first level
+    /// of the chip picker: picking a series is what tells the app which SVD to load.
+    static QStringList series();
+
+    /// Series of \a partName ("N32G455CCL7" -> "N32G455"). Empty when unrecognised.
+    static QString seriesOf(const QString &partName);
+
+    /// Order codes belonging to \a series, sorted. These are the entries the second
+    /// dropdown offers; they are exact order codes, never prefixes.
+    static QStringList partsInSeries(const QString &series);
+
+    /// True when this looks like a real order code in the table (not a placeholder row
+    /// and not one of the bare ARM core templates).
+    static bool isOrderCode(const QString &partName);
+
+    /// Packages \a partName is offered in, sorted and de-duplicated.
+    ///
+    /// The pack states this as one slash-separated field ("UQFN48/LQFP48"): a single
+    /// order code can be bonded into more than one package, and the pinout differs
+    /// between them, so the package has to be picked rather than assumed.
+    static QStringList packagesOf(const QString &partName);
+
     /// "512 KB" / "1.5 MB" — sizes as the UI shows them.
     static QString formatSize(int bytes);
 

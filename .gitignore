@@ -33,7 +33,7 @@ ui_*.h
 svd/
 data/datasheets/
 
-# ---- vendored tools (fetched by scripts/fetch-probe-rs.ps1) --------------
+# ---- vendored tools (fetched by scripts/fetch-nsis.ps1) ------------------
 tools/
 
 # ---- runtime output ------------------------------------------------------

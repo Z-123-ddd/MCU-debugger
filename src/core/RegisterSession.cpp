@@ -102,6 +102,21 @@ RegisterValue RegisterSession::valueFor(quint32 address) const
     return value;
 }
 
+bool RegisterSession::isReadPending(quint32 address) const
+{
+    // A handful of reads are ever outstanding (one per pinned peripheral), so a linear
+    // scan costs nothing and needs no index to keep consistent.
+    for (auto it = m_pendingReads.constBegin(); it != m_pendingReads.constEnd(); ++it) {
+        const PendingRead &pending = it.value();
+        if (address < pending.address)
+            continue;
+        const quint32 offset = address - pending.address;
+        if (pending.length > 0 && offset < static_cast<quint32>(pending.length))
+            return true;
+    }
+    return false;
+}
+
 quint32 RegisterSession::effectiveValue(quint32 address) const
 {
     const auto it = m_values.constFind(address);
@@ -173,6 +188,28 @@ void RegisterSession::noteReadFailure(quint32 address, const QString &error)
         setConnected(false);
     }
     emit readFailed(address, error);
+}
+
+void RegisterSession::applySampledValue(quint32 address, quint32 value)
+{
+    RegisterValue v = m_values.value(address);
+    v.value = value;
+    v.valid = true;
+    v.offline = false;
+    v.error.clear();
+    v.timestampMs = QDateTime::currentMSecsSinceEpoch();
+
+    // Reset comparison comes from the SVD entry, exactly like a polled read does.
+    const auto indexed = std::lower_bound(
+        m_registerIndex.begin(), m_registerIndex.end(), address,
+        [](const QPair<quint32, const SvdRegister *> &entry, quint32 wanted) {
+            return entry.first < wanted;
+        });
+    if (indexed != m_registerIndex.end() && indexed->first == address && indexed->second)
+        v.differsFromReset = (value != indexed->second->resetValue);
+
+    m_values.insert(address, v);
+    emit valuesChanged(address, address);
 }
 
 void RegisterSession::setValueLocally(quint32 address, quint32 value)

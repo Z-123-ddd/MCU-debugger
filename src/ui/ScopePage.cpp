@@ -1,10 +1,10 @@
 #include "ui/ScopePage.h"
 
+#include "core/AppSettings.h"
 #include "core/HexUtil.h"
 #include "core/Logger.h"
 #include "core/JLinkDllProbe.h"
 #include "core/ProbeController.h"
-#include "core/ValuePoller.h"
 #include "ui/GlPlotWidget.h"
 #include "ui/Theme.h"
 
@@ -168,10 +168,9 @@ ScopePage::ScopePage(QWidget *parent)
     listLayout->addLayout(filterRow);
 
     m_variableTree = new QTreeWidget(listGroup);
-    m_variableTree->setColumnCount(5);
+    m_variableTree->setColumnCount(4);
     m_variableTree->setHeaderLabels({QStringLiteral("变量"), QStringLiteral("类型"),
-                                     QStringLiteral("地址"), QStringLiteral("大小"),
-                                     QStringLiteral("值")});
+                                     QStringLiteral("地址"), QStringLiteral("大小")});
     m_variableTree->setRootIsDecorated(true);
     m_variableTree->setIndentation(14);
     m_variableTree->setExpandsOnDoubleClick(true);
@@ -181,11 +180,6 @@ ScopePage::ScopePage(QWidget *parent)
     m_variableTree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     m_variableTree->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     m_variableTree->header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-    // The 值 column shows the number as it is *right now*, refreshed by ValuePoller.
-    // It used to stay hidden because it was empty; now it is the only place an array's
-    // contents can be read without adding curves.
-    m_variableTree->header()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
-    m_variableTree->setColumnHidden(4, false);
     listLayout->addWidget(m_variableTree, 1);
 
     connect(m_filterEdit, &QLineEdit::textChanged, this, &ScopePage::onFilterChanged);
@@ -215,45 +209,13 @@ ScopePage::ScopePage(QWidget *parent)
     m_selectionTimer.setInterval(150);
     connect(&m_selectionTimer, &QTimer::timeout, this, &ScopePage::onSelectionSettled);
 
-    // --- local capture: table / chart toggle --------------------------------
-    // Two ways to look at target memory, both in-process: a one-shot snapshot for
-    // "what is in this table right now", and HSS background sampling for "how does it
-    // move". Nothing is handed to an external tool.
-    auto *captureRow = new QHBoxLayout();
-    captureRow->setSpacing(6);
-    m_captureButton = new QPushButton(QStringLiteral("读取快照"), this);
-    m_captureButton->setToolTip(
-        QStringLiteral("把勾选的变量从目标内存读回来。\n"
-                       "数组：一次读完，每个元素一行，或画成一条曲线。\n"
-                       "标量：按下面的次数重复读取，用来看趋势。"));
-    captureRow->addWidget(m_captureButton);
-    captureRow->addWidget(new QLabel(QStringLiteral("采样点数:"), this));
-    m_roundsSpin = new QSpinBox(this);
-    m_roundsSpin->setRange(1, 5000);
-    m_roundsSpin->setValue(200);
-    m_roundsSpin->setToolTip(
-        QStringLiteral("仅对标量有意义：读取多少次。\n"
-                       "数组读一次就已经完整（元素本身就是横轴）。"));
-    captureRow->addWidget(m_roundsSpin);
-    captureRow->addWidget(new QLabel(QStringLiteral("间隔(ms):"), this));
-    m_intervalSpin = new QSpinBox(this);
-    m_intervalSpin->setRange(0, 5000);
-    m_intervalSpin->setValue(10);
-    m_intervalSpin->setToolTip(QStringLiteral("两次读取之间停多久，0 = 尽可能快"));
-    captureRow->addWidget(m_intervalSpin);
-    captureRow->addStretch(1);
-    root->addLayout(captureRow);
-
-    connect(m_captureButton, &QPushButton::clicked, this, &ScopePage::onCaptureSnapshot);
-
     m_stateLabel = new QLabel(this);
     m_stateLabel->setWordWrap(true);
     root->addWidget(m_stateLabel);
 
     // --- live capture via the J-Link DLL's HSS engine -----------------------
-    // A snapshot answers "what is in here now"; a live curve answers "how does it
-    // move". They need different machinery: HSS samples on the probe's own timebase
-    // while the core keeps running, whereas every snapshot read halts it.
+    // The chart's only source: HSS samples on the probe's own timebase while the core
+    // keeps running.
     auto *liveRow = new QHBoxLayout();
     liveRow->setSpacing(6);
     m_liveButton = new QPushButton(QStringLiteral("开始实时采样"), this);
@@ -304,27 +266,6 @@ ScopePage::ScopePage(QWidget *parent)
     connect(m_pauseButton, &QPushButton::clicked, this, &ScopePage::onTogglePause);
     connect(m_clearButton, &QPushButton::clicked, this, &ScopePage::onClearChart);
 
-    // --- current values -----------------------------------------------------
-    // Reading memory through the debug port does NOT halt the core (verified on
-    // hardware: DHCSR.C_HALT stays 0 and the target's tick counter keeps advancing), so
-    // refreshing values behind the user's back is safe. What is *not* affordable is
-    // "every variable every 200 ms": one merged sweep of a real 3777-leaf image costs
-    // ~692 ms because the cost is per request, not per byte. So the rows on screen get
-    // 200 ms and the rest is swept slowly in the background. See ValuePoller.
-    m_poller = new ValuePoller(this); // the probe arrives via setProbe()
-    connect(m_poller, &ValuePoller::valuesUpdated, this, &ScopePage::onValuesUpdated);
-    connect(m_poller, &ValuePoller::visibleSweepFinished, this, [this](double ms) {
-        Q_UNUSED(ms);
-        // The measured cost is reported on demand (refreshState), not on every sweep:
-        // a line that changes 5 times a second is noise.
-    });
-    connect(m_variableTree, &QTreeWidget::itemExpanded, this,
-            [this](QTreeWidgetItem *) { updateVisibleValueTargets(); });
-    connect(m_variableTree, &QTreeWidget::itemCollapsed, this,
-            [this](QTreeWidgetItem *) { updateVisibleValueTargets(); });
-    connect(m_variableTree->verticalScrollBar(), &QScrollBar::valueChanged, this,
-            [this](int) { updateVisibleValueTargets(); });
-
     // --- pick up a rebuilt .axf without asking ------------------------------
     // Keil rewrites the file on every build, and the addresses in the chart and the
     // selector silently go stale otherwise -- the chart keeps drawing whatever now
@@ -353,9 +294,6 @@ ScopePage::ScopePage(QWidget *parent)
     m_liveTimer.setInterval(20);
     connect(&m_liveTimer, &QTimer::timeout, this, &ScopePage::onLiveTick);
 
-    m_reader = new SnapshotReader(this);
-    connect(m_reader, &SnapshotReader::finished, this, &ScopePage::onSnapshotFinished);
-
     // --- the chart ----------------------------------------------------------
     // 10000 points at the probe's 1 kHz ceiling is ten seconds of history, which is
     // enough to catch a transient and still scroll cheaply.
@@ -377,8 +315,6 @@ ScopePage::ScopePage(QWidget *parent)
 void ScopePage::setProbe(ProbeController *probe)
 {
     m_probe = probe;
-    if (m_poller)
-        m_poller->setProbe(probe);
 }
 
 bool ScopePage::importSymbolFile(const QString &path, QString *error)
@@ -398,11 +334,6 @@ bool ScopePage::importSymbolFile(const QString &path, QString *error)
             m_symbolWatcher->removePaths(watched);
         m_symbolWatcher->addPath(path);
         m_symbolWatcher->addPath(QFileInfo(path).absolutePath());
-    }
-    m_valueVariables.clear();
-    if (m_poller) {
-        m_poller->reset();
-        m_poller->setBackgroundTargets(allValueTargets());
     }
     m_pathEdit->setText(path);
     m_pathEdit->setToolTip(path);
@@ -474,13 +405,7 @@ void ScopePage::reloadSymbols()
 
     const int previousCount = m_symbols.variables.size();
     m_symbols = loaded.value;
-    m_valueVariables.clear();
-    if (m_poller) {
-        m_poller->reset();
-        m_poller->setBackgroundTargets(allValueTargets());
-    }
     rebuildVariableList();
-    updateVisibleValueTargets();
 
     // Count what happened to the selection: the whole point of reloading is that the
     // addresses changed, and silently keeping the old ones would plot the wrong memory.
@@ -528,8 +453,6 @@ void ScopePage::reloadSymbols()
             m_plot->refresh();
         }
     }
-    // A stale snapshot belongs to the old addresses.
-    m_snapshot = SnapshotReader::Snapshot();
 
     QStringList report;
     report << QStringLiteral("已自动重新导入 %1（%2 个变量，%3%4）")
@@ -551,7 +474,6 @@ void ScopePage::reloadSymbols()
 void ScopePage::updateControls()
 {
     const QVector<WatchVariable> chosen = selectedVariables();
-    const bool hasSelection = !chosen.isEmpty();
     if (m_pauseButton) {
         const bool active = m_sampler && (m_sampler->isRunning() || m_paused);
         m_pauseButton->setEnabled(active);
@@ -559,33 +481,6 @@ void ScopePage::updateControls()
     if (m_clearButton)
         m_clearButton->setEnabled(true);
 
-    if (m_captureButton) {
-        // A capture needs both a selection and a usable probe; saying so up front
-        // beats a button that silently does nothing.
-        m_captureButton->setEnabled(hasSelection && m_probe != nullptr
-                                    && !m_reader->isBusy());
-        m_captureButton->setText(m_reader && m_reader->isBusy()
-                                     ? QStringLiteral("读取中…")
-                                     : QStringLiteral("读取快照"));
-    }
-    if (m_roundsSpin) {
-        // Only a scalar needs repeating; an array is complete after one read.
-        bool anyArray = false;
-        bool anyScalar = false;
-        for (const WatchVariable &variable : chosen) {
-            if (variable.elementCount > 1)
-                anyArray = true;
-            else
-                anyScalar = true;
-        }
-        m_roundsSpin->setEnabled(anyScalar);
-        if (anyArray && !anyScalar)
-            m_roundsSpin->setToolTip(QStringLiteral("勾选的全是数组，一次读取就完整"));
-        else
-            m_roundsSpin->setToolTip(
-                QStringLiteral("仅对标量有意义：读取多少次。\n"
-                               "数组读一次就已经完整（元素本身就是横轴）。"));
-    }
 }
 
 void ScopePage::refreshState()
@@ -603,7 +498,7 @@ void ScopePage::refreshState()
     const QVector<WatchVariable> chosen = selectedVariables();
     if (chosen.isEmpty()) {
         lines << QStringLiteral("② 在左侧「变量选择」里勾选要观察的变量");
-        lines << QStringLiteral("③ 点「读取快照」看整份数据，或「开始实时采样」画实时曲线");
+        lines << QStringLiteral("③ 点「开始实时采样」画实时曲线；选中任意一行，第 5 列显示它现在的值");
     } else {
         int bytes = 0;
         int arrays = 0;
@@ -620,19 +515,7 @@ void ScopePage::refreshState()
                      .arg(arrays)
                      .arg(scalars)
                      .arg(bytes);
-        lines << QStringLiteral("③ 点「读取快照」看整份数据，或「开始实时采样」画实时曲线");
-    }
-
-    // A finished capture replaces the guidance with what was actually obtained.
-    if (!m_snapshot.isEmpty()) {
-        if (!m_snapshot.error.isEmpty()) {
-            lines << QStringLiteral("上次读取失败：%1").arg(m_snapshot.error);
-        } else {
-            lines << QStringLiteral("上次快照：%1 个值 / %2 轮 / %3 ms")
-                         .arg(m_snapshot.valueCount())
-                         .arg(m_snapshot.rounds)
-                         .arg(m_snapshot.elapsedMs);
-        }
+        lines << QStringLiteral("③ 点「开始实时采样」画实时曲线；选中任意一行，第 5 列显示它现在的值");
     }
     m_stateLabel->setText(lines.join(QLatin1Char('\n')));
 }
@@ -724,8 +607,6 @@ void ScopePage::onTogglePause()
         }
         m_paused = false;
         m_catchUpRounds = 0;
-        if (m_poller)
-            m_poller->setSuspended(true);
         m_liveTimer.start();
         if (m_plot)
             m_plot->followLatest(); // resume means "show me the newest again"
@@ -743,8 +624,6 @@ void ScopePage::onTogglePause()
     m_sampler->stop(); // stops the probe too: nothing accumulates while paused
     m_catchUpRounds = 0;
     m_paused = true;
-    if (m_poller)
-        m_poller->setSuspended(false); // paused means the link is idle again
     if (m_pauseButton)
         m_pauseButton->setText(QStringLiteral("继续"));
     // Deliberately touches neither m_history nor the view: the drawn data and the zoom
@@ -757,6 +636,7 @@ void ScopePage::onClearChart()
 {
     if (m_history)
         m_history->clear();
+    m_lastForwardedUs = 0;
 
     // A running capture has to restart so its timeline begins at zero again; otherwise
     // the first new sample would sit at the old (large) timestamp and look like a gap.
@@ -783,7 +663,6 @@ void ScopePage::onClearChart()
         m_plot->followLatest();
         m_plot->refresh();
     }
-    updateVisibleValueTargets();
     emit statusMessage(wasPaused ? QStringLiteral("已清空图表与采集数据（仍处于暂停）")
                                  : QStringLiteral("已清空图表与采集数据"));
     refreshState();
@@ -825,6 +704,7 @@ void ScopePage::onSelectionSettled()
         }
         m_history->clear();
         m_history->setTraceNames(names);
+        m_lastForwardedUs = 0; // new session: forward from the start again
     }
 
     m_sampler->stop();
@@ -846,53 +726,57 @@ void ScopePage::onSelectionSettled()
                                     : QString()));
 }
 
-void ScopePage::onCaptureSnapshot()
+QStringList ScopePage::liveChannelNames() const
 {
-    // One debug link: the snapshot owns it until it finishes (see onSnapshotFinished).
-    if (m_poller)
-        m_poller->setSuspended(true);
-    if (!m_reader)
-        return;
-    if (!m_probe) {
-        emit statusMessage(QStringLiteral("请先连接目标，再读取变量"));
-        return;
+    if (m_sampler && !m_sampler->channels().isEmpty()) {
+        QStringList names;
+        names.reserve(m_sampler->channels().size());
+        for (const HssSampler::Channel &channel : m_sampler->channels())
+            names << channel.name;
+        return names;
     }
-    const QVector<WatchVariable> chosen = selectedVariables();
-    if (chosen.isEmpty()) {
-        emit statusMessage(QStringLiteral("请先在左侧勾选变量"));
-        return;
+    if (m_history && !m_history->traceNames().isEmpty())
+        return m_history->traceNames();
+
+    // Nothing running yet: offer whatever is ticked, since that is what a start would
+    // begin sampling.
+    QStringList names;
+    for (const WatchVariable &variable : selectedVariables()) {
+        if (names.size() >= HssSampler::maxVariables())
+            break;
+        names << variable.name;
     }
-    m_reader->setProbe(m_probe);
-    // Arrays ignore the round count (one read is complete); scalars use it to build a
-    // trend. Passing both lets the reader decide, so the UI needs no special case.
-    const int rounds = m_roundsSpin ? m_roundsSpin->value() : 1;
-    const int interval = m_intervalSpin ? m_intervalSpin->value() : 10;
-    m_reader->capture(chosen, rounds, interval);
-    refreshState();
-    emit statusMessage(QStringLiteral("正在读取 %1 个变量…").arg(chosen.size()));
+    return names;
 }
 
-void ScopePage::onSnapshotFinished(const SnapshotReader::Snapshot &snapshot)
+void ScopePage::requestLiveCaptureStart()
 {
-    // The link is free again; the value column may resume.
-    if (m_poller)
-        m_poller->setSuspended(false);
-    m_snapshot = snapshot;
-    if (!snapshot.error.isEmpty()) {
-        emit statusMessage(QStringLiteral("读取失败：%1").arg(snapshot.error));
-    } else {
-        emit statusMessage(QStringLiteral("已读取 %1 个值（%2 轮，%3 ms）")
-                               .arg(snapshot.valueCount())
-                               .arg(snapshot.rounds)
-                               .arg(snapshot.elapsedMs));
+    if (!m_sampler)
+        return;
+    if (m_sampler->isRunning())
+        return;
+    if (selectedVariables().isEmpty()) {
+        emit statusMessage(QStringLiteral("仿真需要一个数据源：请先在「变量选择」里勾选变量"));
+        return;
     }
-    refreshViews();
-    refreshState();
+    onToggleLiveCapture(); // starts, since it is not running
 }
 
-void ScopePage::refreshViews()
+bool ScopePage::isLiveCapturing() const
 {
-    rebuildPlot(m_snapshot);
+    return m_sampler && m_sampler->isRunning();
+}
+
+bool ScopePage::releaseHss()
+{
+    if (!isLiveCapturing())
+        return false;
+    // onToggleLiveCapture() already does the whole orderly stop (timer, DLL session,
+    // button texts, keep the drawn data readable). Calling it keeps one stop path
+    // instead of a second one that would drift.
+    onToggleLiveCapture();
+    emit statusMessage(QStringLiteral("变量曲线已释放 HSS 会话（寄存器页接管实时采样）"));
+    return true;
 }
 
 void ScopePage::onToggleLiveCapture()
@@ -921,9 +805,7 @@ void ScopePage::onToggleLiveCapture()
             m_plot->setLiveMode(false);
             m_plot->refresh();
         }
-        // HSS owned the debug link; hand it back to the value column.
-        if (m_poller)
-            m_poller->setSuspended(false);
+        emit liveCaptureStateChanged(false);
         refreshLiveStatus(); // reports the final sample count once
         return;
     }
@@ -983,13 +865,10 @@ void ScopePage::onToggleLiveCapture()
     }
     m_catchUpRounds = 0;
     m_paused = false;
-    // HSS needs the whole debug link: a 200 ms value sweep would starve the sampler and
-    // show up as dropped samples, which is worse than a stale number in a cell.
-    if (m_poller)
-        m_poller->setSuspended(true);
     if (m_pauseButton)
         m_pauseButton->setText(QStringLiteral("暂停"));
     m_liveTimer.start();
+    emit liveCaptureStateChanged(true);
     emit statusMessage(QStringLiteral("实时采样已开始：%1 个变量 @ %2 µs")
                            .arg(qMin(chosen.size(), HssSampler::maxVariables()))
                            .arg(period));
@@ -1036,6 +915,10 @@ void ScopePage::onLiveDrained(const HssSampler::Result &result)
     m_plot->setXAxisLabel(QStringLiteral("时间"));
     m_plot->refresh();
     refreshLiveStatus();
+
+    // Hand the same numbers to any consumer (the simulation page) before repainting, so a
+    // model step sees the sample the chart is about to draw.
+    emitNewLiveSamples();
 }
 
 void ScopePage::onToggleFft()
@@ -1078,6 +961,46 @@ void ScopePage::onExportCsv()
                            .arg(m_history->count())
                            .arg(m_history->traceNames().size())
                            .arg(path));
+}
+
+void ScopePage::emitNewLiveSamples()
+{
+    if (!m_history || m_history->isEmpty())
+        return;
+
+    const QStringList names = m_history->traceNames();
+    if (names.isEmpty())
+        return;
+
+    // Forward everything newer than the last sample already sent. Walking by timestamp
+    // rather than by index keeps this correct across the ring buffer wrapping.
+    const int total = m_history->count();
+    constexpr int kMaxPerDrain = 256; // a stalled UI must not produce an unbounded burst
+    QVector<QPair<qint64, int>> fresh;
+    fresh.reserve(total);
+    for (int i = 0; i < total; ++i) {
+        const qint64 timeUs = m_history->timeAt(i);
+        if (timeUs > m_lastForwardedUs)
+            fresh.append({timeUs, i});
+    }
+    if (fresh.isEmpty())
+        return;
+
+    const int start = fresh.size() > kMaxPerDrain ? fresh.size() - kMaxPerDrain : 0;
+    for (int j = start; j < fresh.size(); ++j) {
+        const qint64 timeUs = fresh.at(j).first;
+        const int index = fresh.at(j).second;
+        QHash<QString, double> values;
+        values.reserve(names.size());
+        for (int t = 0; t < names.size(); ++t) {
+            const double value = m_history->valueAt(t, index);
+            if (std::isfinite(value))
+                values.insert(names.at(t), value);
+        }
+        if (!values.isEmpty())
+            emit liveSample(timeUs, values);
+    }
+    m_lastForwardedUs = fresh.last().first;
 }
 
 void ScopePage::refreshLiveStatus()
@@ -1123,64 +1046,6 @@ void ScopePage::refreshLiveStatus()
         }
         emit statusMessage(message);
     }
-}
-
-void ScopePage::rebuildPlot(const SnapshotReader::Snapshot &snapshot)
-{
-    if (!m_plot || !m_history)
-        return;
-
-    m_history->clear();
-    if (snapshot.isEmpty()) {
-        m_plot->setXAxisMode(GlPlotWidget::XAxisMode::Index);
-        m_plot->setXAxisLabel(QStringLiteral("索引"));
-        m_plot->refresh();
-        return;
-    }
-
-    // Only series that produced numbers become curves; a failed read would otherwise
-    // draw a flat zero line and look like real data.
-    QVector<QPair<QString, QVector<double>>> curves;
-    QStringList names;
-    int longest = 0;
-    bool anyArray = false;
-    for (const SnapshotReader::Series &series : snapshot.series) {
-        if (series.rows.isEmpty())
-            continue;
-        // An array's elements are its X axis; a scalar's rounds are its X axis. Both
-        // flatten to one sequence, so one curve per variable covers both cases.
-        QVector<double> values = series.flat();
-        if (values.isEmpty())
-            continue;
-        curves.append(qMakePair(displayNameFor(series.name), values));
-        names << displayNameFor(series.name);
-        longest = qMax(longest, int(values.size()));
-        if (series.fromArray)
-            anyArray = true;
-    }
-    if (curves.isEmpty()) {
-        m_plot->setXAxisMode(GlPlotWidget::XAxisMode::Index);
-        m_plot->setXAxisLabel(QStringLiteral("索引"));
-        m_plot->refresh();
-        return;
-    }
-
-    m_history->setCapacity(qMax(16, longest));
-    m_history->setTraceNames(names);
-    for (int i = 0; i < longest; ++i) {
-        QVector<double> row;
-        row.reserve(curves.size());
-        for (const auto &curve : curves) {
-            // Missing points become NaN so the curve breaks instead of dropping to 0.
-            row.append(i < curve.second.size() ? curve.second.at(i)
-                                              : std::numeric_limits<double>::quiet_NaN());
-        }
-        m_history->append(i, row);
-    }
-
-    m_plot->setXAxisMode(GlPlotWidget::XAxisMode::Index);
-    m_plot->setXAxisLabel(anyArray ? QStringLiteral("元素索引") : QStringLiteral("采样点序号"));
-    m_plot->refresh();
 }
 
 namespace {
@@ -1279,16 +1144,6 @@ constexpr int kFileGroupRole = Qt::UserRole + 5;
 /// Raw VariableNode pointer for rows whose node is not in m_nodeByPath (function
 /// rows under a file). Valid because the tree is rebuilt whenever the model changes.
 constexpr int kNodePtrRole = Qt::UserRole + 6;
-/// Key into ValuePoller's value map, so a row can be repainted without a full rebuild.
-constexpr int kValueKeyRole = Qt::UserRole + 8;
-/// Name of the backing WatchVariable for a row that has no VariableNode (search results
-/// and member rows), so expanding an array found in search still works.
-constexpr int kSearchVariableRole = Qt::UserRole + 9;
-/// How many elements of a scalar array are listed on expansion. 256 covers the arrays
-/// that caused this (error accumulators) without creating tens of thousands of rows; the
-/// rest is summarised in one trailing row.
-constexpr int kMaxArrayElementsShown = 256;
-
 /// True when the row decodes to a single number (i.e. it may carry a checkbox).
 /// Stored on the item so the invariant "checkable implies numeric" is testable
 /// without re-deriving types from label text.
@@ -1321,7 +1176,6 @@ void collectLeafPathsAt(const VariableNode &node, const QString &ownPath, QStrin
 }
 
 } // namespace
-
 
 QTreeWidgetItem *ScopePage::makeItem(const VariableNode &node, const QString &path,
                                      QTreeWidgetItem *parent)
@@ -1363,25 +1217,12 @@ QTreeWidgetItem *ScopePage::makeItem(const VariableNode &node, const QString &pa
     item->setFlags(flags);
     item->setData(0, kNumericRole, node.samplable());
 
-    // Every row with a stable address can show its current value, whether or not it is
-    // tickable: that is what makes an array readable without plotting it.
-    if (node.hasAddress && node.address != 0 && !node.stackRelative) {
-        if (const WatchVariable *known = m_symbols.find(path)) {
-            registerValueKey(item, known->name, *known);
-        } else if (node.elementSize > 0) {
-            WatchVariable variable;
-            variable.name = path;
-            variable.typeLabel = node.typeLabel();
-            variable.kind = node.scalar;
-            variable.address = node.address;
-            variable.elementSize = node.elementSize;
-            variable.elementCount = qMax(1, node.elementCount);
-            variable.totalSize = variable.elementSize * variable.elementCount;
-            registerValueKey(item, path, variable);
-        }
-    }
-
-    if (node.isAggregate()) {
+    // A scalar array has nothing to expand any more: its elements are not plotted (a
+    // checkbox would promise a curve the chart cannot fit) and there is no value column
+    // to read them in. So it stays one row instead of an arrow onto dead rows.
+    const bool expandable = node.isAggregate()
+        && !(node.isArray() && node.children.isEmpty());
+    if (expandable) {
         // A placeholder child makes Qt draw the expand arrow without us building
         // the subtree. It carries no checkbox and is replaced on first expand.
         auto *placeholder = new QTreeWidgetItem(item);
@@ -1462,7 +1303,6 @@ void ScopePage::buildMemberRows(QTreeWidgetItem *parent, const TypeMember &membe
             variable.elementCount = qMax(1, member.elementCount);
             variable.totalSize = variable.elementSize * variable.elementCount;
             m_memberVariables.insert(instanceName, variable);
-            registerValueKey(item, instanceName, variable);
         }
         item->setToolTip(0, QStringLiteral("%1\n类型: %2\n地址: %3\n"
                                            "可在曲线上按十进制数值显示")
@@ -1512,50 +1352,6 @@ void ScopePage::buildMemberRows(QTreeWidgetItem *parent, const TypeMember &membe
         buildMemberRows(item, child, depth + 1,
                         baseAddress + static_cast<quint32>(child.byteOffset), hasAddress,
                         childPath(instanceName, child.name));
-    }
-}
-
-void ScopePage::appendArrayElementRows(QTreeWidgetItem *item, const QString &path,
-                                      const QString &typeName, ScalarKind scalar,
-                                      quint32 address, int elementSize, int count)
-{
-    const int total = qMax(0, count);
-    const int shown = qMin(total, kMaxArrayElementsShown);
-    for (int index = 0; index < shown; ++index) {
-        const QString elementPath = QStringLiteral("%1[%2]").arg(path).arg(index);
-        auto *elementItem = new QTreeWidgetItem(item);
-        elementItem->setText(0, QStringLiteral("[%1]").arg(index));
-        elementItem->setText(1, typeName);
-        const quint32 elementAddress = address + static_cast<quint32>(index * elementSize);
-        elementItem->setText(2, hexAddr(elementAddress));
-        elementItem->setText(3, QStringLiteral("%1 B").arg(elementSize));
-        elementItem->setData(0, Qt::UserRole, elementPath);
-        elementItem->setData(0, Qt::UserRole + 2, false);
-        elementItem->setData(0, Qt::UserRole + 3, true); // a leaf: nothing to expand
-        elementItem->setData(0, kFileGroupRole, -1);
-        // Read-only on purpose: nothing under an array produces a curve.
-        elementItem->setFlags(Qt::ItemIsEnabled);
-        elementItem->setData(0, kNumericRole, true);
-
-        WatchVariable variable;
-        variable.name = elementPath;
-        variable.typeLabel = typeName;
-        variable.kind = scalar;
-        variable.address = elementAddress;
-        variable.elementSize = elementSize;
-        variable.elementCount = 1;
-        variable.totalSize = elementSize;
-        registerValueKey(elementItem, elementPath, variable);
-        elementItem->setToolTip(
-            0, QStringLiteral("%1\n类型: %2\n地址: %3\n只读值，不绘图")
-                   .arg(elementPath, typeName, hexAddr(elementAddress)));
-    }
-    if (total > shown) {
-        auto *more = new QTreeWidgetItem(item);
-        more->setText(0, QStringLiteral("… 还有 %1 个元素").arg(total - shown));
-        more->setFlags(Qt::ItemIsEnabled);
-        more->setData(0, Qt::UserRole + 3, true);
-        more->setText(4, QStringLiteral("（只显示前 %1 个）").arg(shown));
     }
 }
 
@@ -1689,7 +1485,6 @@ void ScopePage::populateChildren(QTreeWidgetItem *item)
                         variable.elementCount = qMax(1, member.elementCount);
                         variable.totalSize = variable.elementSize * variable.elementCount;
                         m_memberVariables.insert(staticKey, variable);
-                        registerValueKey(staticItem, staticKey, variable);
                     } else {
                         staticItem->setFlags(Qt::ItemIsEnabled);
                     }
@@ -1740,32 +1535,10 @@ void ScopePage::populateChildren(QTreeWidgetItem *item)
     const VariableNode *node = nodeOf(item);
     if (!node)
         node = m_nodeByPath.value(path, nullptr);
-
-    if (!node) {
-        // A search result has no tree node, but an array among them still has to open.
-        const QString key = item->data(0, kSearchVariableRole).toString();
-        const auto it = m_memberVariables.constFind(key);
-        if (it == m_memberVariables.constEnd() || it.value().elementCount <= 1)
-            return;
-        const QSignalBlocker blocker(m_variableTree);
-        const WatchVariable &variable = it.value();
-        appendArrayElementRows(item, variable.name, variable.typeLabel, variable.kind,
-                               variable.address, variable.elementSize,
-                               variable.elementCount);
+    // Search-result rows have no tree node. They used to expand into array elements;
+    // with the value column gone there is nothing to show, so they simply do not expand.
+    if (!node)
         return;
-    }
-
-    // A scalar array (`float error_accum[256]`) has no DWARF element nodes -- the reader
-    // only expands arrays of aggregates, deliberately, because 40 000 `[i]` nodes would
-    // cost more than they show. Synthesising them here keeps that saving and still lets
-    // the user open the array and read every element's current value.
-    if (node->isArray() && node->children.isEmpty() && node->samplable()) {
-        const QSignalBlocker arrayBlocker(m_variableTree);
-        appendArrayElementRows(item, path, node->typeName, node->scalar, node->address,
-                               node->elementSize, node->elementCount);
-        recomputeAncestors(item->child(0));
-        return;
-    }
 
     if (node->children.isEmpty())
         return;
@@ -1792,162 +1565,6 @@ void ScopePage::populateChildren(QTreeWidgetItem *item)
     }
     // Newly created children can flip this node between checked/partial/unchecked.
     recomputeAncestors(item->child(0));
-}
-
-void ScopePage::registerValueKey(QTreeWidgetItem *item, const QString &key,
-                                 const WatchVariable &variable)
-{
-    if (!item || key.isEmpty() || !variable.usable())
-        return;
-    item->setData(0, kValueKeyRole, key);
-    if (!m_valueVariables.contains(key))
-        m_valueVariables.insert(key, variable);
-    if (m_poller) {
-        // A row that is already on screen should show a number now, not at the next
-        // sweep: setVisibleTargets() schedules an immediate pass.
-        const QVector<double> cached = m_poller->values().value(key);
-        if (!cached.isEmpty())
-            applyValueToItem(item);
-    }
-}
-
-void ScopePage::applyValueToItem(QTreeWidgetItem *item)
-{
-    if (!item || !m_poller)
-        return;
-    const QString key = item->data(0, kValueKeyRole).toString();
-    if (key.isEmpty())
-        return;
-    const auto it = m_poller->values().constFind(key);
-    if (it == m_poller->values().constEnd() || it.value().isEmpty()) {
-        item->setText(4, QStringLiteral("—"));
-        return;
-    }
-    const WatchVariable variable = m_valueVariables.value(key);
-    const QVector<double> &values = it.value();
-
-    // An array row summarises: "3.2e-05 … 1.4e-05 (256)". Listing 256 numbers in a
-    // single cell is unreadable; the elements are one level down.
-    if (values.size() > 1) {
-        double minimum = values.first();
-        double maximum = values.first();
-        for (double value : values) {
-            if (!std::isfinite(value))
-                continue;
-            minimum = qMin(minimum, value);
-            maximum = qMax(maximum, value);
-        }
-        item->setText(4, QStringLiteral("%1 … %2 (%3)")
-                             .arg(formatValue(minimum), formatValue(maximum))
-                             .arg(values.size()));
-        item->setToolTip(4, QStringLiteral("%1 个元素，范围 %2 … %3\n展开可逐元素查看")
-                                .arg(values.size())
-                                .arg(formatValue(minimum), formatValue(maximum)));
-        return;
-    }
-
-    const double value = values.first();
-    if (!std::isfinite(value)) {
-        item->setText(4, QStringLiteral("—"));
-        item->setToolTip(4, QStringLiteral("该值不是有限数（NaN/Inf），固件可能正在初始化"));
-        return;
-    }
-    const QString hex = formatValueHex(value);
-    item->setText(4, hex.isEmpty() ? formatValue(value)
-                                   : QStringLiteral("%1 (%2)").arg(formatValue(value), hex));
-    if (variable.elementSize > 0)
-        item->setToolTip(4, QStringLiteral("地址 %1 处的当前值，每 %2 ms 刷新一次")
-                                .arg(hexAddr(variable.address))
-                                .arg(ValuePoller::kVisiblePeriodMs));
-}
-
-void ScopePage::collectVisibleKeys(QTreeWidgetItem *item, int *budget,
-                                   QVector<WatchVariable> *out)
-{
-    if (!item || *budget <= 0)
-        return;
-    const QRect viewport = m_variableTree->viewport()->rect();
-    const QRect rect = m_variableTree->visualItemRect(item);
-    // Only rows inside the viewport are worth a request; a collapsed branch is skipped
-    // entirely because its children are not drawn.
-    const bool visible = rect.isValid() && rect.intersects(viewport);
-    if (visible && item->data(0, kValueKeyRole).isValid()) {
-        const QString key = item->data(0, kValueKeyRole).toString();
-        const auto it = m_valueVariables.constFind(key);
-        if (it != m_valueVariables.constEnd()) {
-            out->append(it.value());
-            --(*budget);
-        }
-    }
-    if (item->childCount() > 0 && !item->isExpanded())
-        return;
-    for (int i = 0; i < item->childCount() && *budget > 0; ++i)
-        collectVisibleKeys(item->child(i), budget, out);
-}
-
-void ScopePage::updateVisibleValueTargets()
-{
-    if (!m_poller)
-        return;
-    QVector<WatchVariable> targets;
-    // A hard cap: the viewport cannot show more than this, and an unbounded list would
-    // make one sweep slow enough to miss the 200 ms target it exists to meet.
-    int budget = 400;
-    for (int i = 0; i < m_variableTree->topLevelItemCount() && budget > 0; ++i)
-        collectVisibleKeys(m_variableTree->topLevelItem(i), &budget, &targets);
-    m_poller->setVisibleTargets(targets);
-}
-
-QVector<WatchVariable> ScopePage::allValueTargets() const
-{
-    // Everything addressable: the symbol file's leaves plus whatever rows the tree has
-    // materialised (array elements only exist once expanded).
-    QVector<WatchVariable> all;
-    all.reserve(m_symbols.variables.size() + m_valueVariables.size());
-    QSet<QString> seen;
-    for (const WatchVariable &variable : m_symbols.variables) {
-        if (!variable.usable())
-            continue;
-        all.append(variable);
-        seen.insert(variable.name);
-    }
-    for (auto it = m_valueVariables.constBegin(); it != m_valueVariables.constEnd(); ++it) {
-        if (seen.contains(it.key()) || !it.value().usable())
-            continue;
-        all.append(it.value());
-        seen.insert(it.key());
-    }
-    return all;
-}
-
-void ScopePage::onValuesUpdated(const QStringList &keys)
-{
-    Q_UNUSED(keys);
-    if (!m_poller || !m_variableTree)
-        return;
-    // Repaint from the tree rather than from the key list: the same key can appear on
-    // several rows (the same global listed under two files), and walking the visible
-    // part of the tree is cheap because it is bounded by what is on screen.
-    QVector<WatchVariable> targets;
-    int budget = 400;
-    QSet<QString> wanted(keys.begin(), keys.end());
-    for (int i = 0; i < m_variableTree->topLevelItemCount() && budget > 0; ++i) {
-        collectVisibleKeys(m_variableTree->topLevelItem(i), &budget, &targets);
-    }
-    std::function<void(QTreeWidgetItem *)> paint = [&](QTreeWidgetItem *item) {
-        if (!item)
-            return;
-        const QString key = item->data(0, kValueKeyRole).toString();
-        if (!key.isEmpty() && wanted.contains(key))
-            applyValueToItem(item);
-        if (item->childCount() > 0 && !item->isExpanded())
-            return;
-        for (int i = 0; i < item->childCount(); ++i)
-            paint(item->child(i));
-    };
-    const QSignalBlocker blocker(m_variableTree);
-    for (int i = 0; i < m_variableTree->topLevelItemCount(); ++i)
-        paint(m_variableTree->topLevelItem(i));
 }
 
 void ScopePage::rebuildVariableList()
@@ -2211,23 +1828,22 @@ void ScopePage::rebuildVariableList()
                 row->setText(3, QStringLiteral("%1 B").arg(variable->span()));
                 row->setToolTip(0, variable->name);
 
-                Qt::ItemFlags flags = row->flags() | Qt::ItemIsUserCheckable;
+                // Same rule as a tree row: only a single number may be ticked, so an
+                // array found by search gets no checkbox either. Granting it here would
+                // have let a 256-element array eat the whole 8-variable HSS budget.
+                Qt::ItemFlags flags = row->flags();
+                if (variable->elementCount > 1)
+                    flags &= ~Qt::ItemIsUserCheckable;
+                else
+                    flags |= Qt::ItemIsUserCheckable;
                 row->setFlags(flags);
-                row->setCheckState(0, m_selectedLeaves.contains(variable->name)
-                                         ? Qt::Checked
-                                         : Qt::Unchecked);
+                if (variable->elementCount <= 1) {
+                    row->setCheckState(0, m_selectedLeaves.contains(variable->name)
+                                             ? Qt::Checked
+                                             : Qt::Unchecked);
+                }
                 // Register it as a real sample point, exactly like a member row.
                 m_memberVariables.insert(variable->name, *variable);
-                registerValueKey(row, variable->name, *variable);
-                if (variable->elementCount > 1) {
-                    // An array found by search must still open into its elements --
-                    // searching for `error_accum` is the normal way to reach it.
-                    row->setData(0, kSearchVariableRole, variable->name);
-                    auto *placeholder = new QTreeWidgetItem(row);
-                    placeholder->setData(0, kPlaceholderRole, true);
-                    placeholder->setFlags(Qt::NoItemFlags);
-                    placeholder->setText(0, QStringLiteral("…"));
-                }
             }
             group->setExpanded(true);
         }
@@ -2270,10 +1886,6 @@ void ScopePage::rebuildVariableList()
     // The tree was replaced wholesale, so the poller's idea of "what is on screen" is
     // stale. Background targets cover every addressable leaf, which is what makes the
     // 值 column work for rows that have never been expanded.
-    if (m_poller) {
-        m_poller->setBackgroundTargets(allValueTargets());
-        updateVisibleValueTargets();
-    }
 }
 
 void ScopePage::onFilterChanged(const QString &text)
@@ -2522,12 +2134,6 @@ QTreeWidgetItem *ScopePage::findRowForTest(const QString &label) const
             return found;
     }
     return nullptr;
-}
-
-void ScopePage::showSnapshotForTest(const SnapshotReader::Snapshot &snapshot)
-{
-    m_snapshot = snapshot;
-    refreshViews();
 }
 
 } // namespace mrd

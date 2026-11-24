@@ -76,6 +76,38 @@ struct PeripheralStatus
     bool unbonded() const { return bondedPins == 0; }
 };
 
+/// Verdict on "is the attached silicon really the part that was selected?".
+///
+/// The user picks an order code and a package up front; this is the check that stops a
+/// wrong pick from producing a confidently wrong register map and pinout. It deliberately
+/// only uses evidence the scanner can actually establish -- see the note on `Missing` vs
+/// `Unreachable` in PeripheralStatus.
+struct ValidationVerdict
+{
+    int expected = 0;     ///< peripherals this part is supposed to have
+    int readable = 0;     ///< answered on the bus (hard evidence it is present)
+    int missing = 0;      ///< faulted *with the clock enabled* -> not on this silicon
+    int unreachable = 0;  ///< clock off/unknown: proves nothing either way
+    bool accepted = true;
+    /// Why the connection was refused, phrased for the status bar / log.
+    QString reason;
+    /// The peripherals that contradicted the selection, worst first (bounded).
+    QStringList contradictions;
+
+    /// "可访问 12 / 应有 30，缺失 5"
+    QString summary() const;
+    /// True when nothing could be proven either way (a bare/dead target).
+    bool inconclusive() const { return readable == 0 && missing == 0; }
+};
+
+/// Decide whether the scanned tree is consistent with the selection.
+///
+/// \a statuses must already carry the static `exists` flags (PeripheralPresence), because
+/// a peripheral the part is not supposed to have must not be judged by its read result.
+/// Entries with `exists == false` are ignored entirely.
+ValidationVerdict validatePeripherals(const QVector<PeripheralStatus> &statuses,
+                                      int totalPeripherals);
+
 /// Derives the *real* peripheral tree of the attached part.
 ///
 /// Two independent sources are combined:

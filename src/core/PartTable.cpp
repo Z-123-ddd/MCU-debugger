@@ -5,6 +5,9 @@
 
 #include <QFile>
 #include <QJsonDocument>
+#include <QRegularExpression>
+#include <QJsonArray>
+#include <QFileInfo>
 #include <QJsonObject>
 
 namespace mrd {
@@ -17,43 +20,27 @@ bool g_loaded = false;
 
 } // namespace
 
-int PartTable::load(QString *error)
+namespace {
+
+/// Read data/parts.json into \a out.
+bool loadTable(const QString &path, QHash<QString, PartTable::Entry> *out, QString *error)
 {
-    if (g_loaded)
-        return g_parts.size();
-    g_loaded = true;
-    g_parts.clear();
-
-    g_path = ResourcePaths::find(QStringLiteral("parts.json"));
-    if (g_path.isEmpty()) {
-        // Not an error: without the table the app simply keeps using the family
-        // data from device_ids.json and shows no flash/RAM figures.
-        Logger::instance()->info(
-            QStringLiteral("未找到 data/parts.json（运行 scripts/sync-part-table.py 生成）；"
-                           "Flash/RAM 与逐型号能力将不可用"));
-        if (error)
-            *error = QStringLiteral("未找到 data/parts.json");
-        return 0;
-    }
-
-    QFile file(g_path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error)
-            *error = QStringLiteral("无法打开 %1: %2").arg(g_path, file.errorString());
-        return 0;
-    }
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
     QJsonParseError parseError{};
     const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
     if (doc.isNull()) {
         if (error)
-            *error = QStringLiteral("%1 解析失败: %2").arg(g_path, parseError.errorString());
-        return 0;
+            *error = QStringLiteral("%1 解析失败: %2").arg(path, parseError.errorString());
+        return false;
     }
 
+    // { "parts": { "<part>": {...} } }
     const QJsonObject root = doc.object().value(QStringLiteral("parts")).toObject();
     for (auto it = root.constBegin(); it != root.constEnd(); ++it) {
         const QJsonObject o = it.value().toObject();
-        Entry entry;
+        PartTable::Entry entry;
         entry.part = it.key();
         entry.pack = o.value(QStringLiteral("pack")).toString();
         entry.package = o.value(QStringLiteral("package")).toString();
@@ -72,12 +59,37 @@ int PartTable::load(QString *error)
                 entry.capabilities.insert(cap.key(), cap.value().toInt());
         }
         entry.valid = true;
-        g_parts.insert(entry.part, entry);
+        (*out)[entry.part] = entry;
+    }
+    return true;
+}
+
+} // namespace
+
+int PartTable::load(QString *error)
+{
+    if (g_loaded)
+        return g_parts.size();
+    g_loaded = true;
+    g_parts.clear();
+
+    const QString path = ResourcePaths::find(QStringLiteral("parts.json"));
+    if (path.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("未找到 data/parts.json");
+        return 0;
     }
 
-    Logger::instance()->debug(QStringLiteral("料号表: %1 个型号 (%2)")
-                                 .arg(g_parts.size())
-                                 .arg(g_path));
+    loadTable(path, &g_parts, error);
+    g_path = path;
+
+    if (g_parts.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("型号表为空（%1）").arg(path);
+        return 0;
+    }
+
+    Logger::instance()->debug(QStringLiteral("料号表: %1 个型号").arg(g_parts.size()));
     return g_parts.size();
 }
 
@@ -125,6 +137,85 @@ PartTable::Entry PartTable::lookup(const QString &partName)
     if (candidates.size() == 1)
         return g_parts.value(candidates.first());
     return {};
+}
+
+QString PartTable::seriesOf(const QString &partName)
+{
+    // The series is the vendor prefix plus the model digits: N32 + one letter + 3-4
+    // digits. Everything after that is package size, flash size and temperature code.
+    // Kept as one regex so the rule is stated once instead of being re-derived per
+    // caller (which is how "N32G455CEU7" ended up classified four different ways).
+    static const QRegularExpression re(QStringLiteral("^(N32[A-Z]\\d{3,4})"),
+                                       QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpressionMatch match = re.match(partName.trimmed());
+    if (!match.hasMatch())
+        return QString();
+    return match.captured(1).toUpper();
+}
+
+QStringList PartTable::series()
+{
+    load();
+    QStringList out;
+    for (const QString &part : g_parts.keys()) {
+        if (!isOrderCode(part))
+            continue;
+        const QString s = seriesOf(part);
+        if (!s.isEmpty() && !out.contains(s))
+            out << s;
+    }
+    out.sort();
+    return out;
+}
+
+QStringList PartTable::partsInSeries(const QString &series)
+{
+    load();
+    const QString wanted = seriesOf(series);
+    if (wanted.isEmpty())
+        return {};
+    QStringList out;
+    for (auto it = g_parts.constBegin(); it != g_parts.constEnd(); ++it) {
+        if (!isOrderCode(it.key()))
+            continue;
+        if (seriesOf(it.key()) == wanted)
+            out << it.key();
+    }
+    out.sort();
+    return out;
+}
+
+QStringList PartTable::packagesOf(const QString &partName)
+{
+    const Entry entry = lookup(partName);
+    if (!entry.valid || entry.package.isEmpty())
+        return {};
+    QStringList out;
+    for (const QString &piece : entry.package.split(QLatin1Char('/'), Qt::SkipEmptyParts)) {
+        const QString name = piece.trimmed();
+        if (!name.isEmpty() && !out.contains(name))
+            out << name;
+    }
+    out.sort();
+    return out;
+}
+
+bool PartTable::isOrderCode(const QString &partName)
+{
+    load();
+    const auto it = g_parts.constFind(partName);
+    if (it == g_parts.constEnd())
+        return false;
+    const Entry &entry = it.value();
+    // Placeholder rows ("N32H785xIx7") and the bare ARM core templates ("ARMCM4") are
+    // not order codes: they carry no package and cannot be selected as hardware.
+    if (entry.part != partName)
+        return false;
+    if (partName.startsWith(QLatin1String("ARM")))
+        return false;
+    if (partName.contains(QLatin1Char('x')))
+        return false;
+    return true;
 }
 
 QString PartTable::formatSize(int bytes)

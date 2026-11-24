@@ -1,6 +1,5 @@
 #pragma once
 
-#include "core/MemoryProbe.h"
 #include "core/Result.h"
 
 #include <QHash>
@@ -37,20 +36,6 @@ struct DeviceIdEntry
     QHash<QString, int> capabilities;
 };
 
-/// Which GPIO ports the attached die implements.
-///
-/// Packages differ in their port set: on N32G455 the LQFP48 bonds PA/PB/PC,
-/// LQFP64 adds PD, LQFP80/100 add PE. Reading a port's register answers whether
-/// the port is there at all, which narrows the package without making the user
-/// read a marking off the chip.
-struct PortProbe
-{
-    QSet<QString> present; ///< "PA", "PB", ...
-    QSet<QString> absent;  ///< proven not implemented (clock running, read failed)
-    QString note;
-    bool valid() const { return !present.isEmpty() || !absent.isEmpty(); }
-};
-
 /// Outcome of the automatic MCU identification.
 struct IdentificationResult
 {
@@ -79,22 +64,14 @@ struct IdentificationResult
     /// Vendor per-model peripheral counts; drives PeripheralPresence.
     QHash<QString, int> capabilities;
 
-    /// Result of the flash/RAM probe used to narrow a family to one order code.
-    MemoryProbe::Result memoryProbe;
-    /// Which GPIO ports the die implements (see probeGpioPorts).
-    PortProbe portProbe;
-
-    /// Order codes of the identified family that match the probed memory.
-    QStringList familyPartCandidates;
-    /// Human-readable reason when the part number was derived rather than looked up.
-    QString packageHint;
+    /// Series of the selected order code ("N32G455"). Comes from the picker, never from
+    /// silicon: a DEV_ID cannot name a package or a flash size.
+    QString series;
 
     /// Device name J-Link accepts for this part (see JLinkDeviceName), and the
     /// alternatives in case the first is rejected.
     QString jlinkDeviceName;
     QStringList jlinkDeviceCandidates;
-    /// SVD file name inferred from the memory signature when DEV_ID is unknown.
-    QString svdHintFromMemory;
     /// Flash / RAM of this exact part, from the CMSIS-Pack linker memory rows.
     /// 0 = unknown (no data/parts.json entry for this part).
     int flashBytes = 0;
@@ -107,14 +84,23 @@ struct IdentificationResult
     QString partNumber;
 };
 
-/// Turns "what is physically attached" into "which SVD describes it".
+/// Turns "what is physically attached" plus "which order code the user picked" into
+/// "which SVD describes it".
 ///
-/// Strategy:
-///   1. read CPUID (0xE000ED00) to learn the core,
-///   2. probe the known DBGMCU_IDCODE addresses and decode DEV_ID/REV_ID,
-///   3. look the DEV_ID up in `data/device_ids.json`,
-///   4. ask SvdLibrary for the best matching SVD by device name.
-/// A manual chip name (`--device`, or picking in the UI) short-circuits 2-3.
+/// The part is never inferred. Identification does two things only:
+///
+///   1. read CPUID (0xE000ED00) -> core name, which is what makes register access work;
+///   2. turn the *selected* order code into SVD / capacity / package / J-Link device name.
+///
+/// Everything about the part comes from the order code the user picks out of
+/// `data/parts.json` (see PartTable). The automatic narrowing this replaced -- memory
+/// probing, GPIO-port presence, port-set matching -- could not be made reliable: reading
+/// a blank upper flash half and reading past the end of a smaller part both answer 0xFF,
+/// so a 512 KB part holding a 235 KB image was reported as 256 KB and the pinout then
+/// described a package the board does not use.
+///
+/// The check that the pick matches the silicon is `validatePeripherals()`, run against a
+/// freshly scanned device tree right after connecting.
 class DeviceIdentifier
 {
 public:
@@ -123,39 +109,8 @@ public:
     static QString databasePath();
     static QVector<DeviceIdEntry> lookupByDevId(quint32 devId);
 
-    /// Remember that  devId belongs to  partName, in a user-writable
-    /// supplement (`<AppData>/data/device_ids.d/learned.json`).
-    ///
-    /// The vendor datasheets do not publish DEV_ID, so the database can only grow
-    /// from real hardware: when the user picks the chip by hand for an unknown
-    /// DEV_ID, that pair is worth keeping so the next connection is automatic.
-    /// Existing rows win (the built-in table is authoritative).
-    static bool rememberDevId(quint32 devId, const QString &partName, QString *error = nullptr);
-
     /// Part names in the database that start with  prefix (UI suggestions).
     static QStringList matchingNames(const QString &prefix);
-
-    /// Order codes of  family, narrowed to those whose memory matches reality.
-    ///
-    /// A DEV_ID identifies the die; the order codes of one family differ only in
-    /// package and memory size (N32G455 has 15 of them). Probing flash/RAM cuts
-    /// that list down, so the user usually has to choose nothing at all.
-    /// Empty when the family is not present in `data/parts.json`.
-    static QStringList familyCandidates(const QString &family, const MemoryProbe::Result &memory);
-
-    /// Which GPIO ports the attached die actually implements.
-    ///
-    /// Packages differ in their port set: on N32G455 the LQFP48 bonds PA/PB/PC,
-    /// LQFP64 adds PD, LQFP80/100 add PE. Reading a port's register answers
-    /// whether the port is there at all, which narrows the package without the
-    /// user having to read a marking off the chip.
-    ///
-    /// A port counts as present only when a read succeeds (the clock may be off,
-    /// so a failure alone proves nothing). Ports whose clock is known to be closed
-    /// are reported as "unknown", never as absent.
-    /// Probe the GPIO ports described by \a svdPath. Needs the SVD only to learn
-    /// where each port lives; returns an invalid result when it cannot be read.
-    static PortProbe probeGpioPorts(IProbe &probe, const QString &svdPath);
 
     /// DBGMCU_IDCODE-like addresses probed when DEV_ID is unknown.
     static QVector<quint32> idcodeAddresses();

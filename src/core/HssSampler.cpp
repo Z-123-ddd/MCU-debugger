@@ -227,8 +227,12 @@ int HssSampler::unwrapTimestamps(const quint32 *raws, int count, qint64 *out,
 
 void HssSampler::applyRecords(const QByteArray &records, int samples, int sampleBytes)
 {
+    // The history is optional. A consumer that only wants the current value -- the
+    // register view samples one register and shows its latest reading -- has no use for a
+    // time series, and allocating one would mean buffer work on every drain that is
+    // immediately thrown away. The channel statistics below are the payload it needs.
     SampleHistory *history = m_pendingHistory;
-    if (!history || sampleBytes <= 0)
+    if (sampleBytes <= 0)
         return;
 
     // --- pass 1: collect the raw timestamps and turn them into one timeline ---
@@ -285,7 +289,8 @@ void HssSampler::applyRecords(const QByteArray &records, int samples, int sample
         }
         // Microseconds, full resolution: milliseconds collided neighbouring samples at
         // 1 kHz and drew the trace as vertical lines.
-        history->append(times.at(i), row);
+        if (history)
+            history->append(times.at(i), row);
     }
 
     if (usable > 1 && times.at(usable - 1) > times.at(0)) {

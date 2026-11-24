@@ -67,12 +67,28 @@ public:
     void zoomOut();
     void resetZoom();
 
+    /// Drop the selection and say so.
+    ///
+    /// The clearing itself lives here rather than in the main window on purpose: "nothing
+    /// is selected" is a property of this view, and a right-click has to leave the view in
+    /// that state even if nobody is listening to the signal.
+    void releaseSelection();
+
 signals:
     void registerSelected(int index);
     void registerActivated(int index);
+    /// The selected register was released (right-click), so nothing should be sampled
+    /// faster than the peripheral sweep any more.
+    void registerDeselected();
 
 protected:
     void resizeEvent(QResizeEvent *event) override;
+    /// Right button anywhere in the grid releases the selection.
+    ///
+    /// Handled here rather than per block so that right-clicking the empty area between
+    /// blocks works too -- a cancel gesture should not require hitting a specific
+    /// rectangle, and the view is the thing that owns "is anything selected".
+    void mousePressEvent(QMouseEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
 
 private:

@@ -1,5 +1,9 @@
 #include "core/DeviceTreeScanner.h"
 
+#include <QPair>
+
+#include <algorithm>
+
 #include "core/HexUtil.h"
 #include "core/IProbe.h"
 #include "core/Logger.h"
@@ -194,6 +198,105 @@ PeripheralStatus DeviceTreeScanner::classify(const SvdPeripheral &peripheral, co
     status.reachability = status.clockEnabled ? PeripheralStatus::Missing
                                               : PeripheralStatus::Unreachable;
     return status;
+}
+
+QString ValidationVerdict::summary() const
+{
+    QStringList parts;
+    parts << QStringLiteral("可访问 %1").arg(readable);
+    parts << QStringLiteral("应有 %1").arg(expected);
+    if (missing > 0)
+        parts << QStringLiteral("对不上 %1").arg(missing);
+    if (unreachable > 0)
+        parts << QStringLiteral("未验证 %1").arg(unreachable);
+    return parts.join(QStringLiteral(" / "));
+}
+
+ValidationVerdict validatePeripherals(const QVector<PeripheralStatus> &statuses,
+                                      int totalPeripherals)
+{
+    ValidationVerdict verdict;
+
+    // A mismatch is only meaningful relative to what the part should have. When the
+    // vendor data says nothing about this model, fall back to the SVD's total so the
+    // percentages still mean something.
+    int expectedTotal = 0;
+    for (const PeripheralStatus &status : statuses) {
+        if (!status.exists)
+            continue;
+        ++expectedTotal;
+    }
+    verdict.expected = expectedTotal > 0 ? expectedTotal : qMax(0, totalPeripherals);
+
+    QVector<QPair<QString, QString>> offenders;
+    for (const PeripheralStatus &status : statuses) {
+        if (!status.exists)
+            continue; // not this part's peripheral: its read result proves nothing
+        switch (status.reachability) {
+        case PeripheralStatus::Readable:
+            ++verdict.readable;
+            break;
+        case PeripheralStatus::Missing:
+            ++verdict.missing;
+            offenders.append({status.name, status.clockSource});
+            break;
+        case PeripheralStatus::Unreachable:
+            ++verdict.unreachable;
+            break;
+        }
+    }
+
+    // Nothing answered and nothing contradicted: the tree is unreadable (halted core, no
+    // power to the bus, wrong interface). Not a wrong-part verdict, so do not refuse --
+    // but say so instead of claiming success.
+    if (verdict.inconclusive()) {
+        verdict.accepted = true;
+        verdict.reason = QStringLiteral("设备树无法验证：没有任何外设响应（目标可能已停机或总线无响应）");
+        return verdict;
+    }
+
+    // Refusal thresholds. Percentages are of the peripherals the part should have:
+    //   * a wrong part contradicts many blocks at once, because whole address ranges
+    //     differ (GPIO at 0x40010800 vs 0x4002C000 and so on);
+    //   * a right part can still lose a block or two to a gated clock that happens to
+    //     read as enabled, so a small number must not refuse the connection.
+    const int absoluteFloor = 3;
+    const int proportional = verdict.expected > 0 ? verdict.expected / 4 : 0;
+    const int allowedMissing = qMax(absoluteFloor - 1, proportional);
+
+    if (verdict.missing > allowedMissing) {
+        verdict.accepted = false;
+        std::sort(offenders.begin(), offenders.end(),
+                  [](const QPair<QString, QString> &a, const QPair<QString, QString> &b) {
+                      return a.first < b.first;
+                  });
+        const int show = qMin(8, offenders.size());
+        for (int i = 0; i < show; ++i) {
+            const QString clock = offenders.at(i).second;
+            verdict.contradictions
+                << (clock.isEmpty() ? offenders.at(i).first
+                                    : QStringLiteral("%1（时钟已有 %2 却读不到）")
+                                          .arg(offenders.at(i).first, clock));
+        }
+        if (offenders.size() > show)
+            verdict.contradictions << QStringLiteral("…共 %1 个").arg(offenders.size());
+
+        verdict.reason =
+            QStringLiteral("所选型号与目标不符：%1 个外设读不到（应有 %2 个，可访问 %3 个）。"
+                           "时钟已开启却访问失败，说明该型号没有这些外设。")
+                .arg(verdict.missing)
+                .arg(verdict.expected)
+                .arg(verdict.readable);
+        return verdict;
+    }
+
+    // Very few readable blocks on a part that should expose many is not proof of a wrong
+    // part, but it is worth flagging: the register map will be mostly empty.
+    if (verdict.expected >= 8 && verdict.readable == 0) {
+        verdict.reason = QStringLiteral("没有任何外设可访问（应有 %1 个）；寄存器视图会是空的")
+                             .arg(verdict.expected);
+    }
+    return verdict;
 }
 
 QVector<PeripheralStatus> DeviceTreeScanner::scan(

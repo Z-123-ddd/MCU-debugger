@@ -38,34 +38,17 @@ QString ProbeWorker::probeSerial() const
     return info.probeSerials.isEmpty() ? QString() : info.probeSerials.first();
 }
 
-void ProbeWorker::doOpen(const QString &backend, const QString &binaryPath, const QString &interfaceName,
+void ProbeWorker::doOpen(const QString &binaryPath, const QString &interfaceName,
                          int speedKHz)
 {
-    // Two backends: `jlink` (GDB server + RSP) and `jlink-dll` (the DLL directly).
-    // Only the DLL one can do HSS background sampling, because that engine is not
-    // exposed over the GDB protocol.
-    const QString wanted = (backend == QLatin1String("jlink-dll"))
-        ? QStringLiteral("jlink-dll")
-        : QStringLiteral("jlink");
-
-    // Rebuild the probe when the backend changes.
-    if (m_probe && m_backend != wanted) {
-        m_probe->close();
-        m_probe.reset();
-    }
-    m_backend = wanted;
-
+    // One backend: the DLL. It reaches everything the GDB server did, plus HSS background
+    // sampling (that engine is not exposed over the GDB protocol), and it avoids a second
+    // process and an ASCII-hex RSP hop for every register access. The GDB backend this
+    // replaced is gone, so there is nothing to negotiate and no binary path to resolve.
+    Q_UNUSED(binaryPath);
     if (!m_probe) {
-        if (wanted == QLatin1String("jlink-dll"))
-            m_probe = std::make_unique<JLinkDllProbe>();
-        else
-            m_probe = std::make_unique<JLinkGdbProbe>();
-    }
-
-    if (dynamic_cast<JLinkDllProbe *>(m_probe.get())) {
-        // The DLL backend needs no external executable; binaryPath is unused.
-    } else if (auto *jlink = dynamic_cast<JLinkGdbProbe *>(m_probe.get())) {
-        jlink->setExecutable(binaryPath.isEmpty() ? JLinkRunner::locate(AppSettings::jlinkPath()) : binaryPath);
+        m_probe = std::make_unique<JLinkDllProbe>();
+        m_backend = QStringLiteral("jlink-dll");
     }
 
     m_probe->setInterface(interfaceName);
@@ -380,6 +363,7 @@ void ProbeWorker::doScanDeviceTree(const QString &svdPath)
     emit deviceTreeScanned(statuses, QString());
 }
 
+
 void ProbeWorker::doValidateChip(const QString &chipName)
 {
     if (!m_probe) {
@@ -460,12 +444,12 @@ void ProbeController::dispatch(Fn &&fn)
     QMetaObject::invokeMethod(m_worker, std::forward<Fn>(fn), Qt::QueuedConnection);
 }
 
-void ProbeController::requestOpen(const QString &backend, const QString &binaryPath,
-                                 const QString &interfaceName, int speedKHz)
+void ProbeController::requestOpen(const QString &binaryPath, const QString &interfaceName,
+                                 int speedKHz)
 {
-    m_backend = backend;
-    dispatch([worker = m_worker, backend, binaryPath, interfaceName, speedKHz] {
-        worker->doOpen(backend, binaryPath, interfaceName, speedKHz);
+    m_backend = QStringLiteral("jlink-dll");
+    dispatch([worker = m_worker, binaryPath, interfaceName, speedKHz] {
+        worker->doOpen(binaryPath, interfaceName, speedKHz);
     });
 }
 
@@ -552,6 +536,7 @@ void ProbeController::requestScanDeviceTree(const QString &svdPath)
 {
     dispatch([worker = m_worker, svdPath] { worker->doScanDeviceTree(svdPath); });
 }
+
 
 void ProbeController::requestValidateChip(const QString &chipName)
 {

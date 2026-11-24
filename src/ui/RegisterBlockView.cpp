@@ -154,7 +154,11 @@ void RegisterBlockItem::paint(QPainter *painter, const QStyleOptionGraphicsItem 
 
 void RegisterBlockItem::mousePressEvent(QGraphicsSceneMouseEvent *event)
 {
-    emit clicked(m_index);
+    // Left selects only. The right button used to arrive here too and therefore *selected*
+    // the register, the opposite of a cancel gesture; it is now handled by the view, so
+    // that right-clicking between blocks works as well.
+    if (event->button() != Qt::RightButton)
+        emit clicked(m_index);
     QGraphicsObject::mousePressEvent(event);
 }
 
@@ -228,6 +232,21 @@ void RegisterBlockView::setSelectedRegister(int index)
         item->setSelectedState(item->index() == index);
     if (index >= 0 && index < m_items.size())
         ensureVisible(m_items.at(index), 40, 40);
+}
+
+void RegisterBlockView::mousePressEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::RightButton) {
+        releaseSelection();
+        return; // nothing in the scene handles right-clicks
+    }
+    QGraphicsView::mousePressEvent(event);
+}
+
+void RegisterBlockView::releaseSelection()
+{
+    setSelectedRegister(-1);
+    emit registerDeselected();
 }
 
 void RegisterBlockView::rebuild()

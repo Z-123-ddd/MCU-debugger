@@ -110,8 +110,6 @@ int main(int argc, char *argv[])
     window.show();
     if (!options.svdPath.isEmpty())
         window.openSvdFile(options.svdPath);
-    if (options.autoConnect)
-        window.scheduleAutoConnect();
 
     return app.exec();
 }

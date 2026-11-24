@@ -14,6 +14,7 @@ namespace mrd {
 
 namespace {
 
+/// Where the two regions sit on every Cortex-M part this tool supports.
 constexpr quint32 kFlashBase = 0x08000000u;
 constexpr quint32 kRamBase = 0x20000000u;
 
@@ -21,8 +22,11 @@ constexpr quint32 kRamBase = 0x20000000u;
 ///
 /// Reading the *last word* rather than the first is what makes this work: every
 /// part can read its own base address, only the real size has its top word.
-int probeTop(IProbe &probe, quint32 base, const QVector<int> &candidates, const char *label)
+int probeTop(IProbe &probe, quint32 base, const QVector<int> &candidates, const char *label,
+             int *blankUpper)
 {
+    if (blankUpper)
+        *blankUpper = 0;
     for (int size : candidates) {
         quint32 value = 0;
         const quint32 address = base + static_cast<quint32>(size) - 4u;
@@ -36,12 +40,25 @@ int probeTop(IProbe &probe, quint32 base, const QVector<int> &candidates, const 
         // returns 0 although its RAM is 144K. Treating those as "present" picked
         // 512K/192K for a 256K/144K part. Both patterns are therefore inconclusive
         // and the search continues downward.
-        if (value == 0xFFFFFFFFu || value == 0x00000000u) {
+        if (value == 0xFFFFFFFFu) {
+            // Erased flash *or* an unmapped window -- indistinguishable here, and the two
+            // have opposite meaning. Remember the largest such boundary so the caller can
+            // say "a bigger part is possible" instead of silently reporting the smaller
+            // one. This is the case that made a 512 KB part with a 235 KB image come out
+            // as 256 KB.
+            if (blankUpper && *blankUpper == 0)
+                *blankUpper = size;
             Logger::instance()->debug(
-                QStringLiteral("%1 探测: %2 = 0x%3（无法作为依据，继续向下找）")
+                QStringLiteral("%1 探测: %2 = 0xFFFFFFFF（擦除态或未映射，无法据此定容）")
                     .arg(QString::fromLatin1(label),
-                         QStringLiteral("0x%1").arg(address, 8, 16, QLatin1Char('0')),
-                         QStringLiteral("%1").arg(value, 8, 16, QLatin1Char('0'))));
+                         QStringLiteral("0x%1").arg(address, 8, 16, QLatin1Char('0'))));
+            continue;
+        }
+        if (value == 0x00000000u) {
+            Logger::instance()->debug(
+                QStringLiteral("%1 探测: %2 = 0x00000000（保留/别名区，无法作为依据，继续向下找）")
+                    .arg(QString::fromLatin1(label),
+                         QStringLiteral("0x%1").arg(address, 8, 16, QLatin1Char('0'))));
             continue;
         }
         Logger::instance()->debug(QStringLiteral("%1 探测: %2 可读 -> %3 KB")
@@ -72,6 +89,9 @@ QVector<int> MemoryProbe::ramCandidates()
             32 * 1024,  16 * 1024,  8 * 1024};
 }
 
+
+
+
 MemoryProbe::Result MemoryProbe::detect(IProbe &probe)
 {
     Result result;
@@ -79,11 +99,26 @@ MemoryProbe::Result MemoryProbe::detect(IProbe &probe)
         result.note = QStringLiteral("目标未连接");
         return result;
     }
-    result.flashBytes = probeTop(probe, kFlashBase, flashCandidates(), "Flash");
-    result.ramBytes = probeTop(probe, kRamBase, ramCandidates(), "RAM");
+    result.flashBytes = probeTop(probe, kFlashBase, flashCandidates(), "Flash",
+                                 &result.flashBlankUpper);
+    result.ramBytes = probeTop(probe, kRamBase, ramCandidates(), "RAM",
+                               &result.ramBlankUpper);
+    if (result.flashAmbiguous()) {
+        Logger::instance()->debug(QStringLiteral("内存探测: %1").arg(result.flashAmbiguityNote()));
+    }
     result.note = describe(result);
     Logger::instance()->debug(QStringLiteral("内存探测: %1").arg(result.note));
     return result;
+}
+
+QString MemoryProbe::Result::flashAmbiguityNote() const
+{
+    if (!flashAmbiguous())
+        return QString();
+    return QStringLiteral("Flash 实测 %1 KB，但 %2 KB 边界读到擦除态 0xFF，"
+                          "无法区分 %1 KB 与 %2 KB 版本（本芯片可能是更大的料号）")
+        .arg(flashBytes / 1024)
+        .arg(flashBlankUpper / 1024);
 }
 
 QString MemoryProbe::describe(const Result &result)
@@ -100,10 +135,15 @@ QString MemoryProbe::describe(const Result &result)
 
 bool MemoryProbe::matches(const Result &probe, int flashBytes, int ramBytes)
 {
-    // Flash first: it is the reliable half. Erased flash reads 0xFFFFFFFF, which
-    // detect() already rejects, so a measured flash size is trustworthy.
-    if (probe.flashBytes > 0 && flashBytes > 0 && probe.flashBytes != flashBytes)
+    // Flash first: it is the reliable half *when the top boundary held real content*.
+    //
+    // When a larger boundary read back as erased, both sizes remain possible, so a part
+    // of that larger size must stay a candidate -- otherwise the ambiguity is resolved
+    // silently in favour of the smaller part, which is how a CE got called a CC.
+    if (probe.flashBytes > 0 && flashBytes > 0 && probe.flashBytes != flashBytes
+        && !(probe.flashBlankUpper > 0 && flashBytes == probe.flashBlankUpper)) {
         return false;
+    }
 
     // RAM is only a tie-breaker. Measured on real silicon, the byte right past the
     // real end can still read back data (an alias or a neighbouring block), so a

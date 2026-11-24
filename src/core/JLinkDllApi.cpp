@@ -1,6 +1,7 @@
 #include "core/JLinkDllApi.h"
 
 #include "core/AppSettings.h"
+#include "core/JLinkInstall.h"
 #include "core/Logger.h"
 
 #include <QCoreApplication>
@@ -23,46 +24,33 @@ namespace {
 QStringList dllCandidates()
 {
     QStringList out;
-
-    const QString settingsPath = AppSettings::jlinkDllPath();
-    if (!settingsPath.isEmpty())
-        out << settingsPath;
-
-    // Next to a configured JLink.exe, newest SEGGER install first.
-    const QString jlink = AppSettings::jlinkPath();
-    if (!jlink.isEmpty()) {
-        const QDir dir = QFileInfo(jlink).absoluteDir();
-        for (const QString &name : {QStringLiteral("JLink_x64.dll"),
-                                    QStringLiteral("JLinkARM.dll")}) {
-            const QString path = dir.filePath(name);
-            if (QFileInfo::exists(path))
-                out << path;
-        }
-    }
-
-    const QStringList roots = {
-        QStringLiteral("C:/Program Files/SEGGER"),
-        QStringLiteral("C:/Program Files (x86)/SEGGER"),
+    const auto add = [&out](const QString &path) {
+        if (path.isEmpty())
+            return;
+        const QString cleaned = QDir::cleanPath(path);
+        if (!out.contains(cleaned))
+            out << cleaned;
     };
-    for (const QString &root : roots) {
-        const QDir base(root);
-        if (!base.exists())
-            continue;
-        QStringList dirs = base.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
-        // Newest version directory first: V826 before V796.
-        std::reverse(dirs.begin(), dirs.end());
-        for (const QString &sub : dirs) {
-            for (const QString &name : {QStringLiteral("JLink_x64.dll"),
-                                        QStringLiteral("JLinkARM.dll")}) {
-                const QString path = base.filePath(sub + QLatin1Char('/') + name);
-                if (QFileInfo::exists(path))
-                    out << path;
-            }
-        }
+
+    // One shared discovery order (settings, environment, PATH, registry, Program Files, a
+    // copy next to the app). This is what makes the application work on a machine where
+    // J-Link lives somewhere unusual: SEGGER's installer only writes the registry and PATH,
+    // while portable deployments often just set a variable.
+    //
+    // JLink_x64.dll is preferred within each installation because JLinkARM.dll is 32-bit:
+    // in this 64-bit process it fails with Windows error 193, so the 64-bit build has to be
+    // tried first and a failure must move on to the next candidate rather than be reported
+    // as "not installed".
+    for (const JLinkInstallation &install : JLinkInstall::discover()) {
+        if (!install.dllPath.isEmpty())
+            add(install.dllPath);
+        add(QDir(install.dir).filePath(QStringLiteral("JLink_x64.dll")));
+        add(QDir(install.dir).filePath(QStringLiteral("JLinkARM.dll")));
     }
 
     // Bare names last, to let the OS search path have a go.
-    out << QStringLiteral("JLink_x64.dll") << QStringLiteral("JLinkARM.dll");
+    add(QStringLiteral("JLink_x64.dll"));
+    add(QStringLiteral("JLinkARM.dll"));
     return out;
 }
 
@@ -130,8 +118,13 @@ Status JLinkDllApi::load()
         return Status::success();
     }
 
-    m_lastError = QStringLiteral("未找到可用的 J-Link DLL（JLink_x64.dll / JLinkARM.dll）。"
-                                 "请安装 SEGGER J-Link 软件包。");
+    // Actionable, and specific about the one case that is a version problem rather than a
+    // missing install: a 32-bit-only J-Link (JLinkARM.dll without JLink_x64.dll) cannot be
+    // loaded into this 64-bit process at all.
+    m_lastError = QStringLiteral("未找到可用的 J-Link DLL（需要 64 位的 JLink_x64.dll）。\n"
+                                 "已检查：程序设置、环境变量、PATH、注册表、Program Files。\n"
+                                 "若本机 J-Link 只带 32 位 JLinkARM.dll，请升级到带 "
+                                 "JLink_x64.dll 的版本（V6.0 以后都有）。");
     return Status::failure(m_lastError);
 }
 

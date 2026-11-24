@@ -73,6 +73,13 @@ public:
 
     void setProbe(ProbeController *probe);
     bool isRunning() const { return m_running; }
+    /// start() has been asked for but the probe has not answered yet.
+    ///
+    /// start() returns before the DLL confirms, so between the call and `started` the
+    /// session is neither running nor absent. Callers that re-evaluate "should I (re)start?"
+    /// must treat this as in-progress, or a second evaluation in that window looks like a
+    /// fresh request and gets refused with "采样已在进行中".
+    bool isStarting() const { return m_starting; }
     int periodUs() const { return m_periodUs; }
     qint64 totalSamples() const { return m_totalSamples; }
     double measuredIntervalUs() const { return m_measuredIntervalUs; }
@@ -148,6 +155,11 @@ private:
 
 public:
     /// The drain writes into a caller-owned history; set right before requestDrain().
+    ///
+    /// Optional: leaving it null makes the sampler a "latest value" reader. The channel
+    /// statistics (`channels()`, and `latest` in particular) are still updated, but no
+    /// sample rows are stored -- which is what the register view wants, since it shows one
+    /// number rather than a curve.
     void setDrainTarget(SampleHistory *history) { m_pendingHistory = history; }
 };
 

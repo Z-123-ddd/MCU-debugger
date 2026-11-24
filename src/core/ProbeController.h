@@ -3,7 +3,6 @@
 #include "core/DeviceIdentifier.h"
 #include "core/IProbe.h"
 #include "core/DeviceTreeScanner.h"
-#include "core/JLinkGdbProbe.h"
 #include "core/SvdLibrary.h"
 
 #include <QByteArray>
@@ -24,7 +23,7 @@ public:
     explicit ProbeWorker(QObject *parent = nullptr);
     ~ProbeWorker() override;
 
-    void doOpen(const QString &backend, const QString &binaryPath, const QString &interfaceName,
+    void doOpen(const QString &binaryPath, const QString &interfaceName,
                 int speedKHz);
     void doClose();
     void doConnect(const QString &chipName);
@@ -80,7 +79,9 @@ private:
 
     SvdLibrary &library();
     QString probeSerial() const;
-    QString m_backend = QStringLiteral("jlink");
+    /// Always the DLL backend now: it is the only one that can reach HSS, and keeping a
+    /// second transport around meant two code paths to keep in step for no extra reach.
+    QString m_backend = QStringLiteral("jlink-dll");
 
     std::unique_ptr<IProbe> m_probe;
     SvdLibrary m_library;
@@ -109,7 +110,7 @@ public:
     bool supportsHss() const { return m_supportsHss; }
 
 public slots:
-    void requestOpen(const QString &backend, const QString &binaryPath, const QString &interfaceName,
+    void requestOpen(const QString &binaryPath, const QString &interfaceName,
                      int speedKHz);
     void requestClose();
     void requestConnect(const QString &chipName);

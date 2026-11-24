@@ -74,6 +74,13 @@ QString ResourcePaths::learnedDeviceIdPath()
     return dir + QStringLiteral("/learned.json");
 }
 
+QString ResourcePaths::bundledBootloader()
+{
+    // data/bootloader/<file>: kept out of the data/ root because it is one specific
+    // artefact for one board, not a table the app consults for many parts.
+    return find(QStringLiteral("bootloader/LION_H473_Bootloader.hex"));
+}
+
 QString ResourcePaths::packageDirectory()
 {
     const QString configured = AppSettings::packageDir();

@@ -44,11 +44,29 @@ public:
     // --- values ------------------------------------------------------------
     RegisterValue valueFor(quint32 address) const;
     quint32 effectiveValue(quint32 address) const; ///< cached value or resetValue
+
+    /// True when a read whose window covers \a address is still in flight.
+    ///
+    /// The UI's fast poll of the selected register is a timer, and a timer can outrun
+    /// the link: at 200 kHz one word read already takes longer than a 20 ms tick. Asking
+    /// this before issuing the next read turns the timer into a *rate ceiling* that the
+    /// probe throttles down to what it can actually deliver, instead of a queue that
+    /// grows without bound.
+    bool isReadPending(quint32 address) const;
     QHash<quint32, quint32> snapshot(const SvdPeripheral &peripheral) const;
     QHash<quint32, quint32> allValues() const;
 
     void applyRead(quint32 address, const QByteArray &data, bool ok, const QString &error);
     void setValueLocally(quint32 address, quint32 value);
+
+    /// Store a value that did not come from the read path -- currently the HSS sampler,
+    /// which delivers the register's current contents without a bus read of our own.
+    ///
+    /// Goes through the same bookkeeping as a completed read (valid, timestamp,
+    /// differsFromReset) and announces it, so the views cannot tell the two apart. That
+    /// matters: the register view has one display path, and a value that skipped
+    /// valuesChanged would sit on screen stale while the cache behind it moved.
+    void applySampledValue(quint32 address, quint32 value);
 
     // --- access ------------------------------------------------------------
     /// Read the whole window of \a peripheral (one probe call per poll).

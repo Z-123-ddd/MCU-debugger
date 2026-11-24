@@ -1,10 +1,14 @@
 #include "core/JLinkRunner.h"
 
+#include "core/JLinkInstall.h"
+
 #include "core/Logger.h"
 
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QFile>
+#include <QTimer>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSettings>
@@ -109,23 +113,16 @@ QStringList JLinkRunner::candidatePaths(const QString &explicitPath)
             addFile(explicitPath);
     }
 
-    addDir(installPathFromRegistry());
-    for (const auto &dir : seggerDirectories())
-        addDir(dir);
-
-    // A private copy next to the app (deploy/tools/jlink), plus dev-tree levels.
-    const QString appDir = QCoreApplication::applicationDirPath();
-    const QStringList toolRoots = {
-        QDir::cleanPath(appDir + QStringLiteral("/tools")),
-        QDir::cleanPath(appDir + QStringLiteral("/../tools")),
-        QDir::cleanPath(appDir + QStringLiteral("/../../tools")),
-        QDir::cleanPath(QDir::currentPath() + QStringLiteral("/tools")),
-    };
-    for (const auto &root : toolRoots) {
-        addDir(root + QStringLiteral("/jlink"));
-        addDir(root);
+    // Every installation the shared discovery found, in its priority order: the app's own
+    // setting, environment variables, PATH, the registry, Program Files, then a copy next
+    // to the executable. Sharing one list with the DLL backend is the point -- deciding
+    // "where is J-Link" in two places is how the two backends could disagree about it.
+    for (const JLinkInstallation &install : JLinkInstall::discover()) {
+        addDir(install.dir);
+        addFile(install.cliPath);
     }
 
+    // Let the OS search path have a go as a last resort (it may resolve a shim).
     const QString onPath = QStandardPaths::findExecutable(QStringLiteral("JLink"));
     if (!onPath.isEmpty())
         addFile(onPath);
@@ -176,6 +173,69 @@ Result<QString> JLinkRunner::runScript(const QString &executable, const QStringL
 
     const QString output = QString::fromLocal8Bit(process.readAll());
     return Result<QString>::success(output);
+}
+
+void JLinkRunner::runScriptAsync(const QString &executable, const QStringList &lines,
+                                 int timeoutMs, ScriptCallback onFinished,
+                                 const QStringList &extraArgs)
+{
+    auto *process = new QProcess();
+    process->setProcessChannelMode(QProcess::MergedChannels);
+
+    // A kill timer rather than a blocking wait: the event loop must keep running so the
+    // window stays responsive while the commander works.
+    auto *watchdog = new QTimer(process);
+    watchdog->setSingleShot(true);
+    watchdog->setInterval(qMax(1000, timeoutMs));
+    QObject::connect(watchdog, &QTimer::timeout, process, [process] {
+        process->setProperty("mrdTimedOut", true);
+        process->kill();
+    });
+
+    QObject::connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                     process, [process, onFinished](int exitCode, QProcess::ExitStatus) {
+        const QString output = QString::fromLocal8Bit(process->readAll());
+        const bool timedOut = process->property("mrdTimedOut").toBool();
+        process->deleteLater();
+        if (onFinished)
+            onFinished(exitCode, output, timedOut);
+    });
+    QObject::connect(process, &QProcess::errorOccurred, process,
+                     [process, onFinished](QProcess::ProcessError error) {
+        if (error != QProcess::FailedToStart)
+            return; // failures after start arrive through finished()
+        process->deleteLater();
+        if (onFinished)
+            onFinished(-1, QStringLiteral("无法启动 %1").arg(process->program()), false);
+    });
+
+    // "-CommanderScript" needs a real file, so the script is written next to the temp dir
+    // and removed once the process is gone.
+    const QString scriptPath = QDir(QDir::tempPath())
+                                   .filePath(QStringLiteral("mrd_jlink_%1.jlink")
+                                                 .arg(QCoreApplication::applicationPid()));
+    QFile script(scriptPath);
+    if (!script.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        delete process;
+        if (onFinished)
+            onFinished(-1, QStringLiteral("无法写脚本 %1").arg(scriptPath), false);
+        return;
+    }
+    script.write(lines.join(QLatin1Char('\n')).toLatin1());
+    script.write("\n");
+    script.close();
+
+    QStringList arguments = extraArgs;
+    arguments << QStringLiteral("-CommanderScript") << scriptPath;
+    process->setProgram(executable);
+    process->setArguments(arguments);
+    process->start();
+    watchdog->start();
+
+    // Cleanup of the script file when the process object dies.
+    QObject::connect(process, &QObject::destroyed, [scriptPath] {
+        QFile::remove(scriptPath);
+    });
 }
 
 Result<JLinkInstallInfo> JLinkRunner::query(const QString &executable, const QString &device,

@@ -114,6 +114,7 @@ QStringList SvdLibrary::defaultRoots()
     return roots;
 }
 
+
 void SvdLibrary::setRoots(const QStringList &roots)
 {
     m_roots.clear();

@@ -11,18 +11,16 @@ namespace mrd {
 namespace {
 constexpr const char *kSvRoots = "svd/roots";
 constexpr const char *kLastSvd = "svd/lastPath";
-constexpr const char *kBackendVersion = "probe/backendVersion";
-constexpr const char *kBackend = "probe/backend";
 constexpr const char *kJlinkPath = "probe/jlinkPath";
 constexpr const char *kProbeSelector = "probe/selector";
 constexpr const char *kInterface = "probe/interface";
 constexpr const char *kSpeed = "probe/speedKHz";
 constexpr const char *kChip = "probe/chip";
+constexpr const char *kChipPackage = "probe/chipPackage";
 constexpr const char *kBindings = "probe/bindings";
 constexpr const char *kPollMs = "session/pollIntervalMs";
 constexpr const char *kPackageDir = "session/packageDir";
 constexpr const char *kTheme = "ui/theme";
-constexpr const char *kAutoConnect = "ui/autoConnect";
 constexpr const char *kPinned = "ui/pinned";
 } // namespace
 
@@ -49,31 +47,6 @@ QString AppSettings::lastSvdPath()
 void AppSettings::setLastSvdPath(const QString &path)
 {
     QSettings().setValue(QLatin1String(kLastSvd), path);
-}
-
-QString AppSettings::probeBackend()
-{
-    QSettings settings;
-    // One-time migration. The DLL backend became the default because it is the only
-    // one that can do HSS live sampling, but a previously saved "jlink" would keep
-    // overriding that default forever -- the user never chose GDB, it was simply the
-    // old fallback. After this runs once, an explicit choice is respected again.
-    constexpr int kBackendDefaultVersion = 2;
-    if (settings.value(QLatin1String(kBackendVersion), 0).toInt() < kBackendDefaultVersion) {
-        settings.setValue(QLatin1String(kBackendVersion), kBackendDefaultVersion);
-        settings.setValue(QLatin1String(kBackend), QStringLiteral("jlink-dll"));
-        return QStringLiteral("jlink-dll");
-    }
-
-    const QString stored = settings.value(QLatin1String(kBackend)).toString();
-    if (stored == QLatin1String("jlink") || stored == QLatin1String("jlink-dll"))
-        return stored;
-    return QStringLiteral("jlink-dll");
-}
-
-void AppSettings::setProbeBackend(const QString &backend)
-{
-    QSettings().setValue(QLatin1String(kBackend), backend);
 }
 
 QString AppSettings::jlinkPath()
@@ -118,9 +91,32 @@ void AppSettings::setSpeedKHz(int speed)
     QSettings().setValue(QLatin1String(kSpeed), speed);
 }
 
+QString AppSettings::chipPackage()
+{
+    return QSettings().value(QLatin1String(kChipPackage)).toString();
+}
+
+void AppSettings::setChipPackage(const QString &package)
+{
+    QSettings().setValue(QLatin1String(kChipPackage), package);
+}
+
 QString AppSettings::chipName()
 {
     return QSettings().value(QLatin1String(kChip)).toString();
+}
+
+void AppSettings::dropObsoleteBackendKeys()
+{
+    // The GDB backend is gone, so "probe/backend" no longer means anything. Leaving the
+    // stale value behind is not harmless: it makes any later debugging of connection
+    // problems start from a false assumption about which transport is configured.
+    QSettings settings;
+    const QStringList obsolete = {QStringLiteral("probe/backend"),
+                                  QStringLiteral("probe/backendVersion"),
+                                  QStringLiteral("ui/autoConnect")};
+    for (const QString &key : obsolete)
+        settings.remove(key);
 }
 
 void AppSettings::migrateChipNameSetting()
@@ -136,6 +132,7 @@ void AppSettings::migrateChipNameSetting()
     // Older builds wrote the detected part here unconditionally, so the stored
     // value is the last board rather than a deliberate choice. Drop it.
     settings.remove(QLatin1String(kChip));
+    settings.remove(QLatin1String(kChipPackage));
     settings.setValue(QLatin1String(kMarker), kCurrent);
     Logger::instance()->info(
         QStringLiteral("已重置保存的芯片名：旧版本会把它当成手动指定，导致换芯片后仍按上一次的型号"));
@@ -209,15 +206,6 @@ void AppSettings::setTheme(const QString &theme)
     QSettings().setValue(QLatin1String(kTheme), theme);
 }
 
-bool AppSettings::autoConnectOnStartup()
-{
-    return QSettings().value(QLatin1String(kAutoConnect), false).toBool();
-}
-
-void AppSettings::setAutoConnectOnStartup(bool enabled)
-{
-    QSettings().setValue(QLatin1String(kAutoConnect), enabled);
-}
 
 QStringList AppSettings::pinnedPeripherals()
 {

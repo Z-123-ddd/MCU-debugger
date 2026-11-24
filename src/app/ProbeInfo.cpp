@@ -2,15 +2,18 @@
 
 #include "core/AppSettings.h"
 #include "core/DeviceIdentifier.h"
+#include "core/PartTable.h"
 #include "core/DeviceTreeScanner.h"
 #include "core/GpioCodec.h"
 #include "core/HexUtil.h"
 #include "core/JLinkDllProbe.h"
-#include "core/JLinkGdbProbe.h"
 #include "core/JLinkRunner.h"
 #include "core/Logger.h"
 #include "core/HssSampler.h"
 #include "core/SampleHistory.h"
+#include "core/FirmwareImage.h"
+#include "core/FirmwareBurner.h"
+#include "core/JLinkDeviceName.h"
 #include "core/ProbeController.h"
 
 #include <QCoreApplication>
@@ -105,58 +108,46 @@ int runProbeInfo(const Options &options)
     Logger::instance()->setMinimumLevel(options.verbose ? Logger::Debug : Logger::Warn);
     g_failures = 0;
 
-    const QString backend = !options.backend.isEmpty()
-                                ? options.backend
-                                : AppSettings::probeBackend();
-
-    out(QStringLiteral("=== 探针后端: %1 ===").arg(backend));
+    // One backend now: the DLL. The Commander query below is kept because it is the only
+    // source of firmware/hardware/serial identity, which is what this diagnostic exists to
+    // print -- it is information, not a second transport.
+    out(QStringLiteral("=== 探针后端: jlink-dll ==="));
 
     std::unique_ptr<IProbe> probe;
     QString serial;
 
-    if (backend == QLatin1String("jlink-dll")) {
-        // No external executable: the DLL is loaded in-process, which is what makes
-        // HSS background sampling reachable at all.
-        auto dllProbe = std::make_unique<JLinkDllProbe>();
-        const Status opened = dllProbe->open();
-        check(static_cast<bool>(opened), QStringLiteral("加载 J-Link DLL"),
-              opened ? dllProbe->info().binaryPath : opened.error);
-        if (!opened)
-            return 4;
-        auto *api = dllProbe->api();
-        check(api->hasHss(), QStringLiteral("该 DLL 提供 HSS 接口"),
-              api->hasHss() ? QStringLiteral("JLINK_HSS_Start/Read/Stop 可解析")
-                            : QStringLiteral("缺少 HSS 导出"));
-        out(QStringLiteral("[OK] 后端 jlink-dll | %1").arg(dllProbe->api()->libraryPath()));
-        probe = std::move(dllProbe);
-    } else {
-        const QString executable = JLinkRunner::locate(AppSettings::jlinkPath());
-        if (executable.isEmpty()) {
-            out(QString());
-            out(QStringLiteral("[ERROR] 未找到 JLink.exe（SEGGER J-Link 软件未安装？）"));
-            return 4;
-        }
-
-        const auto info = JLinkRunner::query(executable,
-                                            options.deviceName.isEmpty() ? QStringLiteral("Cortex-M4")
-                                                                          : options.deviceName);
+    const QString executable = JLinkRunner::locate(AppSettings::jlinkPath());
+    if (!executable.isEmpty()) {
+        const auto info = JLinkRunner::query(
+            executable,
+            options.deviceName.isEmpty() ? QStringLiteral("Cortex-M4") : options.deviceName);
         if (!info) {
             out(QString());
-            out(QStringLiteral("[ERROR] %1").arg(info.error));
-            return 4;
+            out(QStringLiteral("[WARN] %1").arg(info.error));
+        } else {
+            out(QStringLiteral("[OK] J-Link %1 | DLL %2 | 固件 %3 | 硬件 %4 | S/N %5 | %6")
+                    .arg(info.value.commander, info.value.dllVersion, info.value.firmware,
+                         info.value.hardware,
+                         info.value.serial.isEmpty() ? QStringLiteral("?") : info.value.serial,
+                         info.value.product));
+            check(info.value.probeFound, QStringLiteral("发现 J-Link 硬件"),
+                  info.value.probeFound ? info.value.serial : QStringLiteral("请检查 USB 连接"));
+            serial = info.value.serial;
         }
-        // Version + probe identity only: the install path is noise here.
-        out(QStringLiteral("[OK] J-Link %1 | DLL %2 | 固件 %3 | 硬件 %4 | S/N %5 | %6")
-                .arg(info.value.commander, info.value.dllVersion, info.value.firmware, info.value.hardware,
-                     info.value.serial.isEmpty() ? QStringLiteral("?") : info.value.serial, info.value.product));
-        check(info.value.probeFound, QStringLiteral("发现 J-Link 硬件"),
-              info.value.probeFound ? info.value.serial : QStringLiteral("请检查 USB 连接"));
-
-        auto jlink = std::make_unique<JLinkGdbProbe>();
-        jlink->setExecutable(executable);
-        serial = info.value.serial;
-        probe = std::move(jlink);
     }
+
+    auto dllProbe = std::make_unique<JLinkDllProbe>();
+    const Status opened = dllProbe->open();
+    check(static_cast<bool>(opened), QStringLiteral("加载 J-Link DLL"),
+          opened ? dllProbe->info().binaryPath : opened.error);
+    if (!opened)
+        return 4;
+    auto *api = dllProbe->api();
+    check(api->hasHss(), QStringLiteral("该 DLL 提供 HSS 接口"),
+          api->hasHss() ? QStringLiteral("JLINK_HSS_Start/Read/Stop 可解析")
+                        : QStringLiteral("缺少 HSS 导出"));
+    out(QStringLiteral("[OK] 后端 jlink-dll | %1").arg(dllProbe->api()->libraryPath()));
+    probe = std::move(dllProbe);
 
     // --- library / database ------------------------------------------------
     QString dbError;
@@ -415,8 +406,7 @@ int runProbeInfo(const Options &options)
     // Answers "how long does a realtime refresh cost, and does it stop the MCU?".
     // The DLL's JLINK_ReadMem goes through the same AHB-AP path HSS uses, so this is
     // the honest number for a snapshot-style refresh -- not a GDB all-stop figure.
-    if (backend == QLatin1String("jlink-dll") && options.benchRead
-        && !options.symbolPath.isEmpty()) {
+    if (options.benchRead && !options.symbolPath.isEmpty()) {
         out(QString());
         out(QStringLiteral("--- 一次性读取全部静态变量 ---"));
 
@@ -548,125 +538,228 @@ int runProbeInfo(const Options &options)
         }
     }
 
-    // --- value-column polling budget (DLL backend only) ---------------------
-    // The 值 column refreshes on a 200 ms timer. Whether that is affordable depends
-    // entirely on how many variables are in the set, so measure it instead of assuming:
-    // a full-image sweep is far too slow, a screenful is not.
-    if (backend == QLatin1String("jlink-dll") && options.benchPoll > 0
-        && !options.symbolPath.isEmpty()) {
+    // --- read the target's Flash (read-only) ---------------------------------
+    // Used to find out where firmware actually lives before implementing a burn: the
+    // .bin size alone cannot say, and the part's nominal Flash size is not the answer
+    // either (a 256 KB part can hold a smaller image).
+    if (!options.dumpFlashPath.isEmpty()) {
         out(QString());
-        out(QStringLiteral("--- 数值列轮询预算（%1 行） ---").arg(options.benchPoll));
+        out(QStringLiteral("--- Flash 读取: %1 ---").arg(options.dumpFlashPath));
 
-        auto dll = dynamic_cast<JLinkDllProbe *>(probe.get());
-        const auto symbols = SymbolFile::load(options.symbolPath);
-        if (!dll || !symbols) {
-            check(false, QStringLiteral("需要 DLL 后端与符号文件"), QString());
-        } else {
-            QVector<WatchVariable> leaves;
-            for (const WatchVariable &variable : symbols.value.variables) {
-                if (variable.usable())
-                    leaves.append(variable);
+        quint32 base = 0x08000000u;
+        if (!options.dumpFlashBase.isEmpty()) {
+            bool hexOk = false;
+            const quint32 parsed = options.dumpFlashBase.startsWith(QLatin1String("0x"),
+                                                                   Qt::CaseInsensitive)
+                ? options.dumpFlashBase.mid(2).toUInt(&hexOk, 16)
+                : options.dumpFlashBase.toUInt(&hexOk, 16);
+            if (hexOk)
+                base = parsed;
+        }
+
+        // Default length: whatever the part table says this chip has.
+        int length = 0;
+        if (!options.dumpFlashLength.isEmpty()) {
+            bool ok = false;
+            length = options.dumpFlashLength.toInt(&ok);
+            if (!ok)
+                length = 0;
+        }
+        if (length <= 0) {
+            // The part table knows the exact flash size for this order code; the
+            // family name alone does not (one DEV_ID spans 256 KB and 512 KB parts).
+            const QString chip = probe->deviceName();
+            const PartTable::Entry entry = PartTable::lookup(chip);
+            length = entry.valid ? entry.flashBytes : 0;
+            out(QStringLiteral("    型号 %1 -> Flash %2")
+                    .arg(chip.isEmpty() ? QStringLiteral("(未知)") : chip,
+                         entry.valid ? PartTable::formatSize(entry.flashBytes)
+                                     : QStringLiteral("未知，按 256 KB 读")));
+            if (length <= 0)
+                length = 256 * 1024;
+        }
+        out(QStringLiteral("    读取范围: %1 .. %2（%3 KB）")
+                .arg(hexAddr(base))
+                .arg(hexAddr(base + quint32(length)))
+                .arg(length / 1024));
+
+        QByteArray flash;
+        const Status read = probe->readMemory(base, length, &flash);
+        check(static_cast<bool>(read), QStringLiteral("读取目标 Flash"), read.error);
+        if (static_cast<bool>(read) && flash.size() == length) {
+            // First two words are the vector table by definition on Cortex-M.
+            quint32 stackTop = 0;
+            quint32 resetHandler = 0;
+            if (length >= 8) {
+                std::memcpy(&stackTop, flash.constData(), 4);
+                std::memcpy(&resetHandler, flash.constData() + 4, 4);
             }
-            check(!leaves.isEmpty(), QStringLiteral("得到可读变量"),
-                  QStringLiteral("%1 个").arg(leaves.size()));
+            const quint32 resetAddr = resetHandler & ~1u;
+            out(QStringLiteral("    向量表: SP=%1  Reset=%2（Thumb=%3）")
+                    .arg(hexAddr(stackTop), hexAddr(resetAddr),
+                         (resetHandler & 1u) ? QStringLiteral("是") : QStringLiteral("否")));
 
-            // A screenful is not 4000 variables; take a deterministic spread so repeated
-            // runs measure the same thing.
-            QVector<WatchVariable> chosen;
-            const int wanted = qMin(options.benchPoll, leaves.size());
-            for (int i = 0; i < wanted; ++i) {
-                const int index = leaves.size() > 1
-                    ? int(qint64(i) * (leaves.size() - 1) / qMax(1, wanted - 1))
-                    : 0;
-                chosen.append(leaves.at(qMin(index, leaves.size() - 1)));
+            const bool vectorLooksValid = (stackTop & 0xFFF00000u) == 0x20000000u
+                && resetAddr >= base && resetAddr < base + quint32(length);
+
+            // Where the content ends: the last byte that is neither 0xFF (erased) nor
+            // 0x00 (blank). Scanning from the end avoids depending on the vector table
+            // being right.
+            int lastUsed = -1;
+            for (int i = length - 1; i >= 0; --i) {
+                const uchar value = uchar(flash.at(i));
+                if (value != 0xFF && value != 0x00) {
+                    lastUsed = i;
+                    break;
+                }
             }
+            const int endOffset = lastUsed + 1;
+            out(QStringLiteral("    内容末尾: %1（偏移 %2 字节，%3 KB）")
+                    .arg(hexAddr(base + quint32(endOffset)))
+                    .arg(endOffset)
+                    .arg(endOffset / 1024));
 
-            // Same coalescing rule as ValuePoller: adjacent addresses share one request.
-            QVector<QPair<quint32, int>> spans;
-            {
-                QVector<QPair<quint32, int>> raw;
-                for (const WatchVariable &variable : chosen)
-                    raw.append(qMakePair(variable.address, variable.span()));
-                std::sort(raw.begin(), raw.end());
-                for (const auto &span : raw) {
-                    const quint32 begin = span.first;
-                    const quint32 end = begin + quint32(span.second);
-                    if (!spans.isEmpty()
-                        && begin <= spans.last().first + quint32(spans.last().second)) {
-                        const quint32 mergedEnd =
-                            qMax(spans.last().first + quint32(spans.last().second), end);
-                        spans.last().second = int(mergedEnd - spans.last().first);
-                    } else {
-                        spans.append(qMakePair(begin, int(end - begin)));
+            // How much of the read window is still erased: a fully erased tail means
+            // the size above is real, not an artifact of a partly-programmed image.
+            int erased = 0;
+            for (int i = 0; i < length; ++i) {
+                if (uchar(flash.at(i)) == 0xFF)
+                    ++erased;
+            }
+            out(QStringLiteral("    0xFF 占比: %1%")
+                    .arg(double(erased) * 100.0 / double(qMax(1, length)), 0, 'f', 1));
+
+            check(vectorLooksValid, QStringLiteral("向量表看起来有效（SP 在 SRAM、Reset 在 Flash 内）"),
+                  QStringLiteral("SP=%1 Reset=%2").arg(hexAddr(stackTop), hexAddr(resetAddr)));
+
+            QFile outFile(options.dumpFlashPath);
+            if (outFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                outFile.write(flash);
+                outFile.close();
+                out(QStringLiteral("    已写出 %1 字节到 %2")
+                        .arg(flash.size()).arg(options.dumpFlashPath));
+            } else {
+                check(false, QStringLiteral("写出 .bin"), outFile.errorString());
+            }
+        }
+    }
+
+    // --- burn a firmware image ----------------------------------------------
+    // Two phases on purpose: analysis (safe, always runs) and the write (only with
+    // --burn-commit). A burn erases first, so it must never happen as a side effect of
+    // merely pointing the tool at a file.
+    if (!options.burnPath.isEmpty()) {
+        out(QString());
+        out(QStringLiteral("--- 固件烧录: %1 ---").arg(QFileInfo(options.burnPath).fileName()));
+
+        // Which part is this? The probe reports the J-Link name (N32G455CC); the part
+        // table needs as much of an order code as it can get, and lookup() prefix-matches.
+        QString part = probe->deviceName();
+        const PartTable::Entry entry = PartTable::lookup(part);
+        if (entry.valid)
+            part = entry.part;
+
+        // Address overrides. Accepting "0x08008000" and "08008000" both, because that is
+        // how people paste them out of a linker script.
+        auto parseAddress = [](const QString &text, quint32 *out) {
+            if (text.isEmpty())
+                return true; // "not given" is not an error
+            QString cleaned = text.trimmed();
+            if (cleaned.startsWith(QLatin1String("0x"), Qt::CaseInsensitive))
+                cleaned = cleaned.mid(2);
+            bool ok = false;
+            const quint32 value = cleaned.toUInt(&ok, 16);
+            if (ok && out)
+                *out = value;
+            return ok;
+        };
+
+        FirmwarePlan plan;
+        plan.applicationPath = options.burnPath;
+        plan.bootloaderPath = options.bootloaderPath;
+        bool addressesOk = true;
+        addressesOk = addressesOk && parseAddress(options.bootloaderBase, &plan.bootloaderBase);
+        addressesOk = addressesOk && parseAddress(options.appBase, &plan.applicationBase);
+        addressesOk = addressesOk && parseAddress(options.overallStart, &plan.overallStart);
+        addressesOk = addressesOk && parseAddress(options.overallEnd, &plan.overallEnd);
+        check(addressesOk, QStringLiteral("地址参数可解析"), QString());
+
+        if (plan.hasBootloader()) {
+            out(QStringLiteral("    bootloader: %1")
+                    .arg(QFileInfo(plan.bootloaderPath).fileName()));
+        }
+
+        const auto image = buildFirmwareImageForPart(plan, part);
+        check(image.ok, QStringLiteral("分析固件"), image.error);
+
+        if (image.ok) {
+            const FirmwareImage &fw = image.value;
+            out(QStringLiteral("    型号      : %1").arg(part));
+            out(QStringLiteral("    文件大小  : %1 字节").arg(fw.fileSize()));
+            out(QStringLiteral("    起始地址  : %1").arg(
+                QStringLiteral("0x%1").arg(fw.startAddress, 8, 16, QLatin1Char('0'))));
+            out(QStringLiteral("    结束地址  : %1").arg(
+                QStringLiteral("0x%1").arg(fw.endAddress, 8, 16, QLatin1Char('0'))));
+            out(QStringLiteral("    写入长度  : %1 字节（%2）")
+                    .arg(fw.span()).arg(PartTable::formatSize(fw.span())));
+            out(QStringLiteral("    向量表    : SP=0x%1  Reset=0x%2")
+                    .arg(fw.initialSp, 8, 16, QLatin1Char('0'))
+                    .arg(fw.resetHandler, 8, 16, QLatin1Char('0')));
+            for (const QString &note : fw.notes)
+                out(QStringLiteral("    说明      : %1").arg(note));
+
+            check(!entry.valid || fw.span() <= entry.flashBytes,
+                  QStringLiteral("固件容得下这个型号的 Flash"),
+                  QStringLiteral("需要 %1 / 可用 %2")
+                      .arg(PartTable::formatSize(fw.span()),
+                           entry.valid ? PartTable::formatSize(entry.flashBytes)
+                                       : QStringLiteral("未知")));
+
+            // The J-Link device name is not always the order code; resolve it the same
+            // way the rest of the tool does, so a suffix the DLL does not list cannot
+            // make Commander fail to connect.
+            const QStringList deviceCandidates =
+                JLinkDeviceName::candidates(probe->deviceName());
+            const QString jlinkDevice = deviceCandidates.isEmpty()
+                ? probe->deviceName() : deviceCandidates.first();
+            const int speed = options.speedKHz > 0 ? options.speedKHz : 4000;
+
+            if (!options.burnCommit) {
+                out(QString());
+                out(QStringLiteral("    将要执行的步骤（未写入，加 --burn-commit 才真正烧录）："));
+                out(FirmwareBurner::describeCommands(jlinkDevice, fw.burnPath(), fw.startAddress,
+                                                     fw.endAddress, speed, options.burnForce));
+                if (fw.isMerged())
+                    out(QStringLiteral("    合并镜像  : %1").arg(fw.scratchPath));
+            } else {
+                const QString commander = JLinkRunner::locate();
+                check(!commander.isEmpty(), QStringLiteral("找到 JLink.exe"),
+                      commander.isEmpty() ? QStringLiteral("未安装 J-Link 软件") : commander);
+
+                if (!commander.isEmpty()) {
+                    out(QString());
+                    out(QStringLiteral("    开始烧录（擦除 %1 所在扇区并写入）…")
+                            .arg(fw.rangeLabel()));
+                    FirmwareBurner burner(commander);
+                    const BurnResult result =
+                        burner.burn(jlinkDevice, fw, speed, options.burnForce);
+
+                    // The transcript is the diagnosis when something goes wrong, so it
+                    // is printed rather than summarised away.
+                    for (const QString &line : result.output.split(QLatin1Char('\n'))) {
+                        const QString trimmed = line.trimmed();
+                        if (!trimmed.isEmpty())
+                            out(QStringLiteral("      %1").arg(trimmed));
                     }
+                    out(QStringLiteral("    耗时: %1 ms").arg(result.elapsedMs));
+
+                    check(result.ok, QStringLiteral("烧录完成"), result.error);
+                    check(result.verified, QStringLiteral("回读校验通过"),
+                          result.verified ? QString() : QStringLiteral("校验未确认"));
                 }
             }
-            out(QStringLiteral("    %1 个变量 → %2 个连续区段")
-                    .arg(chosen.size()).arg(spans.size()));
-
-            auto readDhcsr = [&]() -> int {
-                quint32 dhcsr = 0;
-                if (!probe->readU32(0xE000EDF0u, &dhcsr))
-                    return -1;
-                return (dhcsr & 0x2u) ? 1 : 0;
-            };
-            probe->resume();
-            QThread::msleep(200);
-            const int haltedBefore = readDhcsr();
-
-            // Warm up, then measure how many sweeps fit in one second.
-            for (const auto &span : spans) {
-                QByteArray scratch;
-                probe->readMemory(span.first, span.second, &scratch);
-            }
-            QElapsedTimer timer;
-            timer.start();
-            int sweeps = 0;
-            int readErrors = 0;
-            while (timer.elapsed() < 1000) {
-                for (const auto &span : spans) {
-                    QByteArray scratch;
-                    if (!probe->readMemory(span.first, span.second, &scratch))
-                        ++readErrors;
-                }
-                ++sweeps;
-            }
-            const qint64 elapsedMs = timer.elapsed();
-            const double perSweepMs = sweeps > 0 ? double(elapsedMs) / double(sweeps) : 0.0;
-            const int haltedDuring = readDhcsr();
-
-            out(QStringLiteral("    单次刷新: %1 ms（1 秒内完成 %2 次）")
-                    .arg(perSweepMs, 0, 'f', 1).arg(sweeps));
-            out(QStringLiteral("    200 ms 目标: %1")
-                    .arg(perSweepMs <= 200.0 ? QStringLiteral("可达")
-                                             : QStringLiteral("不可达（需要 %1 ms）")
-                                                   .arg(perSweepMs, 0, 'f', 0)));
-            out(QStringLiteral("    DHCSR.C_HALT: 轮询前 %1，轮询后 %2（0=运行）")
-                    .arg(haltedBefore).arg(haltedDuring));
-
-            // The cost that matters is per *request*, not per byte: on a real 3777-leaf
-            // image a merged sweep is ~700 requests and ~692 ms. Measure the constant on
-            // this hardware so "200 ms buys ~N requests" is a number, not a guess.
-            {
-                const quint32 scratchAddress = chosen.isEmpty() ? 0x20000000u
-                                                                : chosen.first().address;
-                constexpr int kRequests = 200;
-                QElapsedTimer requestTimer;
-                requestTimer.start();
-                for (int i = 0; i < kRequests; ++i) {
-                    QByteArray scratch;
-                    probe->readMemory(scratchAddress, 4, &scratch);
-                }
-                const double perRequestMs = double(requestTimer.elapsed()) / double(kRequests);
-                out(QStringLiteral("    单次小请求: %1 ms → 200 ms 预算约 %2 次请求")
-                        .arg(perRequestMs, 0, 'f', 3)
-                        .arg(perRequestMs > 0.0 ? int(200.0 / perRequestMs) : 0));
-            }
-
-            check(readErrors == 0, QStringLiteral("轮询读取无失败"),
-                  QStringLiteral("%1 次失败").arg(readErrors));
-            check(haltedDuring == 0, QStringLiteral("轮询期间内核仍在运行（不停机）"),
-                  QStringLiteral("DHCSR.C_HALT=%1").arg(haltedDuring));
+            // The merged temp file has served its purpose.
+            const_cast<FirmwareImage &>(fw).discardScratch();
         }
     }
 
@@ -674,7 +767,7 @@ int runProbeInfo(const Options &options)
     // This is the capability the GDB path cannot provide at all: samples arrive while
     // the core keeps executing. A cycle counter is the proof -- if it advances between
     // records the target really was running during the capture.
-    if (backend == QLatin1String("jlink-dll")) {
+    {
         out(QString());
         out(QStringLiteral("--- HSS 实时采样 ---"));
 
@@ -687,7 +780,7 @@ int runProbeInfo(const Options &options)
         // Go through a controller so the sampling runs on the same worker thread the
         // GUI uses; the probe object is not reachable directly from here either.
         ProbeController controller;
-        controller.requestOpen(backend, QString(), options.interfaceName.isEmpty()
+        controller.requestOpen(QString(), options.interfaceName.isEmpty()
                                    ? QStringLiteral("SWD") : options.interfaceName,
                                options.speedKHz > 0 ? options.speedKHz : 4000);
         QEventLoop openLoop;

@@ -27,8 +27,19 @@ public:
     {
         int flashBytes = 0; ///< 0 = could not determine
         int ramBytes = 0;
+        /// Largest size whose top word read back as 0xFF while the read itself
+        /// succeeded. That is exactly what *erased* flash looks like, so the part may
+        /// be this large with a blank upper half -- and it may equally be a smaller part
+        /// whose die aliases reads past the end. Reading cannot tell them apart, so this
+        /// is reported instead of being folded into flashBytes.
+        int flashBlankUpper = 0;
+        int ramBlankUpper = 0;
         QString note;
         bool valid() const { return flashBytes > 0 || ramBytes > 0; }
+        /// True when a larger flash size is plausible but unprovable.
+        bool flashAmbiguous() const { return flashBlankUpper > flashBytes; }
+        /// "256 KB 或 512 KB（512 KB 边界读到擦除态）", for messages.
+        QString flashAmbiguityNote() const;
     };
 
     /// Candidate sizes are tried largest first, so the first readable boundary is

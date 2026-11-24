@@ -3,11 +3,15 @@
 #include "core/AppSettings.h"
 #include "core/DeviceIdentifier.h"
 #include "core/GpioCodec.h"
-#include "core/JLinkGdbProbe.h"
 #include "core/HexUtil.h"
 #include "core/Logger.h"
 #include "core/MemoryProbe.h"
 #include "core/PeripheralPresence.h"
+#include "core/FirmwareImage.h"
+#include "core/JLinkDeviceName.h"
+#include "ui/BurnDialog.h"
+#include "ui/ChipPickerDialog.h"
+#include "core/FirmwareBurner.h"
 #include "core/PartTable.h"
 #include "core/PeripheralRoles.h"
 #include "core/ProbeController.h"
@@ -24,6 +28,7 @@
 #include "ui/PortGridView.h"
 #include "ui/RegisterBlockView.h"
 #include "ui/ScopePage.h"
+#include "ui/SimulationPage.h"
 #include "ui/Theme.h"
 
 #include <QAction>
@@ -67,8 +72,9 @@ MainWindow::MainWindow(QWidget *parent)
     setWindowTitle(QStringLiteral("%1 %2").arg(QStringLiteral(APP_NAME), QStringLiteral(APP_VERSION)));
     resize(1500, 940);
 
-    // Kill a GDB server orphaned by a previous crash before touching the probe.
-    JLinkGdbProbe::reapStaleServers();
+    // No stale GDB server to reap any more: this application no longer launches one. It
+    // also must not go killing JLinkGDBServerCL processes, because on a developer machine
+    // the one that is running probably belongs to Keil or IAR.
 
     m_probe = std::make_unique<ProbeController>(this);
     m_session = std::make_unique<RegisterSession>(m_probe.get(), this);
@@ -84,16 +90,8 @@ MainWindow::MainWindow(QWidget *parent)
         setConnectedUi(false);
     });
     connect(m_probe.get(), &ProbeController::connectFinished, this, &MainWindow::onProbeConnectFinished);
-    connect(m_probe.get(), &ProbeController::earlyIdentified, this, &MainWindow::onEarlyIdentified);
-    connect(m_probe.get(), &ProbeController::identifyFinished, this, &MainWindow::onIdentifyFinished);
     connect(m_probe.get(), &ProbeController::cpuStateChanged, this, &MainWindow::onCpuStateChanged);
     connect(m_probe.get(), &ProbeController::deviceTreeScanned, this, &MainWindow::onDeviceTreeScanned);
-    connect(m_probe.get(), &ProbeController::chipValidated, this,
-            [](const QString &chip, bool ok, const QString &message) {
-                if (!ok)
-                    Logger::instance()->warn(QStringLiteral("芯片名校验失败 %1: %2").arg(chip, message));
-            });
-
     connect(m_session.get(), &RegisterSession::valuesChanged, this, &MainWindow::onValuesChanged);
     connect(m_session.get(), &RegisterSession::writeFinished, this, &MainWindow::onWriteFinished);
     connect(m_session.get(), &RegisterSession::readFailed, this, &MainWindow::onReadFailed);
@@ -117,6 +115,38 @@ MainWindow::MainWindow(QWidget *parent)
         refreshLiveValues();
         updateCpuStateLabel(); // the fault registers come through the same path
     });
+
+    // --- selected register: HSS first, fast polling as the fallback ---------
+    // HSS is what the user actually asked for: the probe samples the register on its own
+    // timebase while the core runs, so the host is not issuing a read per displayed value.
+    // It is not always available (a DLL without the interface, a halted core) and it is a
+    // single global session shared with the curve page, so the fast timer below stays as
+    // the fallback and the tab arbitration decides which one is in charge.
+    m_registerSampler = new HssSampler(this);
+    m_registerSampler->setProbe(m_probe.get());
+    connect(m_registerSampler, &HssSampler::drained, this, &MainWindow::onRegisterSampled);
+    connect(m_registerSampler, &HssSampler::failed, this, [this](const QString &error) {
+        // start() had already returned success here, so the refusal is the probe's own
+        // answer. Remember it: re-running the arbitration would ask again and be refused
+        // again, every time the timer fires.
+        m_registerHssRefused = true;
+        m_registerHssAddress = 0;
+        Logger::instance()->warn(
+            QStringLiteral("寄存器实时采样未能启动，退回轮询: %1").arg(error));
+        updateRegisterSampling();
+    });
+
+    // The probe fills its buffer on its own period; this only picks up what accumulated.
+    m_registerDrainTimer = new QTimer(this);
+    m_registerDrainTimer->setInterval(30);
+    connect(m_registerDrainTimer, &QTimer::timeout, this, &MainWindow::onRegisterDrainTick);
+
+    // The selected register also gets its own polling timer, used when HSS cannot run.
+    // It reads one word and nothing else, so it can run an order of magnitude faster than
+    // the peripheral sweep without adding the traffic that sweep would cost.
+    m_fastPollTimer = new QTimer(this);
+    m_fastPollTimer->setInterval(kFastPollIntervalMs);
+    connect(m_fastPollTimer, &QTimer::timeout, this, &MainWindow::onFastPollTimeout);
 
     // Timer counters change slowly and each read is a full probe round trip, so
     // they are sampled at a lower rate than the registers.
@@ -152,6 +182,168 @@ MainWindow::MainWindow(QWidget *parent)
 MainWindow::~MainWindow()
 {
     stopPolling();
+}
+
+void MainWindow::onBurnFirmware()
+{
+    // Opening this while disconnected is deliberate: analysing an image and merging a
+    // bootloader into it are pure file work that people want to do *before* wiring the
+    // board up. Only the burn itself needs a probe, so only the burn button is gated --
+    // refusing to open the dialog would take the merge feature away from anyone offline.
+    const bool connected = m_session->connected();
+
+    // The order code carries the real Flash size; the detected family name does not.
+    const ProbeInfo info = m_probe ? m_probe->info() : ProbeInfo();
+    const QString part = !effectiveChip().isEmpty() ? effectiveChip()
+        : (!info.detectedChip.isEmpty() ? info.detectedChip : info.chipName);
+
+    BurnDialog dialog(part, connected, this);
+    if (dialog.exec() != QDialog::Accepted) {
+        statusBar()->clearMessage();
+        return;
+    }
+
+    // takeImage(), not image(): the burn is asynchronous and outlives this dialog, so the
+    // scratch file must not be deleted by the dialog's destructor while J-Link is reading
+    // it. From here MainWindow owns it and every exit path calls discardScratch().
+    FirmwareImage fw = dialog.takeImage();
+
+    // Defensive: the dialog disables its own 烧录 button when opened offline, so reaching
+    // here disconnected means the state changed underneath us. Say so rather than erasing
+    // a target that is not there.
+    if (!dialog.canBurn() || !m_session->connected()) {
+        statusBar()->showMessage(
+            QStringLiteral("未连接目标：本次只做了合并/分析，未执行烧录"), 8000);
+        Logger::instance()->info(
+            QStringLiteral("未连接目标，跳过烧录（镜像分析/合并结果未写入芯片）"));
+        fw.discardScratch();
+        return;
+    }
+
+    if (!fw.isValid())
+        return; // the burn button stays disabled until an analysis succeeded
+
+    // Commander needs a name the J-Link software knows; the catalogue lookup drops the
+    // package/temperature suffix the DLL does not list.
+    const QStringList deviceCandidates = JLinkDeviceName::candidates(part);
+    const QString jlinkDevice = deviceCandidates.isEmpty()
+        ? (info.detectedChip.isEmpty() ? part : info.detectedChip)
+        : deviceCandidates.first();
+
+    const QString range = QStringLiteral("0x%1 .. 0x%2")
+                              .arg(fw.startAddress, 8, 16, QLatin1Char('0'))
+                              .arg(fw.endAddress, 8, 16, QLatin1Char('0'));
+    const auto answer = QMessageBox::warning(
+        this, QStringLiteral("确认烧录"),
+        QStringLiteral("即将擦除并写入 %1。\n\n范围：%2\n写入：%3\n\n继续？")
+            .arg(jlinkDevice, range, PartTable::formatSize(fw.span())),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (answer != QMessageBox::Yes) {
+        fw.discardScratch();
+        return;
+    }
+
+    const QString commander = JLinkRunner::locate();
+    if (commander.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("无法烧录"),
+                             QStringLiteral("未找到 JLink.exe（J-Link Commander）。\n"
+                                            "请先安装 SEGGER J-Link 软件。"));
+        fw.discardScratch();
+        return;
+    }
+
+    // Release the probe: Commander cannot open the J-Link while the app holds it.
+    onDisconnectClicked();
+
+    // --- burn asynchronously ---------------------------------------------
+    // The flash cycle takes tens of seconds. Running it on the UI thread made Windows
+    // paint "not responding" over the window, so the process is driven by signals and the
+    // status bar carries the progress instead.
+    statusBar()->showMessage(QStringLiteral("正在烧录 %1，请稍候…（不要断开调试器）").arg(range));
+    Logger::instance()->info(QStringLiteral("开始烧录 %1 → %2").arg(jlinkDevice, range));
+
+    // Not a QObject, so its lifetime is explicit. The callback keeps it alive until the
+    // commander exits, which is what the shared_ptr capture below is for.
+    auto burner = std::make_shared<FirmwareBurner>(commander);
+    const QString partForCallback = part;
+    burner->burnAsync(jlinkDevice, fw, AppSettings::speedKHz(), /*forceErase=*/true, 300000,
+                      [this, burner, fw, range, jlinkDevice, partForCallback](
+                          const BurnResult &result) mutable {
+
+        Logger::instance()->info(QStringLiteral("烧录 -> %1：%2")
+                                     .arg(partForCallback,
+                                          result.ok ? QStringLiteral("成功") : result.error));
+
+        if (!result.ok) {
+            statusBar()->showMessage(QStringLiteral("烧录失败：%1").arg(result.error), 10000);
+            QMessageBox::critical(this, QStringLiteral("烧录失败"),
+                                  QStringLiteral("%1\n\nJ-Link 输出：\n%2")
+                                      .arg(result.error, result.output.right(2000)));
+            fw.discardScratch();
+            return;
+        }
+
+        // A merged image is the only case worth writing back: it is the artifact that now
+        // contains the bootloader, and only after the verify passed.
+        const bool merged = fw.isMerged();
+        QString writeBackNote;
+        if (merged) {
+            QString error;
+            const QString written = fw.writeBackOverSource(&error);
+            if (written.isEmpty()) {
+                writeBackNote = QStringLiteral("\n\n未能覆盖原文件：%1").arg(error);
+                Logger::instance()->warn(QStringLiteral("合并镜像回写失败：%1").arg(error));
+            } else {
+                writeBackNote = QStringLiteral("\n\n已把合并后的镜像覆盖写入：\n%1"
+                                               "（原文件备份为 .bak）")
+                                    .arg(written);
+                Logger::instance()->info(
+                    QStringLiteral("已用合并镜像覆盖 %1（含 bootloader）").arg(written));
+            }
+        }
+        fw.discardScratch();
+
+        statusBar()->showMessage(
+            QStringLiteral("烧录成功（%1，校验%2），正在重连确认应用运行…")
+                .arg(range, result.verified ? QStringLiteral("通过") : QStringLiteral("未确认")),
+            8000);
+
+        QMessageBox::information(
+            this, QStringLiteral("烧录完成"),
+            QStringLiteral("已写入 %1（%2）。\n校验：%3\n耗时：%4 ms%5")
+                .arg(range, jlinkDevice,
+                     result.verified ? QStringLiteral("通过") : QStringLiteral("未确认"))
+                .arg(result.elapsedMs)
+                .arg(writeBackNote));
+
+        // Reconnect and check that the freshly burned application really runs. This is the
+        // whole reason to merge a bootloader: the board must come back up by itself.
+        m_pendingPostBurnCheck = true;
+        m_postBurnRange = range;
+        QTimer::singleShot(200, this, &MainWindow::onConnectClicked);
+    });
+}
+
+void MainWindow::reportPostBurnState()
+{
+    if (!m_pendingPostBurnCheck)
+        return;
+    m_pendingPostBurnCheck = false;
+
+    // The check runs after the scan/validation, so reaching here means the selected part
+    // matched the silicon. What is still unknown is whether the application started: a
+    // bootloader with a broken application vector stays in the bootloader forever.
+    const bool running = m_session->connected() && !m_cpuHalted;
+    QString verdict;
+    if (running) {
+        verdict = QStringLiteral("重连成功，目标在运行（%1）").arg(m_postBurnRange);
+        statusBar()->showMessage(verdict, 10000);
+        Logger::instance()->info(verdict);
+    } else {
+        verdict = QStringLiteral("重连成功但目标处于停机状态：应用可能没有正常运行");
+        statusBar()->showMessage(verdict, 12000);
+        Logger::instance()->warn(verdict);
+    }
 }
 
 void MainWindow::createUi()
@@ -194,6 +386,11 @@ void MainWindow::createUi()
         Theme::apply(QStringLiteral("dark"));
         refreshValues(true);
     });
+
+    auto *firmwareMenu = menuBar()->addMenu(QStringLiteral("固件(&W)"));
+    auto *burnAction = firmwareMenu->addAction(QStringLiteral("烧录固件(&B)..."));
+    burnAction->setToolTip(QStringLiteral("分析 .bin 的起止地址与容量，确认后擦除并写入"));
+    connect(burnAction, &QAction::triggered, this, &MainWindow::onBurnFirmware);
 
     auto *helpMenu = menuBar()->addMenu(QStringLiteral("帮助(&H)"));
     auto *aboutAction = helpMenu->addAction(QStringLiteral("关于(&A)"));
@@ -238,16 +435,10 @@ void MainWindow::createToolBar()
     connect(disconnectAction, &QAction::triggered, this, &MainWindow::onDisconnectClicked);
     m_toolBar->addSeparator();
 
+    // No backend chooser any more: the DLL is the only transport. A read-only label keeps
+    // the toolbar honest about it instead of removing the text and leaving people guessing.
     m_toolBar->addWidget(new QLabel(QStringLiteral(" 后端 "), this));
-    m_backendBox = new QComboBox(this);
-    // The DLL backend is listed first because it is the default: same target access
-    // as the GDB server, plus HSS live sampling.
-    m_backendBox->addItem(QStringLiteral("J-Link DLL"), QStringLiteral("jlink-dll"));
-    m_backendBox->addItem(QStringLiteral("J-Link GDB"), QStringLiteral("jlink"));
-    const QString savedBackend = AppSettings::probeBackend();
-    int backendIndex = m_backendBox->findData(savedBackend);
-    m_backendBox->setCurrentIndex(backendIndex < 0 ? 0 : backendIndex);
-    m_toolBar->addWidget(m_backendBox);
+    m_toolBar->addWidget(new QLabel(QStringLiteral("J-Link DLL"), this));
 
     m_toolBar->addWidget(new QLabel(QStringLiteral(" 接口 "), this));
     m_interfaceBox = new QComboBox(this);
@@ -263,32 +454,20 @@ void MainWindow::createToolBar()
     m_toolBar->addWidget(m_speedBox);
 
     m_toolBar->addWidget(new QLabel(QStringLiteral(" 芯片 "), this));
-    m_chipBox = new QComboBox(this);
-    m_chipBox->setEditable(true);
-    m_chipBox->setMinimumWidth(180);
-    // Item 0 is "auto": attach with a generic core first, then resolve the part
-    // from DBGMCU_IDCODE. Pre-filling the box with the *previous* board's name was
-    // what made a freshly plugged part keep reporting the old one -- both as a
-    // display ("it still says H473") and because the name was handed to J-Link.
-    // Item 0 is the "auto" slot and starts as a short label; once a part is
-    // identified its text becomes the part number itself ("N32G455CE"), which is
-    // all that is worth showing there. The item's *data* stays empty, so
-    // effectiveChip() still returns "" and the connection keeps using the generic
-    // Cortex-M4 probe + DBGMCU_IDCODE path.
-    m_chipBox->addItem(QStringLiteral("自动"), QString());
-    for (const auto &entry : DeviceIdentifier::database())
-        m_chipBox->addItem(entry.probeRsChip, entry.probeRsChip);
-    m_chipBox->setToolTip(QStringLiteral(
-        "默认按芯片的 DEV_ID 自动识别。\n"
-        "只有自动识别不出来时，才需要在这里选/填具体料号（例：N32G455REL7）。"));
+    // A button, not an editable combo: only real order codes from data/parts.json are
+    // acceptable, because the same string also becomes the J-Link device name and the
+    // pinout's package. Free text could satisfy one consumer and break the other.
+    m_partButton = new QPushButton(QStringLiteral("选择型号…"), this);
+    m_partButton->setMinimumWidth(170);
+    m_partButton->setToolTip(
+        QStringLiteral("选择系列与具体料号。\n"
+                       "DEV_ID 只能确定系列，封装与 Flash 容量必须由料号决定 ——\n"
+                       "选错封装会让引脚图对应到错误的型号。"));
+    connect(m_partButton, &QPushButton::clicked, this, &MainWindow::onPickChipClicked);
+    m_toolBar->addWidget(m_partButton);
     AppSettings::migrateChipNameSetting();
-    const QString savedChip = AppSettings::chipName();
-    if (savedChip.isEmpty()) {
-        m_chipBox->setCurrentIndex(0); // auto
-    } else {
-        m_chipBox->setCurrentText(savedChip);
-    }
-    m_toolBar->addWidget(m_chipBox);
+    AppSettings::dropObsoleteBackendKeys();
+    updateChipLabel();
     m_toolBar->addSeparator();
 
     auto *haltAction = m_toolBar->addAction(QStringLiteral("暂停"));
@@ -383,6 +562,7 @@ void MainWindow::createCentralPages()
 
     // --- register panorama ---
     auto *registerPage = new QWidget(m_tabs);
+    m_registerPage = registerPage; // the tab arbitration needs to recognise this page
     auto *layout = new QVBoxLayout(registerPage);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(4);
@@ -412,6 +592,12 @@ void MainWindow::createCentralPages()
     // thing here, and a dock can be dragged, floated onto a second monitor, or hidden
     // while a live capture is running.
     // Second tab of the same left window.
+    // Model simulation: steps a model with the same live samples the chart draws, so the
+    // data going into a model is what the hardware actually produced.
+    m_simulationPage = new SimulationPage(m_tabs);
+    m_simulationPage->setSource(m_scopePage);
+    m_tabs->addTab(m_simulationPage, QStringLiteral("模型仿真"));
+
     m_leftTabs->addTab(m_scopePage->variableSelector(), QStringLiteral("变量选择"));
     if (m_viewMenu)
         m_viewMenu->addAction(m_leftDock->toggleViewAction());
@@ -431,7 +617,11 @@ void MainWindow::createCentralPages()
         statusBar()->showMessage(text, 5000);
     });
 
+    // One HSS session, two candidate owners. The visible tab decides.
+    connect(m_tabs, &QTabWidget::currentChanged, this, &MainWindow::onMainTabChanged);
     connect(m_registerView, &RegisterBlockView::registerSelected, this, &MainWindow::onRegisterSelected);
+    connect(m_registerView, &RegisterBlockView::registerDeselected, this,
+            &MainWindow::onRegisterDeselected);
     connect(m_registerView, &RegisterBlockView::registerActivated, this, [this](int index) {
         Q_UNUSED(index);
         m_tabs->setCurrentIndex(2);
@@ -592,7 +782,7 @@ void MainWindow::populateDeviceUi()
 void MainWindow::loadPackages(const QString &directory)
 {
     // Only the catalogue is loaded here. The pinout itself is drawn later, once
-    // J-Link reported the part number and IO count (see onIdentifyFinished).
+    // Filled from the part selected in the chip picker (see applyChipSelection()).
     m_packagePage->view()->loadPackages(directory);
     m_packagePage->setPackages(m_packagePage->view()->packages());
     if (m_packagePage->view()->packages().isEmpty())
@@ -616,17 +806,10 @@ const SvdRegister *MainWindow::currentRegister() const
 
 QString MainWindow::effectiveChip() const
 {
-    if (!m_chipBox)
-        return QString();
-    // Item 0 means "auto": return empty so identification goes through DBGMCU_IDCODE
-    // instead of trusting a remembered name. A typed value makes currentIndex() -1,
-    // so typing still counts as an explicit override.
-    if (m_chipBox->currentIndex() == 0)
-        return QString();
-    const QString text = m_chipBox->currentText().trimmed();
-    if (text == m_chipBox->itemText(0))
-        return QString(); // still showing the auto label
-    return text;
+    // The picked order code, or empty when none has been chosen yet. Empty is a real
+    // state: register access works from the core alone, but no SVD/pinout can be shown
+    // until a part is picked, and pretending otherwise would describe the wrong chip.
+    return AppSettings::chipName().trimmed();
 }
 
 void MainWindow::parkDeviceViews(const QString &reason)
@@ -649,6 +832,7 @@ void MainWindow::parkDeviceViews(const QString &reason)
         m_packagePage->showWaiting(reason);
     if (m_tree)
         m_tree->showWaiting(reason);
+    updateRegisterSampling(); // m_currentRegister is cleared above, so this stops it
 }
 
 void MainWindow::setConnectedUi(bool connected)
@@ -658,6 +842,7 @@ void MainWindow::setConnectedUi(bool connected)
     if (connected) {
         // A fresh session must not inherit counters from the previous target.
         m_lastCounter.clear();
+        m_registerHssRefused = false; // new link: HSS may well work this time
     }
     if (!connected) {
         m_pollLabel->setText(QStringLiteral("轮询: 关闭"));
@@ -666,6 +851,7 @@ void MainWindow::setConnectedUi(bool connected)
             m_tree->clearLiveValues();
         m_lastCounter.clear();
     }
+    updateRegisterSampling(); // no link -> nothing to sample
 }
 
 void MainWindow::onLogMessage(const QString &text, int level)
@@ -684,8 +870,22 @@ void MainWindow::onOpenSvd()
         this, QStringLiteral("选择 CMSIS-SVD 文件"),
         m_svdPath.isEmpty() ? QString() : QFileInfo(m_svdPath).absolutePath(),
         QStringLiteral("SVD files (*.svd);;All files (*)"));
-    if (!path.isEmpty())
-        openSvdFile(path);
+    if (path.isEmpty())
+        return;
+    if (!openSvdFile(path))
+        return;
+
+    // Opening an SVD by hand bypasses the part selection, so the register map and the
+    // pinout would describe different chips. Keep them consistent: this is a diagnostic
+    // view, and the next connection re-derives everything from the selected型号.
+    parkDeviceViews(
+        QStringLiteral("已手动加载 %1（诊断用）。下次连接会按所选型号 %2 重新加载。")
+            .arg(QFileInfo(path).fileName(),
+                 AppSettings::chipName().isEmpty() ? QStringLiteral("(未选择)")
+                                                  : AppSettings::chipName()));
+    statusBar()->showMessage(
+        QStringLiteral("已手动加载 %1；连接时将以所选型号为准").arg(QFileInfo(path).fileName()),
+        6000);
 }
 
 void MainWindow::onSearchSvd()
@@ -723,41 +923,91 @@ void MainWindow::onSearchSvd()
         openSvdFile(hits.at(index).path);
 }
 
-void MainWindow::scheduleAutoConnect()
+void MainWindow::updateChipLabel()
 {
-    QTimer::singleShot(50, this, &MainWindow::onConnectClicked);
+    if (!m_partButton)
+        return;
+    const QString part = AppSettings::chipName().trimmed();
+    const QString package = AppSettings::chipPackage().trimmed();
+    if (part.isEmpty()) {
+        m_partButton->setText(QStringLiteral("选择型号…"));
+        return;
+    }
+    // Both are shown: the same order code can be bonded differently, and the pinout
+    // follows the package, so hiding it would hide part of the selection.
+    m_partButton->setText(package.isEmpty() ? part
+                                            : QStringLiteral("%1 · %2").arg(part, package));
+}
+
+void MainWindow::onPickChipClicked()
+{
+    ChipPickerDialog dialog(AppSettings::chipName(), AppSettings::chipPackage(), this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const QString part = dialog.selectedPart();
+    const QString package = dialog.selectedPackage();
+    if (part.isEmpty() || package.isEmpty())
+        return;
+    if (part == AppSettings::chipName() && package == AppSettings::chipPackage())
+        return;
+
+    AppSettings::setChipName(part);
+    AppSettings::setChipPackage(package);
+    updateChipLabel();
+    Logger::instance()->info(QStringLiteral("已选择 %1 · %2").arg(part, package));
+
+    // A different part or package changes the SVD, the capacity AND the pinout, so the
+    // whole device view is rebuilt. Doing this through one entry point is the point:
+    // before, the pinout and the register map could be refreshed by different paths and
+    // end up describing different chips.
+    if (m_session->connected()) {
+        if (!applyChipSelection())
+            return;
+        // The tree now describes a different part, so re-check it against the silicon.
+        scanAndValidateDeviceTree();
+        statusBar()->showMessage(QStringLiteral("已切换到 %1 · %2，正在校验").arg(part, package));
+    } else {
+        statusBar()->showMessage(QStringLiteral("已选择 %1 · %2，连接后生效").arg(part, package));
+    }
 }
 
 void MainWindow::onConnectClicked()
 {
-    const QString backend = m_backendBox->currentData().toString();
-    AppSettings::setProbeBackend(backend);
     AppSettings::setInterfaceName(m_interfaceBox->currentText());
     AppSettings::setSpeedKHz(m_speedBox->value());
 
-    QString binary;
-    if (backend == QLatin1String("jlink-dll")) {
-        // No helper executable: the DLL is loaded in-process. Fail here on a clear
-        // message rather than half-way through the session.
-        if (!JLinkDllApi::libraryAvailable()) {
-            QMessageBox::warning(
-                this, QStringLiteral("缺少 J-Link DLL"),
-                QStringLiteral("未找到 JLink_x64.dll / JLinkARM.dll。\n\n"
-                               "请安装 SEGGER J-Link 软件包。"));
+    // One connection path: the J-Link DLL, loaded into this process. It is the only
+    // transport that can reach HSS, and it skips the extra process plus the ASCII-hex RSP
+    // hop that the removed GDB backend paid for on every register access.
+    if (!JLinkDllApi::libraryAvailable()) {
+        QMessageBox::warning(
+            this, QStringLiteral("未找到 J-Link DLL"),
+            QStringLiteral("没有找到 JLink_x64.dll。\n\n"
+                           "已检查：程序设置、环境变量（JLINK_PATH 等）、PATH、注册表、"
+                           "Program Files。\n\n"
+                           "请安装 SEGGER J-Link 软件包：\n"
+                           "https://www.segger.com/downloads/jlink/"));
+        return;
+    }
+    // A part and a package are now required before attaching: the SVD, the pinout and the
+    // J-Link device name all come from them, and connecting without them would leave the
+    // app with nothing truthful to show.
+    const QString part = AppSettings::chipName().trimmed();
+    const QString package = AppSettings::chipPackage().trimmed();
+    if (part.isEmpty() || package.isEmpty()) {
+        ChipPickerDialog dialog(AppSettings::chipName(), AppSettings::chipPackage(), this);
+        if (dialog.exec() != QDialog::Accepted)
             return;
-        }
-    } else {
-        binary = JLinkRunner::locate(AppSettings::jlinkPath());
-        if (binary.isEmpty()) {
-            QMessageBox::warning(this, QStringLiteral("缺少 JLink.exe"),
-                                 QStringLiteral("未找到 SEGGER J-Link 的 JLink.exe。\n\n"
-                                                "请安装 SEGGER J-Link 软件，或在设置中指定路径。"));
+        if (dialog.selectedPart().isEmpty() || dialog.selectedPackage().isEmpty())
             return;
-        }
+        AppSettings::setChipName(dialog.selectedPart());
+        AppSettings::setChipPackage(dialog.selectedPackage());
+        updateChipLabel();
     }
 
     statusBar()->showMessage(QStringLiteral("正在打开探针..."));
-    m_probe->requestOpen(backend, binary, m_interfaceBox->currentText(), m_speedBox->value());
+    m_probe->requestOpen(QString(), m_interfaceBox->currentText(), m_speedBox->value());
 }
 
 void MainWindow::onDisconnectClicked()
@@ -770,7 +1020,7 @@ void MainWindow::onDisconnectClicked()
     m_configuredPins.clear();
     // The right-hand inspector kept the last register on screen after a
     // disconnect, which read as if it were still live.
-    parkDeviceViews(QStringLiteral("已断开连接。重新连接后将自动识别并渲染引脚布局"));
+    parkDeviceViews(QStringLiteral("已断开连接。重新连接后将按所选型号渲染设备树与引脚图"));
     statusBar()->showMessage(QStringLiteral("已断开"));
 }
 
@@ -806,7 +1056,28 @@ void MainWindow::onProbeOpened(bool ok, const QString &error, const ProbeInfo &i
                                       info.probeSerials.isEmpty() ? QStringLiteral("?")
                                                                   : info.probeSerials.join(QStringLiteral(", "))));
     statusBar()->showMessage(QStringLiteral("探针就绪，正在连接目标..."));
-    m_probe->requestConnect(effectiveChip());
+
+    // The J-Link device name is the order code minus the suffix SEGGER does not list
+    // ("N32G455CCL7" -> "N32G455CC"). Never the bare series: handing the DLL a name it
+    // does not know crashes V8.26 rather than failing softly.
+    const QString part = AppSettings::chipName().trimmed();
+    const QStringList candidates = JLinkDeviceName::candidates(part);
+    QString jlinkName;
+    for (const QString &candidate : candidates) {
+        if (!JLinkDeviceName::hasCatalogue() || JLinkDeviceName::isKnown(candidate)) {
+            jlinkName = candidate;
+            break;
+        }
+    }
+    if (jlinkName.isEmpty()) {
+        // Nothing in the catalogue: keep the generic core rather than risk the crash.
+        // Registers and memory still work; only the vendor flash algorithm is missing.
+        Logger::instance()->warn(
+            QStringLiteral("J-Link 目录中没有 %1 的条目，以通用 Cortex-M4 连接").arg(part));
+        jlinkName = QStringLiteral("Cortex-M4");
+    }
+    Logger::instance()->debug(QStringLiteral("J-Link 器件名 %1（料号 %2）").arg(jlinkName, part));
+    m_probe->requestConnect(jlinkName);
 }
 
 void MainWindow::onProbeConnectFinished(bool ok, const QString &error, const ProbeInfo &info)
@@ -820,234 +1091,152 @@ void MainWindow::onProbeConnectFinished(bool ok, const QString &error, const Pro
 
     m_session->setConnected(true);
     setConnectedUi(true);
-    m_connLabel->setText(QStringLiteral("已连接 %1").arg(info.detectedChip.isEmpty() ? info.chipName : info.detectedChip));
-    statusBar()->showMessage(QStringLiteral("已连接，正在识别 MCU..."));
+    m_connLabel->setText(QStringLiteral("已连接 %1")
+                             .arg(Logger::instance() ? AppSettings::chipName()
+                                                     : info.detectedChip));
 
-    AppSettings::setChipName(effectiveChip()); // empty when in auto mode
-
-    // Auto mode already identified the part while attaching (it had to, to pick
-    // the J-Link device name), so ask again only when in manual mode or when that
-    // early attempt failed.
-    if (m_identifyPending) {
-        m_identifyPending = false;
-        Logger::instance()->debug(
-            QStringLiteral("复用连接时已完成的识别结果"));
-        const IdentificationResult early = m_pendingIdentification;
-        m_pendingIdentification = IdentificationResult();
-        onIdentifyFinished(true, QString(), early);
+    // Do not claim a connection yet: apply the selection, then probe every peripheral the
+    // part is supposed to have.
+    if (!applyChipSelection()) {
+        refuseConnection(QStringLiteral("无法为所选型号加载 SVD，已断开"));
         return;
     }
-    m_probe->requestIdentify(effectiveChip());
+
+    // A wrong pick produces a confidently wrong register map and pinout, which is worse
+    // than refusing, so the peripherals are checked before the session is usable.
+    statusBar()->showMessage(QStringLiteral("已连接 %1，正在校验设备树…")
+                                 .arg(AppSettings::chipName()));
+    scanAndValidateDeviceTree();
 }
 
-void MainWindow::onEarlyIdentified(bool ok, const QString &error, const IdentificationResult &result)
+void MainWindow::scanAndValidateDeviceTree()
 {
-    // Only remember it; onProbeConnectFinished runs right after and decides.
-    m_pendingIdentification = result;
-    m_identifyPending = ok;
-    Q_UNUSED(error);
+    if (m_svdPath.isEmpty()) {
+        parkDeviceViews(QStringLiteral("没有 SVD，无法扫描设备树"));
+        return;
+    }
+    if (!m_probe || !m_session->connected())
+        return;
+    m_probe->requestScanDeviceTree(m_svdPath);
 }
 
-void MainWindow::onIdentifyFinished(bool ok, const QString &error, const IdentificationResult &result)
+void MainWindow::refuseConnection(const QString &reason)
 {
-    if (!ok) {
-        Logger::instance()->warn(QStringLiteral("MCU 识别失败: %1").arg(error));
-        statusBar()->showMessage(QStringLiteral("MCU 识别失败，请手动选择芯片/SVD"));
-        if (m_packagePage)
-            m_packagePage->showWaiting(
-                QStringLiteral("MCU 识别失败，无法确定引脚布局: %1").arg(error));
-        if (m_tree && !m_session->connected())
-            m_tree->showWaiting(QStringLiteral("MCU 识别失败，无法确定设备树"));
-        startPolling();
-        return;
-    }
-
-    // "Identified" with no part number (or no SVD) means the DEV_ID is not in the
-    // database. Treating that as success used to leave the previous chip's SVD
-    // loaded, so a freshly plugged G455 still looked like the old H473: the views
-    // have to be parked instead of pretending.
-    if (result.mcuName.isEmpty() || result.svdPath.isEmpty()) {
-        const QString devIdText =
-            result.devId != 0
-                ? QStringLiteral("DEV_ID 0x%1").arg(result.devId, 3, 16, QLatin1Char('0'))
-                : QStringLiteral("未读到 DEV_ID");
-        Logger::instance()->warn(
-            QStringLiteral("无法确定器件型号（%1）。原 SVD 已卸载，请在工具栏选择芯片后重连。")
-                .arg(devIdText));
-        statusBar()->showMessage(
-            QStringLiteral("无法确定器件型号（%1）—— 请手动选择芯片").arg(devIdText));
-        if (!m_svdPath.isEmpty()) {
-            // Drop the stale device model, otherwise the register list and pinout
-            // keep describing the previous part.
-            m_device = SvdDevice();
-            m_svdPath.clear();
-            if (m_session)
-                m_session->clearDevice();
-        }
-        m_capabilities.clear();
-        m_flashBytes = 0;
-        m_ramBytes = 0;
-        m_sramText.clear();
-        m_ccmText.clear();
-        m_partNumber.clear();
-        updateMemoryLabel();
-        parkDeviceViews(QStringLiteral("无法确定器件型号（%1），请手动选择芯片后重连")
-                            .arg(devIdText));
-        m_deviceLabel->setText(QStringLiteral("未确定器件（%1）").arg(devIdText));
-
-        // The family is known and the pack lists its order codes, so offer them as
-        // a choice instead of making the user type a part number. Picking one is
-        // remembered against this DEV_ID, so the next connection is automatic.
-        if (!result.familyPartCandidates.isEmpty()) {
-            QStringList labels;
-            for (const QString &part : result.familyPartCandidates) {
-                const PartTable::Entry entry = PartTable::lookup(part);
-                QString detail = part;
-                if (entry.valid) {
-                    QStringList bits;
-                    if (!entry.package.isEmpty())
-                        bits << entry.package;
-                    if (entry.flashBytes > 0)
-                        bits << QStringLiteral("Flash %1").arg(PartTable::formatSize(entry.flashBytes));
-                    if (entry.ramBytes > 0)
-                        bits << QStringLiteral("RAM %1").arg(PartTable::formatSize(entry.ramBytes));
-                    if (!bits.isEmpty())
-                        detail += QStringLiteral("    (") + bits.join(QStringLiteral(" / "))
-                                  + QLatin1Char(')');
-                }
-                labels << detail;
-            }
-
-            bool ok = false;
-            const QString picked = QInputDialog::getItem(
-                this, QStringLiteral("选择具体料号"),
-                QStringLiteral("已通过内存探测确定容量（%1），但同容量还有多个封装。\n"
-                               "请选择芯片上印的料号（只需一次，之后会自动记住）：")
-                    .arg(result.memoryProbe.valid() ? MemoryProbe::describe(result.memoryProbe)
-                                                    : QStringLiteral("未知")),
-                labels, 0, false, &ok);
-            if (ok && !picked.isEmpty()) {
-                // The label carries the part number first, then the detail.
-                const QString part = picked.section(QLatin1Char(' '), 0, 0).trimmed();
-                if (!part.isEmpty()) {
-                    m_chipBox->setCurrentText(part);
-                    if (result.devId != 0) {
-                        QString error;
-                        DeviceIdentifier::rememberDevId(result.devId, part, &error);
-                    }
-                    Logger::instance()->info(
-                        QStringLiteral("已按选择使用 %1；下次连接 %2 将直接识别")
-                            .arg(part, devIdText));
-                    statusBar()->showMessage(
-                        QStringLiteral("已选择 %1，正在重新识别…").arg(part), 4000);
-                    // Re-run identification with the chosen chip name.
-                    m_probe->requestIdentify(m_chipBox->currentText().trimmed());
-                }
-            }
-        } else if (result.devId != 0) {
-            Logger::instance()->info(
-                QStringLiteral("提示: 在工具栏选中正确芯片并重连后，会记住 %1 对应的型号")
-                    .arg(devIdText));
-        }
-        startPolling();
-        return;
-    }
-
-    // Always show the part that is really attached. Keeping a stale name here was
-    // half of the "plugged a G455 but it still says H473" problem: the box is fed
-    // back into the next connection as the J-Link device name, and used to be
-    // treated as a manual override too.
-    const QString detectedChip =
-        !result.partNumber.isEmpty() ? result.partNumber : result.probeRsChip;
-    if (!detectedChip.isEmpty()) {
-        if (effectiveChip().isEmpty()) {
-            // Auto mode: show just the part number. Writing it as a *selection* would
-            // turn the next connection into a manual override for this board -- the
-            // original bug -- so only the label changes and the item's data stays
-            // empty (still auto).
-            m_chipBox->setItemText(0, detectedChip);
-            m_chipBox->setToolTip(QStringLiteral(
-                                      "已按 DEV_ID 自动识别为 %1。\n"
-                                      "正常情况无需手动选择；识别失败时再在这里指定料号。")
-                                      .arg(detectedChip));
-            Logger::instance()->debug(
-                QStringLiteral("工具栏显示 %1，模式仍为自动").arg(detectedChip));
-        } else if (m_chipBox->currentText().trimmed() != detectedChip) {
-            Logger::instance()->debug(
-                QStringLiteral("手动指定 %1，实测为 %2 —— 按实测识别")
-                    .arg(m_chipBox->currentText().trimmed(), detectedChip));
-        }
-    }
-
-    if (!result.svdPath.isEmpty() && QFileInfo::exists(result.svdPath)
-        && (m_svdPath.isEmpty() || QFileInfo(result.svdPath).fileName() != QFileInfo(m_svdPath).fileName())) {
-        openSvdFile(result.svdPath);
-    }
-
-    // Vendor per-model peripheral counts, used by the static presence check to
-    // drop blocks this model does not implement.
-    const QString chip = !result.mcuName.isEmpty() ? result.mcuName : result.probeRsChip;
-    m_capabilities = result.capabilities;
-    // Flash / RAM for the status bar (0 = unknown, label stays blank).
-    m_flashBytes = result.flashBytes;
-    m_ramBytes = result.ramBytes;
-    m_sramText = result.sramText;
-    m_ccmText = result.ccmText;
-    m_partNumber = result.partNumber;
-    m_portProbe = result.portProbe;
+    // Refusing means actually going away: leaving the session up would let the polling,
+    // the port grid and the write path operate on a device model that the silicon
+    // already contradicted.
+    Logger::instance()->error(QStringLiteral("拒绝连接：%1").arg(reason));
+    stopPolling();
+    m_probe->requestDisconnect();
+    m_session->setConnected(false);
+    m_session->clearDevice();
+    m_device = SvdDevice();
+    m_capabilities.clear();
+    m_flashBytes = 0;
+    m_ramBytes = 0;
+    m_sramText.clear();
+    m_ccmText.clear();
+    m_partNumber.clear();
     updateMemoryLabel();
-    if (!m_capabilities.isEmpty()) {
-        QStringList parts;
-        for (auto it = m_capabilities.constBegin(); it != m_capabilities.constEnd(); ++it)
-            parts << QStringLiteral("%1=%2").arg(it.key()).arg(it.value());
-        parts.sort();
-        Logger::instance()->debug(QStringLiteral("厂商能力清单（%1）: %2")
-                                      .arg(chip.isEmpty() ? QStringLiteral("未知器件") : chip,
-                                           parts.join(QStringLiteral("  "))));
+    setConnectedUi(false);
+    parkDeviceViews(reason);
+    m_deviceLabel->setText(QStringLiteral("未连接（型号校验未通过）"));
+    statusBar()->showMessage(QStringLiteral("已拒绝连接：%1").arg(reason));
+    QMessageBox::critical(this, QStringLiteral("型号校验失败"), reason);
+}
+
+bool MainWindow::applyChipSelection()
+{
+    const QString part = AppSettings::chipName().trimmed();
+    const QString package = AppSettings::chipPackage().trimmed();
+    if (part.isEmpty()) {
+        parkDeviceViews(QStringLiteral("尚未选择型号：请点工具栏「选择型号…」"));
+        m_deviceLabel->setText(QStringLiteral("未选择型号"));
+        return false;
     }
 
-    // Draw the pinout now: this is the first moment we know the part number and
-    // the bonded IO count, so nothing is pre-rendered before the connection.
-    if (m_packagePage) {
-        // Packages that remain possible when only the family is known: offered in
-        // the page's selector so the user does not have to type a part number.
-        QStringList packageChoices;
-        for (const QString &part : result.familyPartCandidates) {
-            const PartTable::Entry entry = PartTable::lookup(part);
-            if (entry.valid && !entry.package.isEmpty()) {
-                for (const QString &name : entry.package.split(QLatin1Char('/'),
-                                                               Qt::SkipEmptyParts))
-                    packageChoices << name.trimmed();
+    const PartTable::Entry entry = PartTable::lookup(part);
+    if (!entry.valid) {
+        parkDeviceViews(QStringLiteral("%1 不在器件表中").arg(part));
+        m_deviceLabel->setText(QStringLiteral("%1（器件表无此料号）").arg(part));
+        return false;
+    }
+
+    m_capabilities = entry.capabilities;
+    m_flashBytes = entry.flashBytes;
+    m_ramBytes = entry.ramBytes;
+    m_sramText = entry.sram;
+    m_ccmText = entry.ccmSram;
+    m_partNumber = entry.part;
+    updateMemoryLabel();
+
+    // --- SVD: the vendor manifest maps the order code to its file -----------
+    QString svdPath;
+    SvdManifestEntry manifestEntry;
+    QStringList ambiguous;
+    SvdLibrary library;
+    library.setRoots(AppSettings::svdRoots());
+    library.loadManifest();
+    if (library.lookupPart(part, &manifestEntry, &ambiguous)) {
+        svdPath = manifestEntry.svdPath;
+    } else if (!entry.svd.isEmpty()) {
+        // parts.json carries the pack-relative path; resolve it against the SVD roots.
+        for (const QString &root : AppSettings::svdRoots()) {
+            QDir rootDir(root);
+            const QString relative = QFileInfo(entry.svd).fileName();
+            // The manifest entry and the pack path can differ in directory depth, so
+            // search one level down for the file name as a last resort.
+            const QString direct = QDir::cleanPath(rootDir.filePath(entry.svd));
+            if (QFileInfo::exists(direct)) {
+                svdPath = direct;
+                break;
             }
+            for (const QString &sub : rootDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+                const QString candidate = QDir::cleanPath(
+                    rootDir.filePath(sub + QLatin1Char('/') + relative));
+                if (QFileInfo::exists(candidate)) {
+                    svdPath = candidate;
+                    break;
+                }
+            }
+            if (!svdPath.isEmpty())
+                break;
         }
-        packageChoices.removeDuplicates();
-        packageChoices.sort();
+    }
 
-        const bool drawn = m_packagePage->renderForChip(chip, result.ioCount, result.pinCount,
-                                                        result.packageName, packageChoices);
+    if (svdPath.isEmpty() || !QFileInfo::exists(svdPath)) {
+        parkDeviceViews(QStringLiteral("找不到 %1 对应的 SVD 文件").arg(part));
+        m_deviceLabel->setText(QStringLiteral("%1（无 SVD）").arg(part));
+        return false;
+    }
+
+    if (!openSvdFile(svdPath))
+        return false;
+
+    const QString packageLabel = package.isEmpty() ? entry.package : package;
+    m_deviceLabel->setText(QStringLiteral("%1 · %2 · Flash %3 / RAM %4")
+                               .arg(part, packageLabel,
+                                    PartTable::formatSize(entry.flashBytes),
+                                    PartTable::formatSize(entry.ramBytes)));
+
+    // --- pinout for exactly this package -----------------------------------
+    if (m_packagePage) {
+        QStringList choices = PartTable::packagesOf(part);
+        if (choices.isEmpty() && !packageLabel.isEmpty())
+            choices << packageLabel;
+        const bool drawn = m_packagePage->renderForChip(part, entry.ioCount, 0,
+                                                        packageLabel, choices);
         if (drawn) {
-            Logger::instance()->debug(QStringLiteral("引脚布局已渲染: %1 (IO %2 / 脚 %3)")
-                                          .arg(chip)
-                                          .arg(result.ioCount > 0 ? QString::number(result.ioCount)
-                                                                  : QStringLiteral("?"))
-                                          .arg(result.pinCount > 0 ? QString::number(result.pinCount)
-                                                                   : QStringLiteral("?")));
+            Logger::instance()->debug(QStringLiteral("引脚图: %1 · %2（%3 个 IO）")
+                                          .arg(part, packageLabel)
+                                          .arg(entry.ioCount));
         } else {
-            Logger::instance()->warn(QStringLiteral("无法为 %1 生成引脚布局（缺 IO/封装数据）")
-                                         .arg(chip.isEmpty() ? QStringLiteral("未知器件") : chip));
+            // A missing pin table must not block the session: registers still work.
+            Logger::instance()->warn(
+                QStringLiteral("没有 %1 · %2 的引脚表，引脚图暂不可用").arg(part, packageLabel));
         }
     }
-    if (!result.probeSerial.isEmpty() && !result.svdPath.isEmpty())
-        AppSettings::setBindingForSn(result.probeSerial, result.svdPath);
-
-    // The SVD only describes the family; ask the target which peripherals it really
-    // has (clock gates + bus decode) so the tree reflects this exact part.
-    if (!m_svdPath.isEmpty()) {
-        statusBar()->showMessage(QStringLiteral("正在读取设备树..."));
-        m_probe->requestScanDeviceTree(m_svdPath);
-    }
-
-    startPolling();
+    return true;
 }
 
 void MainWindow::onPeripheralSelected(const QString &name)
@@ -1056,6 +1245,7 @@ void MainWindow::onPeripheralSelected(const QString &name)
     if (!peripheral)
         return;
 
+    m_registerHssRefused = false; // new peripheral, new attempt
     m_currentPeripheral = name;
     m_currentRegister = peripheral->registers.isEmpty() ? -1 : 0;
     m_registerView->setPeripheral(peripheral);
@@ -1066,25 +1256,52 @@ void MainWindow::onPeripheralSelected(const QString &name)
     refreshInspector();
     refreshPortGrid();
 
+    // The whole-peripheral read goes first: it already covers register 0, and issuing it
+    // before arming the fast poll lets the back-pressure check below skip a duplicate read
+    // of the same word.
     if (m_session->connected())
         m_session->requestPeripheralRead(*peripheral);
+    updateRegisterSampling();
 }
 
 void MainWindow::onPinnedChanged(const QStringList &names)
 {
     m_pinned = names;
     AppSettings::setPinnedPeripherals(names);
-    if (m_pinned.isEmpty()) {
-        m_pollLabel->setText(QStringLiteral("轮询: 关闭"));
-    } else {
-        m_pollLabel->setText(QStringLiteral("轮询: %1 个外设 / %2 ms").arg(m_pinned.size()).arg(m_pollIntervalMs));
-    }
+    updatePollLabel();
 }
 
 void MainWindow::onRegisterSelected(int index)
 {
+    m_registerHssRefused = false; // a different register deserves a fresh attempt
     m_currentRegister = index;
     refreshInspector();
+    // Selection is the operator saying "watch this one", so it takes effect immediately
+    // rather than on the next sweep of the peripheral. When the fast poll is already
+    // running, taking one sample now is what makes switching registers feel instant --
+    // otherwise the new register shows its last 200 ms-old value until the next tick.
+    updateRegisterSampling();
+    // Polling path only: take one sample now so switching feels instant. Under HSS the
+    // first drain arrives within a millisecond on its own.
+    if (m_fastPollTimer && m_fastPollTimer->isActive())
+        onFastPollTimeout();
+}
+
+void MainWindow::onRegisterDeselected()
+{
+    // Releasing the selection returns the register to the ordinary peripheral sweep. With
+    // no selection both accelerated paths stop on their own: the HSS session is handed
+    // back (so the curve page can take it) and the single-register timer stands down. The
+    // 200 ms sweep already reads every register of the peripheral, so the released one
+    // keeps updating -- just at the shared rate.
+    m_currentRegister = -1;
+    m_registerHssRefused = false; // a fresh selection would deserve a fresh attempt
+    // The view has already cleared its own highlight (releaseSelection() emits this), so
+    // pushing -1 back into it here would be a second owner of the same state.
+    refreshInspector();
+    updateRegisterSampling();
+    statusBar()->showMessage(
+        QStringLiteral("已取消选中寄存器：恢复 200 ms 轮询更新"), 3000);
 }
 
 void MainWindow::onFieldSelected(int index)
@@ -1434,6 +1651,7 @@ void MainWindow::onCpuStateChanged(bool halted, bool ok, const QString &error)
 {
 
     m_cpuHalted = ok && halted;
+    updateRegisterSampling(); // a halted core freezes every register
     if (ok)
         updateCpuStateLabel();
     if (!ok) {
@@ -1567,28 +1785,6 @@ void MainWindow::onDeviceTreeScanned(const QVector<PeripheralStatus> &statuses, 
         // visible on purpose (hiding a usable peripheral is worse) and say so.
         for (const QString &note : presence.undecidable)
             Logger::instance()->warn(QStringLiteral("存在性判定: %1").arg(note));
-
-        // GPIO ports the die does not implement. Measured on N32G455 silicon: such a
-        // port does not fault, its register block simply reads back as all zeros
-        // with the clock enabled, so the bus scan alone reports it as "present" and
-        // the tree listed GPIOD..GPIOG on a 48-pin part.
-        if (!m_portProbe.absent.isEmpty()) {
-            int hidden = 0;
-            for (auto &status : annotated) {
-                if (!GpioCodec::isGpioPort(*m_device.findPeripheral(status.name)))
-                    continue;
-                const QString port = GpioCodec::portName(*m_device.findPeripheral(status.name));
-                if (!m_portProbe.absent.contains(port))
-                    continue;
-                status.exists = false;
-                status.absenceReason = QStringLiteral("die 上没有 %1 端口（寄存器块读回全 0）")
-                                           .arg(port);
-                ++hidden;
-            }
-            if (hidden > 0)
-                Logger::instance()->debug(
-                    QStringLiteral("按端口探测隐藏 %1 个本 die 不存在的 GPIO 端口").arg(hidden));
-        }
     }
 
     if (const PackageDescription *package = m_packagePage
@@ -1622,45 +1818,82 @@ void MainWindow::onDeviceTreeScanned(const QVector<PeripheralStatus> &statuses, 
         }
     }
 
+    // --- validate against the selection BEFORE anything is shown ----------
+    // A wrong part would otherwise produce a register map and a pinout for hardware that
+    // is not attached, which reads as authoritative and is the failure mode this whole
+    // change exists to prevent.
+    const QString part = AppSettings::chipName();
+    const QString package = AppSettings::chipPackage();
+    const ValidationVerdict verdict = validatePeripherals(annotated, m_device.peripherals.size());
+    Logger::instance()->info(QStringLiteral("型号校验（%1 · %2）：%3")
+                                 .arg(part, package, verdict.summary()));
+    for (const QString &line : verdict.contradictions)
+        Logger::instance()->warn(QStringLiteral("  对不上的外设: %1").arg(line));
+
+    if (!verdict.accepted) {
+        QStringList lines;
+        lines << verdict.reason;
+        if (!verdict.contradictions.isEmpty()) {
+            lines << QString();
+            lines << QStringLiteral("读不到的外设（前 %1 个）：").arg(verdict.contradictions.size());
+            lines << verdict.contradictions.join(QLatin1Char('\n'));
+        }
+        lines << QString();
+        lines << QStringLiteral("请确认板上型号：当前选的是 %1 · %2。").arg(part, package);
+        lines << QStringLiteral("用「选择型号…」改成实际型号后重新连接。");
+        refuseConnection(lines.join(QLatin1Char('\n')));
+        return;
+    }
+
     m_tree->setStatuses(annotated);
     m_statuses = annotated;
 
-    // First moment we know what this part really has: fill the tree and views.
+    // First moment the part's real peripheral set is known: fill the tree and views.
     if (m_tree->isWaiting())
         populateDeviceUi();
 
     int onChip = 0;
     int clocked = 0;
-    int missing = 0;
     for (const auto &status : statuses) {
         if (status.onChip())
             ++onChip;
         if (status.clockKnown && status.clockEnabled)
             ++clocked;
-        if (status.reachability == PeripheralStatus::Missing)
-            ++missing;
     }
 
-    Logger::instance()->debug(QStringLiteral("设备树: 本芯片存在 %1/%2，时钟已开 %3，缺失 %4")
+    Logger::instance()->debug(QStringLiteral("设备树: 本芯片存在 %1/%2，时钟已开 %3")
                                  .arg(onChip)
                                  .arg(statuses.size())
-                                 .arg(clocked)
-                                 .arg(missing));
-    statusBar()->showMessage(QStringLiteral("设备树: %1/%2 个外设存在，%3 个时钟已开启")
-                                 .arg(onChip)
-                                 .arg(statuses.size())
-                                 .arg(clocked),
-                             6000);
+                                 .arg(clocked));
+
+    // Say what was actually proven, not just that something was read: a tree where
+    // nothing answered is not a success, and the user needs to know the map is a guess.
+    if (verdict.inconclusive()) {
+        statusBar()->showMessage(
+            QStringLiteral("已连接 %1，但设备树无法验证（没有外设响应）").arg(part), 8000);
+        Logger::instance()->warn(verdict.reason);
+    } else {
+        statusBar()->showMessage(
+            QStringLiteral("已连接 %1 · %2 — %3").arg(part, package, verdict.summary()), 8000);
+    }
 
     // Refresh the current peripheral view in case it disappeared from this part.
     if (!m_currentPeripheral.isEmpty()) {
         const auto it = std::find_if(statuses.constBegin(), statuses.constEnd(),
-                                     [this](const PeripheralStatus &s) {
-                                         return s.name == m_currentPeripheral;
+                                     [this](const PeripheralStatus &status) {
+                                         return status.name == m_currentPeripheral;
                                      });
         if (it != statuses.constEnd() && !it->onChip())
             Logger::instance()->warn(QStringLiteral("%1 在当前芯片上不存在").arg(m_currentPeripheral));
     }
+
+    // Only now is the session real: polling reads registers that have been checked to
+    // belong to this part.
+    startPolling();
+
+    // A burn reconnect lands here: this is the first moment the target is known to be the
+    // selected part AND running, which is what "the application started" means.
+    reportPostBurnState();
 }
 
 void MainWindow::onPinLevel(const QString &portName, int index, bool high)
@@ -1697,22 +1930,35 @@ void MainWindow::onPinLevel(const QString &portName, int index, bool high)
     m_session->applyRegisterWrite(write.address, data);
 }
 
+bool MainWindow::shouldFastPoll(bool connected, bool hasSelection, bool halted)
+{
+    // A halted core freezes every register, so sampling one of them 50 times a second
+    // would report the same value for ever at the price of continuous bus traffic.
+    return connected && hasSelection && !halted;
+}
+
+bool MainWindow::shouldUseRegisterHss(bool connected, bool hasSelection, bool halted,
+                                      bool hssSupported, bool registerPageVisible)
+{
+    // Everything that makes fast polling pointless also makes HSS pointless, plus two
+    // conditions of its own: the backend must expose the interface, and this page must be
+    // the visible one -- HSS is a single session and the curve page needs it too, so the
+    // register view only holds it while its own tab is in front.
+    return connected && hasSelection && !halted && hssSupported && registerPageVisible;
+}
+
 void MainWindow::startPolling()
 {
     if (!m_session->connected()) {
         m_pollLabel->setText(QStringLiteral("轮询: 关闭"));
         return;
     }
-    if (m_pinned.isEmpty()) {
-        m_pollLabel->setText(QStringLiteral("轮询: 仅当前外设"));
-    } else {
-        m_pollLabel->setText(QStringLiteral("轮询: %1 个外设 / %2 ms").arg(m_pinned.size()).arg(m_pollIntervalMs));
-    }
     m_pollTimer->start();
     if (m_counterTimer)
         m_counterTimer->start();
     if (m_faultTimer)
         m_faultTimer->start();
+    updateRegisterSampling();
     onPollTimeout();
     pollTimerCounters();
     pollCpuHealth();
@@ -1722,6 +1968,13 @@ void MainWindow::stopPolling()
 {
     if (m_pollTimer)
         m_pollTimer->stop();
+    if (m_fastPollTimer)
+        m_fastPollTimer->stop();
+    if (m_registerDrainTimer)
+        m_registerDrainTimer->stop();
+    if (m_registerSampler && m_registerSampler->isRunning())
+        m_registerSampler->stop();
+    m_registerHssAddress = 0;
     if (m_counterTimer)
         m_counterTimer->stop();
     if (m_faultTimer)
@@ -1749,7 +2002,199 @@ void MainWindow::onPollTimeout()
         if (peripheral)
             m_session->requestPeripheralRead(*peripheral);
     }
+}
 
+void MainWindow::onFastPollTimeout()
+{
+    const SvdPeripheral *peripheral = currentPeripheral();
+    const SvdRegister *reg = currentRegister();
+    if (!peripheral || !reg || !m_session->connected())
+        return;
+
+    // Backpressure, not blind firing. The timer says "at most this often", the link says
+    // what is actually possible: a slower clock (200 kHz) or a long probe round trip can
+    // easily take longer than one tick. Skipping while the previous read is outstanding
+    // is what keeps the queue from growing -- and makes the effective rate follow the
+    // probe instead of lying about it.
+    const quint32 address = peripheral->baseAddress + reg->addressOffset;
+    if (m_session->isReadPending(address))
+        return;
+
+    m_session->requestRegisterRead(*peripheral, *reg);
+}
+
+void MainWindow::updateFastPoll()
+{
+    if (!m_fastPollTimer)
+        return;
+
+    const SvdPeripheral *peripheral = currentPeripheral();
+    const SvdRegister *reg = currentRegister();
+    // HSS already delivers the value; polling it as well would double the traffic for the
+    // same number on screen.
+    const bool wanted = !registerHssInCharge()
+                        && shouldFastPoll(m_session && m_session->connected(),
+                                          peripheral && reg, m_cpuHalted);
+
+    if (!wanted) {
+        if (m_fastPollTimer->isActive())
+            m_fastPollTimer->stop();
+    } else if (!m_fastPollTimer->isActive()) {
+        m_fastPollTimer->start();
+        onFastPollTimeout(); // first sample now, so selecting feels immediate
+    }
+    updatePollLabel();
+}
+
+bool MainWindow::registerHssInCharge() const
+{
+    return m_registerSampler && m_registerSampler->isRunning();
+}
+
+void MainWindow::updateRegisterSampling()
+{
+    if (!m_registerSampler)
+        return;
+
+    const SvdPeripheral *peripheral = currentPeripheral();
+    const SvdRegister *reg = currentRegister();
+    const bool hasSelection = peripheral && reg;
+    const bool connected = m_session && m_session->connected();
+
+    // Which tab is in front. Index 2 is 寄存器全景 (see createCentralPages); looked up by
+    // widget rather than by a stored literal so inserting a tab cannot silently point the
+    // arbitration at the wrong page.
+    const bool registerPageVisible =
+        m_tabs && m_registerPage && m_tabs->currentWidget() == m_registerPage;
+
+    const bool wantHss =
+        !m_registerHssRefused
+        && shouldUseRegisterHss(connected, hasSelection, m_cpuHalted,
+                                m_probe && m_probe->supportsHss(), registerPageVisible);
+
+    if (!wantHss) {
+        if (m_registerSampler->isRunning() || m_registerSampler->isStarting()
+            || (m_registerDrainTimer && m_registerDrainTimer->isActive())) {
+            m_registerDrainTimer->stop();
+            m_registerSampler->stop();
+            m_registerHssAddress = 0;
+        }
+        // Hand the decision to the polling path, which also updates the label.
+        updateFastPoll();
+        return;
+    }
+
+    const quint32 address = peripheral->baseAddress + reg->addressOffset;
+    // "Running or still starting" -- start() returns before the probe confirms, and a
+    // second evaluation in that window would be refused as a duplicate start.
+    const bool sessionBusy = m_registerSampler->isRunning() || m_registerSampler->isStarting();
+    if (sessionBusy && m_registerHssAddress == address) {
+        updateFastPoll(); // already sampling this register; the poll must stay off
+        return;
+    }
+
+    // The block table is fixed at start(), so a different register means a new session.
+    if (sessionBusy) {
+        m_registerDrainTimer->stop();
+        m_registerSampler->stop();
+        m_registerHssAddress = 0;
+    }
+
+    // HSS is one global session: take it explicitly rather than relying on the DLL to
+    // drop the previous block table. Otherwise the curve page would keep its "running"
+    // state while receiving nothing.
+    if (m_scopePage && m_scopePage->isLiveCapturing())
+        m_scopePage->releaseHss();
+
+    WatchVariable variable;
+    variable.name = QStringLiteral("%1.%2").arg(peripheral->name, reg->name);
+    variable.typeLabel = QStringLiteral("寄存器");
+    variable.kind = ScalarKind::Unsigned;
+    variable.address = address;
+    variable.elementSize = qBound(1, reg->byteSize(), 4);
+    variable.elementCount = 1;
+    variable.totalSize = variable.elementSize;
+
+    // 1 ms: fast enough that a counter or a status bit reads as live, and the value is
+    // delivered by the probe, not by a read of ours per displayed frame.
+    const Status st = m_registerSampler->start({variable}, 1000);
+    if (!st) {
+        // The interface exists but refused (bad target state, busy DLL). Say so once and
+        // let the polling path carry the view instead of leaving it frozen.
+        Logger::instance()->warn(
+            QStringLiteral("%1 无法用 HSS 采样，退回轮询: %2").arg(variable.name, st.error));
+        m_registerHssAddress = 0;
+        updateFastPoll();
+        return;
+    }
+
+    m_registerHssAddress = address;
+    m_registerDrainTimer->start();
+    Logger::instance()->debug(
+        QStringLiteral("寄存器实时采样: %1（HSS 1 ms）").arg(variable.name));
+    updateFastPoll(); // HSS owns the value now, so the timer must stay stopped
+}
+
+void MainWindow::onRegisterDrainTick()
+{
+    if (!m_registerSampler || !m_registerSampler->isRunning())
+        return;
+    // One drain may still be in flight; asking again would queue overlapping reads of the
+    // same buffer.
+    if (m_registerSampler->isDrainPending())
+        return;
+    // No history: the register view shows one number, not a curve.
+    m_registerSampler->setDrainTarget(nullptr);
+    m_registerSampler->requestDrain();
+}
+
+void MainWindow::onRegisterSampled(const HssSampler::Result &result)
+{
+    Q_UNUSED(result);
+    if (!registerHssInCharge())
+        return;
+    const auto &channels = m_registerSampler->channels();
+    if (channels.isEmpty() || m_registerHssAddress == 0)
+        return;
+
+    const HssSampler::Channel &channel = channels.first();
+    if (channel.count == 0)
+        return; // nothing decoded yet (first drain can be empty)
+
+    // Go through the session so the value lands in the same cache and announces itself the
+    // same way a polled read does; the views have one display path.
+    m_session->applySampledValue(m_registerHssAddress,
+                                 static_cast<quint32>(channel.latest));
+}
+
+void MainWindow::onMainTabChanged(int index)
+{
+    Q_UNUSED(index);
+    // The visible page owns the HSS session.
+    updateRegisterSampling();
+}
+
+void MainWindow::updatePollLabel()
+{
+    if (!m_pollLabel)
+        return;
+    if (!m_session || !m_session->connected()) {
+        m_pollLabel->setText(QStringLiteral("轮询: 关闭"));
+        return;
+    }
+    const bool hss = registerHssInCharge();
+    const bool fast = m_fastPollTimer && m_fastPollTimer->isActive();
+    const QString base =
+        m_pinned.isEmpty()
+            ? QStringLiteral("轮询: 仅当前外设 / %1 ms").arg(m_pollIntervalMs)
+            : QStringLiteral("轮询: %1 个外设 / %2 ms").arg(m_pinned.size()).arg(m_pollIntervalMs);
+    // Say which mechanism is actually feeding the selected register -- HSS and the
+    // fallback timer look identical on screen but behave very differently on the bus.
+    const QString suffix = hss ? QStringLiteral("（选中寄存器 HSS 1 ms）")
+                               : (fast ? QStringLiteral("（选中寄存器 %1 ms）")
+                                             .arg(kFastPollIntervalMs)
+                                       : QString());
+    m_pollLabel->setText(base + suffix);
 }
 
 void MainWindow::pollTimerCounters()

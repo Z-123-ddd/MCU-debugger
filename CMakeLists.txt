@@ -37,10 +37,7 @@ set(CORE_SOURCES
     src/core/IProbe.h
     src/core/JLinkRunner.h
     src/core/JLinkRunner.cpp
-    src/core/GdbRspClient.h
-    src/core/GdbRspClient.cpp
-    src/core/JLinkGdbProbe.h
-    src/core/JLinkGdbProbe.cpp
+    src/core/JLinkInstall.cpp
     src/core/ProbeController.h
     src/core/ProbeController.cpp
     src/core/DeviceIdentifier.h
@@ -59,12 +56,17 @@ set(CORE_SOURCES
     src/core/DwarfReader.cpp
     src/core/SymbolFile.h
     src/core/SymbolFile.cpp
-    src/core/SnapshotReader.cpp
-    src/core/ValuePoller.cpp
     src/core/JLinkDllApi.cpp
     src/core/JLinkDllProbe.cpp
     src/core/HssSampler.cpp
     src/core/Fft.cpp
+    src/core/ImageBlob.cpp
+    src/core/FirmwareImage.cpp
+    src/core/FirmwareBurner.cpp
+    src/core/ZipArchive.cpp
+    src/core/SimModel.cpp
+    src/core/PythonModel.cpp
+    src/core/FmuModel.cpp
     # KFR (third_party/kfr): spectrum analysis backend. GPL v2 -- see
     # third_party/kfr/LICENSE.txt. Only the DFT module is built; audio/io/dsp are not
     # used by this program and were removed to keep the tree small.
@@ -105,6 +107,9 @@ set(UI_SOURCES
     src/ui/Theme.cpp
     src/ui/BitFieldStrip.h
     src/ui/BitFieldStrip.cpp
+    src/ui/BurnDialog.cpp
+    src/ui/ChipPickerDialog.cpp
+    src/ui/SimulationPage.cpp
     src/ui/ScopePage.h
     src/ui/ScopePage.cpp
     src/ui/GlPlotWidget.cpp
@@ -135,6 +140,49 @@ target_include_directories(mcuRegDebugger PRIVATE src)
 target_include_directories(mcuRegDebugger PRIVATE third_party/kfr/include)
 target_compile_features(mcuRegDebugger PRIVATE cxx_std_20)
 
+# ---------------------------------------------------------------------------
+# zlib: the FMU loader reads ZIP members itself instead of using Qt's private
+# QZipReader (whose header is explicitly unsupported/removable).
+#
+# find_package(ZLIB) does not find this toolchain's zlib: mingw ships it inside its
+# own sysroot, which is not on CMake's default search path even though `-lz` works.
+# So try the normal route first and fall back to a manual find.
+# ---------------------------------------------------------------------------
+find_package(ZLIB QUIET)
+if(NOT ZLIB_FOUND)
+    # mingw puts zlib in <prefix>/<target-triple>/{include,lib}, which CMake does not
+    # search. Derive that prefix from the compiler we are actually using.
+    # CMAKE_C_COMPILER is empty in a C++-only project, so fall back to the C++ one.
+    set(_mrd_compiler "${CMAKE_C_COMPILER}")
+    if(NOT _mrd_compiler)
+        set(_mrd_compiler "${CMAKE_CXX_COMPILER}")
+    endif()
+    get_filename_component(_mrd_cc_bin "${_mrd_compiler}" DIRECTORY)
+    get_filename_component(_mrd_toolchain "${_mrd_cc_bin}" DIRECTORY)
+    file(GLOB _mrd_sysroots "${_mrd_toolchain}/*mingw32" "${_mrd_toolchain}/*w64-mingw32")
+    message(STATUS "zlib search roots: ${_mrd_sysroots}")
+
+    find_path(ZLIB_INCLUDE_DIR zlib.h
+        HINTS ${_mrd_sysroots} ${_mrd_toolchain}
+        PATH_SUFFIXES include)
+    find_library(ZLIB_LIBRARY NAMES z zlib zlibstatic
+        HINTS ${_mrd_sysroots} ${_mrd_toolchain}
+        PATH_SUFFIXES lib)
+
+    if(ZLIB_INCLUDE_DIR AND ZLIB_LIBRARY)
+        add_library(ZLIB::ZLIB UNKNOWN IMPORTED)
+        set_target_properties(ZLIB::ZLIB PROPERTIES
+            IMPORTED_LOCATION "${ZLIB_LIBRARY}"
+            INTERFACE_INCLUDE_DIRECTORIES "${ZLIB_INCLUDE_DIR}")
+        message(STATUS "zlib (toolchain): ${ZLIB_LIBRARY}")
+    endif()
+endif()
+if(NOT TARGET ZLIB::ZLIB)
+    message(FATAL_ERROR
+        "zlib not found. It is needed to read .fmu (ZIP) packages. "
+        "Install zlib or point ZLIB_INCLUDE_DIR/ZLIB_LIBRARY at it.")
+endif()
+
 target_link_libraries(mcuRegDebugger PRIVATE
     Qt6::Core
     Qt6::Gui
@@ -142,6 +190,7 @@ target_link_libraries(mcuRegDebugger PRIVATE
     Qt6::Network
     Qt6::OpenGL
     Qt6::OpenGLWidgets
+    ZLIB::ZLIB
 )
 
 target_compile_definitions(mcuRegDebugger PRIVATE

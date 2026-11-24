@@ -26,25 +26,38 @@ struct Options
     /// --bench-read: time one full read of every static variable through the DLL and
     /// check whether the core keeps running (DHCSR.C_HALT + its own tick counter).
     bool benchRead = false;
-    /// Measure the value-column polling budget: a typical screenful of rows.
-    int benchPoll = 0;
     /// --read-var <name>: with --symbols + --probe-info, read that variable from the
     /// target and print its values (proves the snapshot path on real hardware).
     QString readVar;
     /// --bench-scope: time the variable panel instead of listing variables
     bool benchScope = false;
+    /// --burn <path>: analyse a firmware image and (with --burn-commit) write it.
+    QString burnPath;
+    /// --burn-commit: actually erase and program. Without it, --burn only reports.
+    bool burnCommit = false;
+    /// --burn-force: erase the image's range first, so the write really happens even
+    /// when the target already holds the same bytes.
+    bool burnForce = false;
+    /// --bootloader <path>: merge this .axf/.elf/.hex in front of the application.
+    QString bootloaderPath;
+    /// Address overrides for the burn layout; empty means "derive".
+    QString bootloaderBase;
+    QString appBase;
+    QString overallStart;
+    QString overallEnd;
+    /// --dump-flash <path>: read the target's Flash into a .bin (read-only diagnostic).
+    QString dumpFlashPath;
+    /// --dump-base <addr> / --dump-len <bytes>: what to read for --dump-flash.
+    QString dumpFlashBase;
+    QString dumpFlashLength;
     bool printHelp = false;
     bool printVersion = false;
-    /// --autoconnect: connect on GUI startup
-    bool autoConnect = false;
     /// --svd <path> / --svd=<path>
     QString svdPath;
     /// --render <dir>: offscreen PNG snapshots (used with --selftest)
     QString renderDir;
     /// --device <name>: override the chip name
     QString deviceName;
-    /// --backend jlink-dll|jlink (default: jlink-dll)
-    QString backend;
     /// --interface swd|jtag
     QString interfaceName;
     /// --speed <kHz>

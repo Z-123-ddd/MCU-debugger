@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<fmiModelDescription
+    fmiVersion="2.0"
+    modelName="TestLag"
+    guid="6b1f2f7a1c3d4e5f8a9b0c1d2e3f4a5b"
+    description="First-order lag y' = (u - y)/tau, tau = 0.1 s. Test fixture."
+    version="1.0"
+    generationTool="handwritten"
+    generationDateAndTime="2026-11-18T00:00:00Z"
+    variableNamingConvention="flat">
+
+  <CoSimulation
+      modelIdentifier="testlag"
+      canHandleVariableCommunicationStepSize="true"
+      canInterpolateInputs="false"
+      maxOutputDerivativeOrder="0"
+      canRunAsynchronuously="false"
+      canBeInstantiatedOnlyForCoSimulation="true"
+      providesDirectionalDerivative="false"/>
+
+  <DefaultExperiment startTime="0.0" stopTime="10.0"/>
+
+  <ModelVariables>
+    <ScalarVariable name="u" valueReference="1" causality="input" variability="continuous">
+      <Real start="0.0"/>
+    </ScalarVariable>
+    <ScalarVariable name="y" valueReference="2" causality="output" variability="continuous"
+                    initial="exact">
+      <Real start="0.0"/>
+    </ScalarVariable>
+    <ScalarVariable name="steps" valueReference="3" causality="output" variability="discrete"
+                    initial="exact">
+      <Real start="0.0"/>
+    </ScalarVariable>
+  </ModelVariables>
+
+  <ModelStructure>
+    <Outputs>
+      <Unknown index="2"/>
+      <Unknown index="3"/>
+    </Outputs>
+  </ModelStructure>
+</fmiModelDescription>
